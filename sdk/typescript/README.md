@@ -36,7 +36,17 @@ const result = current.canRetrieveResult
   : null;
 ```
 
-Cross-origin hosts must be present in `MutualGPU:ProviderCorsOrigins`. The API issues the requestor cookie as `HttpOnly; Secure; SameSite=None`; application code never reads or forwards the cookie itself.
+Cross-origin hosts must be present in `MutualGPU:ProviderCorsOrigins`. The API issues the requestor cookie as `HttpOnly; Secure; SameSite=None; Partitioned`; application code never reads or forwards the cookie itself. Partitioning keeps the anonymous session usable when ordinary third-party cookies are blocked while preventing it from being shared across unrelated top-level sites.
+
+After deploying the API build that accompanies an SDK release, run the required hosted release gate from an allowed browser origin:
+
+```text
+MUTUALGPU_API_URL=https://mutualgpu.com \
+MUTUALGPU_CORS_TEST_ORIGIN=https://yosun-triposplat-webgpu-demo.static.hf.space \
+npm run test:release-gate
+```
+
+The gate runs the complete SDK suite, loads the packaged `RequestorClient` in Chromium, verifies root bootstrap plus repeated protected calls, and repeats the session check with Chromium third-party-cookie blocking enabled.
 
 ## Node provider
 

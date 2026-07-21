@@ -1,7 +1,7 @@
 {
   "name": "@mutualgpu/provider-node",
-  "version": "0.1.0-preview.3",
+  "version": "0.1.0-preview.4",
   "type": "module",
-  "dependencies": { "@mutualgpu/provider-core": "0.1.0-preview.3" },
+  "dependencies": { "@mutualgpu/provider-core": "0.1.0-preview.4" },
   "exports": "./src/grpc-transport.js"
 }

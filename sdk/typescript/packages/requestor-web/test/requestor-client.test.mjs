@@ -56,6 +56,7 @@ test("requestor client covers every finite requestor endpoint with credentials",
   ]);
   assert.ok(calls.every(call => call.init.credentials === "include"));
   assert.ok(calls.every(call => call.receiver === globalThis));
+  assert.equal(calls[0].init.cache, "no-store");
   assert.deepEqual(JSON.parse(calls[4].init.body), submission);
   assert.equal(calls[4].init.headers["Content-Type"], "application/json");
   assert.equal(calls[5].init.headers, undefined);
@@ -94,6 +95,95 @@ test("requestor client preserves problem details after the identity retry budget
     error.code === "requestor_identity_missing" &&
     error.message === "Cookie was not sent.");
   assert.equal(calls, 3);
+});
+
+test("requestor client maps the requestor endpoint error matrix", async () => {
+  const cases = [
+    {
+      name: "missing task",
+      action: client => client.getTask("missing"),
+      response: new Response(null, { status: 404 }),
+      status: 404
+    },
+    {
+      name: "unavailable capability",
+      action: client => client.submitTask({}),
+      response: json({ code: "capability_unavailable" }, { status: 409 }),
+      status: 409,
+      code: "capability_unavailable"
+    },
+    {
+      name: "stale contract",
+      action: client => client.submitTask({}),
+      response: json({ code: "capability_contract_changed" }, { status: 409 }),
+      status: 409,
+      code: "capability_contract_changed"
+    },
+    {
+      name: "validation problem",
+      action: client => client.submitTask({}),
+      response: json({ title: "One or more validation errors occurred.", errors: { seed: ["Invalid."] } }, {
+        status: 400,
+        headers: { "Content-Type": "application/problem+json" }
+      }),
+      status: 400
+    },
+    {
+      name: "reevaluation conflict",
+      action: client => client.reevaluateTask("task"),
+      response: json({ code: "task_not_running" }, { status: 409 }),
+      status: 409,
+      code: "task_not_running"
+    },
+    {
+      name: "result unavailable",
+      action: client => client.getTaskResult("task"),
+      response: json({ code: "result_not_available" }, { status: 409 }),
+      status: 409,
+      code: "result_not_available"
+    },
+    {
+      name: "malformed JSON",
+      action: client => client.createWebGpuEnrollment(),
+      response: new Response("{not-json", { status: 502, headers: { "Content-Type": "application/json" } }),
+      status: 502,
+      body: "{not-json"
+    }
+  ];
+
+  for (const scenario of cases) {
+    let calls = 0;
+    const client = new RequestorClient("https://mutualgpu.example", {
+      fetchImpl: async () => ++calls === 1 ? new Response("MutualGPU") : scenario.response
+    });
+    await assert.rejects(scenario.action(client), error => {
+      assert.ok(error instanceof RequestorApiError, scenario.name);
+      assert.equal(error.status, scenario.status, scenario.name);
+      assert.equal(error.code, scenario.code, scenario.name);
+      if (scenario.body) assert.equal(error.body, scenario.body, scenario.name);
+      return true;
+    });
+    assert.equal(calls, 2, scenario.name);
+  }
+});
+
+test("requestor client can retry a failed root bootstrap", async () => {
+  const calls = [];
+  const client = new RequestorClient("https://mutualgpu.example", {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (calls.length === 1) return json({ code: "startup_unavailable" }, { status: 503 });
+      if (url.pathname === "/") return new Response("MutualGPU");
+      return json([]);
+    }
+  });
+
+  await assert.rejects(client.listCapabilities(), error =>
+    error instanceof RequestorApiError && error.status === 503 && error.code === "startup_unavailable");
+  assert.deepEqual(await client.listCapabilities(), []);
+  assert.deepEqual(calls.map(call => call.url.pathname), ["/", "/", "/api/capabilities/"]);
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[1].init.cache, "no-store");
 });
 
 test("requestor client shares one root bootstrap across concurrent endpoint calls", async () => {

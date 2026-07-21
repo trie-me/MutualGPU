@@ -712,12 +712,17 @@ var RequestorClient = class {
   }
   #ensureSession() {
     if (!this.#session) {
-      this.#session = this.#fetch.call(globalThis, new URL("/", this.apiBaseUrl), {
+      const opening = this.#fetch.call(globalThis, new URL("/", this.apiBaseUrl), {
+        cache: "no-store",
         credentials: "include"
       }).then(async (response) => {
         if (response.ok) return;
         const parsed = await parse(response);
         throw new RequestorApiError(response.status, parsed.data?.code, parsed.data, parsed.body);
+      });
+      this.#session = opening;
+      opening.catch(() => {
+        if (this.#session === opening) this.#session = null;
       });
     }
     return this.#session;

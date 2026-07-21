@@ -174,7 +174,7 @@ app.Use(async (context, next) =>
 app.UseCors("mutualgpu-provider");
 app.Use(async (context, next) =>
 {
-    if (HttpMethods.IsPost(context.Request.Method) &&
+    if (IsUnsafeMethod(context.Request.Method) &&
         context.Request.Path.StartsWithSegments("/api/tasks") &&
         !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins))
     {
@@ -195,6 +195,7 @@ app.Use(async (context, next) =>
             SameSite = SameSiteMode.None,
             Path = "/",
             Expires = DateTimeOffset.UtcNow.AddYears(1),
+            Extensions = { "Partitioned" },
         });
     }
     await next(context);
@@ -244,6 +245,12 @@ static bool IsTrustedBrowserWriteOrigin(HttpContext context, IReadOnlyCollection
     return StringComparer.OrdinalIgnoreCase.Equals(origin, requestOrigin) ||
         allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase);
 }
+
+static bool IsUnsafeMethod(string method) =>
+    !HttpMethods.IsGet(method) &&
+    !HttpMethods.IsHead(method) &&
+    !HttpMethods.IsOptions(method) &&
+    !HttpMethods.IsTrace(method);
 
 public partial class Program;
 

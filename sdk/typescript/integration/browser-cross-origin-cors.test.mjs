@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import test from "node:test";
+import { build } from "esbuild";
 import { chromium } from "playwright-core";
 
 const apiBaseUrl = process.env.MUTUALGPU_API_URL ?? "https://mutualgpu.com";
@@ -38,7 +39,7 @@ test("credentialed browser fetch can read MutualGPU capabilities across origins"
   }
 }, { timeout: 30_000 });
 
-test("credentialed browser fetch retains one requestor identity across origins", async () => {
+test("packaged requestor SDK retains one requestor identity across origins", async () => {
   assert.ok(existsSync(browserExecutable),
     `Chromium was not found at ${browserExecutable}. Set MUTUALGPU_BROWSER_EXECUTABLE to a Chromium or Chrome executable.`);
 
@@ -47,26 +48,62 @@ test("credentialed browser fetch retains one requestor identity across origins",
   const page = await context.newPage();
   try {
     await page.goto(providerOrigin, { waitUntil: "domcontentloaded" });
+    await page.addScriptTag({ content: await buildRequestorSdkBundle() });
 
     const result = await page.evaluate(async apiUrl => {
-      const request = path => fetch(new URL(path, apiUrl), { credentials: "include" });
-      const bootstrap = await request("/");
-      const first = await request("/api/tasks/");
-      const second = await request("/api/tasks/");
-      return {
-        bootstrapStatus: bootstrap.status,
-        first: { status: first.status, body: await first.text() },
-        second: { status: second.status, body: await second.text() }
-      };
+      const client = new globalThis.MutualGpuRequestorSdk.RequestorClient(apiUrl);
+      return { first: await client.listTasks(), second: await client.listTasks() };
     }, apiBaseUrl);
 
-    assert.equal(result.bootstrapStatus, 200);
-    assert.equal(result.first.status, 200, result.first.body);
-    assert.equal(result.second.status, 200, result.second.body);
-    assert.deepEqual(JSON.parse(result.first.body), JSON.parse(result.second.body));
+    assert.ok(Array.isArray(result.first));
+    assert.deepEqual(result.first, result.second);
   }
   finally {
     await context.close();
     await browser.close();
   }
 }, { timeout: 30_000 });
+
+test("partitioned requestor cookie survives third-party cookie blocking", async () => {
+  assert.ok(existsSync(browserExecutable),
+    `Chromium was not found at ${browserExecutable}. Set MUTUALGPU_BROWSER_EXECUTABLE to a Chromium or Chrome executable.`);
+
+  const browser = await chromium.launch({
+    executablePath: browserExecutable,
+    headless: true,
+    args: ["--test-third-party-cookie-phaseout"]
+  });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(providerOrigin, { waitUntil: "domcontentloaded" });
+    await page.addScriptTag({ content: await buildRequestorSdkBundle() });
+
+    const tasks = await page.evaluate(async apiUrl => {
+      const client = new globalThis.MutualGpuRequestorSdk.RequestorClient(apiUrl);
+      return client.listTasks();
+    }, apiBaseUrl);
+
+    assert.ok(Array.isArray(tasks));
+  }
+  finally {
+    await context.close();
+    await browser.close();
+  }
+}, { timeout: 30_000 });
+
+async function buildRequestorSdkBundle() {
+  const result = await build({
+    bundle: true,
+    format: "iife",
+    globalName: "MutualGpuRequestorSdk",
+    platform: "browser",
+    write: false,
+    stdin: {
+      resolveDir: new URL(".", import.meta.url).pathname,
+      sourcefile: "requestor-sdk-entry.mjs",
+      contents: 'export { RequestorClient } from "@mutualgpu/requestor-web";'
+    }
+  });
+  return result.outputFiles[0].text;
+}

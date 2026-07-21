@@ -197,13 +197,18 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("secure", cookie, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("samesite=none", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("partitioned", cookie, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public async Task Cookie_authenticated_task_writes_reject_untrusted_browser_origins()
+    [Theory]
+    [InlineData("POST")]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    public async Task Cookie_authenticated_task_writes_reject_untrusted_browser_origins(string method)
     {
         using var client = CreateHttpsClient(handleCookies: false);
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
+        using var request = new HttpRequestMessage(new HttpMethod(method), "/api/tasks/")
         {
             Content = JsonContent.Create(new { })
         };
