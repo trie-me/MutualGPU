@@ -6,6 +6,7 @@ namespace MutualGPU.Application;
 
 public sealed record CapabilityContractConflict(
     CapabilityId CapabilityId,
+    string CapabilityName,
     IReadOnlyList<string> Paths);
 
 /// <summary>Canonicalizes data-continuity fields only; presentation text and ordering are deliberately excluded.</summary>

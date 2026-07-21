@@ -106,14 +106,16 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
-    public void Frontend_reuses_the_purrfectseat_visual_system()
+    public void Frontend_uses_the_shared_compute_visual_system()
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../src/MutualGPU.Api/wwwroot"));
         var site = File.ReadAllText(Path.Combine(root, "css", "site.css"));
 
-        Assert.Contains("--navy:#111b38", site, StringComparison.Ordinal);
-        Assert.Contains(".layout { display:grid", site, StringComparison.Ordinal);
-        Assert.Contains(".card { background:white", site, StringComparison.Ordinal);
+        Assert.Contains("--ink:#030b19", site, StringComparison.Ordinal);
+        Assert.Contains(".hero {", site, StringComparison.Ordinal);
+        Assert.Contains(".layout {", site, StringComparison.Ordinal);
+        Assert.Contains("grid-template-columns:minmax(0, 1.6fr)", site, StringComparison.Ordinal);
+        Assert.Contains(".card { background:linear-gradient", site, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -252,6 +254,46 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
+    public async Task Browser_enrollment_reports_a_capability_identity_conflict_with_contract_paths()
+    {
+        var executionUnitId = ExecutionUnitId.New();
+        const string providerKey = "capability-identity-conflict-provider-key";
+        const string capabilityName = "browser-enrollment-conflict-test";
+        var registry = factory.Services.GetRequiredService<IExecutionUnitKeyRegistry>();
+        await registry.ProvisionAsync(executionUnitId, providerKey, CancellationToken.None);
+        var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
+        await units.SaveAsync(new ExecutionUnit(executionUnitId, new EnrollmentDefinition(
+            Machine(ResourceTier.Large, ResourceTier.Large, 32),
+            [new CapabilityDefinition(CapabilityId.New(), capabilityName,
+                [new InputDefinition("enable_safety_checker", CapabilityInputType.Boolean, false, "Enable safety checker", Default: "true")],
+                new OutputDefinition(HasMetadata: true), "ignored")])), CancellationToken.None);
+
+        var replacement = new EnrollmentDefinition(
+            Machine(ResourceTier.Large, ResourceTier.Large, 32),
+            [new CapabilityDefinition(new CapabilityId(Guid.Empty), capabilityName,
+                [new InputDefinition("enable_safety_checker", CapabilityInputType.Boolean, false, "Enable safety checker", Default: "false")],
+                new OutputDefinition(HasMetadata: true), "server-computed")]);
+        using var client = CreateHttpsClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/provider/enroll");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", providerKey);
+        request.Content = new ByteArrayContent(new EnrollRequest
+        {
+            Definition = ByteString.CopyFrom(JsonSerializer.SerializeToUtf8Bytes(replacement, new JsonSerializerOptions(JsonSerializerDefaults.Web))),
+        }.ToByteArray());
+        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-protobuf");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
+
+        Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(ProviderWebSocketEndpoints.CapabilityIdentityConflictCode, body.RootElement.GetProperty("code").GetString());
+        var conflict = Assert.Single(body.RootElement.GetProperty("conflicts").EnumerateArray());
+        Assert.Equal(capabilityName, conflict.GetProperty("capabilityName").GetString());
+        Assert.Contains("inputs.enable_safety_checker.default", conflict.GetProperty("paths").EnumerateArray().Select(static path => path.GetString()));
+    }
+
+    [Fact]
     public async Task Requestor_cookie_can_submit_a_resource_profile_and_list_the_idempotent_task()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "requestor-api-test", [], new OutputDefinition(), "requestor-contract");
@@ -377,6 +419,54 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.False(String.IsNullOrWhiteSpace(authorization.UploadToken));
         var running = await tasks.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
         Assert.Equal(MutualGPU.Domain.TaskStatus.Running, running!.Status);
+
+        await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Websocket_provider_failure_preserves_its_reason_for_the_requestor()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "websocket-failure-reason-test", [], new OutputDefinition(), "websocket-failure-contract");
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
+        var tasks = factory.Services.GetRequiredService<ITaskRepository>();
+        var scheduler = factory.Services.GetRequiredService<SchedulerApplication>();
+        await units.SaveAsync(unit, CancellationToken.None);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        await tasks.SaveAsync(task, CancellationToken.None);
+
+        using var socket = await factory.Server.CreateWebSocketClient().ConnectAsync(new Uri("wss://localhost/provider/connect"), CancellationToken.None);
+        await SendAsync(socket, new ProviderMessage { Connect = new ConnectRequest { ProtocolVersion = 1, Authorization = ProviderKey } });
+        _ = await ReceiveAsync(socket);
+        Assert.Equal(1, await scheduler.Evaluate(DateTimeOffset.UtcNow).RunAsync(CancellationToken.None));
+        var assignment = (await ReceiveAsync(socket)).Assignment;
+
+        await SendAsync(socket, new ProviderMessage { Accepted = new TaskAccepted { TaskId = assignment.TaskId, AttemptId = assignment.AttemptId, TaskHandle = assignment.TaskHandle } });
+        await SendAsync(socket, new ProviderMessage
+        {
+            Failed = new TaskFailed
+            {
+                TaskId = assignment.TaskId,
+                AttemptId = assignment.AttemptId,
+                TaskHandle = assignment.TaskHandle,
+                Step = "triposplat",
+                Reason = "The model manifest could not be downloaded.",
+            },
+        });
+
+        TaskRequest? failed = null;
+        var failedAttemptId = new AttemptId(Guid.Parse(assignment.AttemptId));
+        for (var retries = 0; retries < 20; retries++)
+        {
+            failed = await tasks.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
+            if (failed?.Attempts.SingleOrDefault(attempt => attempt.Id == failedAttemptId)?.State is AttemptState.Failed) break;
+            await Task.Delay(10);
+        }
+
+        var attempt = Assert.Single(failed!.Attempts, attempt => attempt.Id == failedAttemptId);
+        Assert.Equal(AttemptState.Failed, attempt.State);
+        Assert.Equal("triposplat", attempt.FailureStep);
+        Assert.Equal("The model manifest could not be downloaded.", attempt.FailureReason);
 
         await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
     }

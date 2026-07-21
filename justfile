@@ -14,6 +14,23 @@ remote-demo-provider-file key_file line="1":
     @test "{{line}}" -gt 0 2>/dev/null || { echo "line must be a positive integer." >&2; exit 2; }
     @provider_line=$(sed -n '{{line}}p' "{{key_file}}"); test -n "$provider_line" || { echo "No key exists on line {{line}}." >&2; exit 2; }; execution_unit_id=${provider_line%% *}; provider_key=${provider_line#* }; test "$execution_unit_id" != "$provider_key" || { echo "The selected key line is malformed." >&2; exit 2; }; MUTUALGPU_EXECUTION_UNIT_ID="$execution_unit_id" MUTUALGPU_PROVIDER_KEY="$provider_key" MUTUALGPU_API_URL="${MUTUALGPU_API_URL:-https://mutualgpu.com}" npm run demo:node --prefix sdk/typescript
 
+# Start the three intentional live demo producers: exasplat (32 GiB),
+# stable-diffs (64 GiB), and chatterboxer (128 GiB). Each runs one unit.
+remote-dummy-producers key_file:
+    @bash scripts/run-live-dummy-producers.sh "{{key_file}}"
+
+# Inspect the three detached demo-producer sessions.
+remote-dummy-producers-status:
+    @screen -ls || true
+
+# Tail one producer's log. Capability: exasplat, stable-diffs, or chatterboxer.
+remote-dummy-producers-logs capability:
+    @case "{{capability}}" in exasplat|stable-diffs|chatterboxer) ;; *) echo "Unknown capability: {{capability}}" >&2; exit 2;; esac; tail -n 80 "${TMPDIR:-/tmp}/mutualgpu-live-dummy-producers/{{capability}}.log"
+
+# Stop only the three intentional local demo-producer sessions.
+remote-dummy-producers-stop:
+    @for session in mutualgpu-exasplat mutualgpu-stable-diffs mutualgpu-chatterboxer; do screen -S "$session" -X quit >/dev/null 2>&1 || true; done; echo "Stopped MutualGPU demo producers."
+
 # Real Chromium integration: executes the BrowserWebSocketTransport in a browser,
 # performs direct SDK enrollment, then completes the WSS Connected handshake.
 browser-sdk-integration:

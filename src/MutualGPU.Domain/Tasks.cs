@@ -46,6 +46,7 @@ public sealed record TaskAttempt(
     AttemptState State,
     DateTimeOffset? AcceptedAt = null,
     string? FailureStep = null,
+    string? FailureReason = null,
     DateTimeOffset? DisconnectedAt = null);
 
 public sealed record ResultArtifact(
@@ -154,7 +155,12 @@ public sealed class TaskRequest
         Status = TaskStatus.Running;
     }
 
-    public void Requeue(AttemptId attemptId, string handle, AttemptState terminalState, string? failureStep = null)
+    public void Requeue(
+        AttemptId attemptId,
+        string handle,
+        AttemptState terminalState,
+        string? failureStep = null,
+        string? failureReason = null)
     {
         if (terminalState is not (AttemptState.Rejected or AttemptState.Revoked or AttemptState.Failed))
         {
@@ -162,7 +168,7 @@ public sealed class TaskRequest
         }
 
         var attempt = GetOwnedAttempt(attemptId, handle, AttemptState.Assigned, AttemptState.Accepted, AttemptState.Disconnected);
-        ReplaceAttempt(attempt with { State = terminalState, FailureStep = failureStep });
+        ReplaceAttempt(attempt with { State = terminalState, FailureStep = failureStep, FailureReason = failureReason });
         Status = attempts.Count >= MaximumAssignments ? TaskStatus.Failed : TaskStatus.Queued;
     }
 

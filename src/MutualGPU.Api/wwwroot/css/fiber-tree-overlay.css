@@ -1,47 +1,50 @@
-.fiber-overlay { position:fixed; z-index:10; right:0; bottom:0; left:0; box-sizing:border-box; height:30vh; max-height:30vh; overflow:hidden; background:white; border:1px solid #eadfca; border-radius:1rem 1rem 0 0; box-shadow:0 -8px 32px #111b3850; padding:.75rem clamp(1rem,4vw,4rem); display:flex; flex-direction:column; }
+.fiber-overlay { background:linear-gradient(145deg, #081a35f7, #030d20fb); border:1px solid #4de8ff70; border-bottom:0; border-radius:1rem 1rem 0 0; bottom:0; box-shadow:0 -1.25rem 4rem #000817c7, inset 0 1px #ccf8ff14; box-sizing:border-box; color:var(--paper); display:flex; flex-direction:column; height:34vh; left:0; max-height:34vh; overflow:hidden; padding:.85rem clamp(1rem,4vw,4rem); position:fixed; right:0; z-index:10; }
+.fiber-overlay::before { background-image:linear-gradient(#4de8ff0c 1px, transparent 1px), linear-gradient(90deg, #4de8ff0c 1px, transparent 1px); background-size:2.5rem 2.5rem; content:""; inset:0; pointer-events:none; position:absolute; }
+.fiber-overlay > * { position:relative; }
 .fiber-overlay[hidden] { display:none; }
 body.fiber-forest-open { --fiber-pane-height:45dvh; height:100dvh; overflow:hidden; }
-body.fiber-forest-open #application-shell { height:calc(100dvh - var(--fiber-pane-height)); display:grid; grid-template-rows:auto minmax(0, 1fr); }
-body.fiber-forest-open #application-shell > main { grid-row:2; align-self:stretch; width:100%; min-height:0; margin:0 auto; overflow-y:auto; overscroll-behavior:contain; padding-bottom:2rem; }
-body.fiber-forest-open .fiber-overlay { position:static; width:100%; height:var(--fiber-pane-height); max-height:var(--fiber-pane-height); }
-.fiber-overlay__header { display:flex; justify-content:space-between; align-items:center; gap:.75rem; }
-.fiber-overlay__actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.4rem; }
-.fiber-overlay__header button { padding:.4rem .6rem; }
-.fiber-overlay__actions [aria-pressed="true"] { background:var(--plum); }
-.fiber-legend { display:flex; flex-wrap:wrap; gap:.3rem .8rem; color:#5a6371; font-size:.78rem; }
-.fiber-legend span { display:inline-flex; align-items:center; gap:.3rem; }
-.fiber-legend i { display:inline-block; width:.7rem; height:.7rem; border-radius:50%; }
-.fiber-legend__scope { background:#111b38; width:.82rem !important; height:.82rem !important; }
-.fiber-legend__running { background:#4eaa75; }
-.fiber-legend__completed { background:#5b315d; }
-.fiber-legend__cancelled { background:#e99d20; }
-.fiber-legend__faulted { background:#ff5c5c; }
-.fiber-history { display:flex; align-items:end; gap:.25rem; height:3.4rem; overflow-x:auto; padding:.15rem 0 .1rem; }
-.fiber-history button { flex:0 0 auto; border:0; border-radius:.3rem; color:#5a6371; font:inherit; font-size:.62rem; }
-.fiber-history__live { align-self:center; padding:.3rem .45rem; background:#ff5c5c; color:white !important; font-size:.72rem !important; font-weight:700; }
-.fiber-history__snapshot { display:flex; flex-direction:column; justify-content:end; align-items:center; gap:.1rem; width:3.2rem; height:100%; padding:0; background:transparent; }
-.fiber-history__bar { display:block; width:1.5rem; height:var(--activity); min-height:.35rem; border-radius:.3rem .3rem .05rem .05rem; background:#5b315d; opacity:.68; }
-.fiber-history__label { width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fiber-history__label--faulted { color:#a32d2d; font-weight:800; }
-.fiber-history__label--cancelled { color:#805000; font-weight:800; }
-.fiber-history button[aria-current="true"] .fiber-history__bar { background:#ff5c5c; opacity:1; }
-.fiber-history__live[aria-current="true"] { background:#5b315d; }
-.fiber-simulations > strong { display:block; margin-bottom:.2rem; font-size:.75rem; }
+body.fiber-forest-open #application-shell { display:grid; grid-template-rows:auto minmax(0, 1fr); height:calc(100dvh - var(--fiber-pane-height)); }
+body.fiber-forest-open #application-shell > main { align-self:stretch; grid-row:2; height:auto; margin:0 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding-bottom:2rem; width:100%; }
+body.fiber-forest-open .fiber-overlay { bottom:auto; height:var(--fiber-pane-height); left:auto; max-height:var(--fiber-pane-height); position:relative; right:auto; width:100%; }
+.fiber-overlay__header { align-items:center; display:flex; gap:.75rem; justify-content:space-between; }
+.fiber-overlay__header strong { color:#dcf7ff; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.86rem; letter-spacing:.08em; text-transform:uppercase; }
+.fiber-overlay__actions { display:flex; flex-wrap:wrap; gap:.4rem; justify-content:flex-end; }
+.fiber-overlay__header button { background:#0b2344; border:1px solid #5f9bd46b; box-shadow:none; color:var(--paper); padding:.4rem .6rem; }
+.fiber-overlay__actions [aria-pressed="true"] { background:linear-gradient(135deg, var(--lilac), var(--cyan)); border-color:#d7fbff; color:#031225; }
+.fiber-legend { color:var(--paper-muted); display:flex; flex-wrap:wrap; font-size:.78rem; gap:.3rem .8rem; }
+.fiber-legend span { align-items:center; display:inline-flex; gap:.3rem; }
+.fiber-legend i { border-radius:50%; display:inline-block; height:.7rem; width:.7rem; }
+.fiber-legend__scope { background:#77b8ff; box-shadow:0 0 .5rem #4de8ff80; height:.82rem !important; width:.82rem !important; }
+.fiber-legend__running { background:#68e39b; box-shadow:0 0 .55rem #68e39b9e; }
+.fiber-legend__completed { background:#b785ff; box-shadow:0 0 .5rem #b785ff7d; }
+.fiber-legend__cancelled { background:#ffce6b; }
+.fiber-legend__faulted { background:#ff9bee; box-shadow:0 0 .5rem #ff9bee72; }
+.fiber-history { align-items:end; display:flex; gap:.25rem; height:3.4rem; overflow-x:auto; padding:.15rem 0 .1rem; }
+.fiber-history button { background:transparent; border:0; border-radius:.3rem; box-shadow:none; color:var(--paper-muted); flex:0 0 auto; font:inherit; font-size:.62rem; }
+.fiber-history__live { align-self:center; background:#0d3d5a !important; border:1px solid #4de8ff8a !important; color:#d8fbff !important; font-size:.72rem !important; font-weight:700; padding:.3rem .45rem; }
+.fiber-history__snapshot { align-items:center; display:flex; flex-direction:column; gap:.1rem; height:100%; justify-content:end; padding:0; width:3.2rem; }
+.fiber-history__bar { background:linear-gradient(180deg, var(--lilac), #5d71db); border-radius:.3rem .3rem .05rem .05rem; box-shadow:0 0 .6rem #b785ff4b; display:block; height:var(--activity); min-height:.35rem; opacity:.72; width:1.5rem; }
+.fiber-history__label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; width:100%; }
+.fiber-history__label--faulted { color:#ffc0ed; font-weight:800; }
+.fiber-history__label--cancelled { color:#ffe0a2; font-weight:800; }
+.fiber-history button[aria-current="true"] .fiber-history__bar { background:linear-gradient(180deg, var(--cyan), var(--lilac)); box-shadow:0 0 .8rem #4de8ff9e; opacity:1; }
+.fiber-history__live[aria-current="true"] { background:#573a85 !important; }
+.fiber-simulations > strong { display:block; font-size:.75rem; margin-bottom:.2rem; }
 .fiber-simulations__controls { display:flex; gap:.35rem; }
 .fiber-simulations__controls select { min-width:0; margin:0; }
 .fiber-simulations__controls button { padding:.35rem .55rem; }
-.fiber-simulations__status { display:block; min-height:1rem; color:#5a6371; font-size:.7rem; }
-.fiber-overlay__connection, .fiber-overlay__summary, .fiber-overlay__selection { margin:.35rem 0; font-size:.9rem; }
-.fiber-overlay__connection[data-state="connected"] { color:#17643a; }
-.fiber-overlay__connection[data-state="connecting"], .fiber-overlay__connection[data-state="disconnected"] { color:#805000; }
-.fiber-overlay__selection { min-height:1.2rem; color:#5a6371; }
-.fiber-forest { display:block; flex:1 1 0; min-height:0; width:100%; background:#fff9eb; border:1px solid #eadfca; border-radius:.65rem; cursor:grab; touch-action:none; }
+.fiber-simulations__status { color:var(--paper-muted); display:block; font-size:.7rem; min-height:1rem; }
+.fiber-overlay__connection, .fiber-overlay__summary, .fiber-overlay__selection { font-size:.9rem; margin:.35rem 0; }
+.fiber-overlay__connection[data-state="connected"] { color:#8ef4ff; }
+.fiber-overlay__connection[data-state="connecting"], .fiber-overlay__connection[data-state="disconnected"] { color:#ffe0a2; }
+.fiber-overlay__selection { color:var(--paper-muted); min-height:1.2rem; }
+.fiber-forest { background:#030e21; border:1px solid #4d8fca83; border-radius:.65rem; cursor:grab; display:block; flex:1 1 0; min-height:0; touch-action:none; width:100%; }
 .fiber-forest:active { cursor:grabbing; }
-.fiber-tree-detail { position:absolute; inset:4rem clamp(1rem,4vw,4rem) 1.5rem; overflow:auto; background:white; border:1px solid #eadfca; border-radius:.65rem; box-shadow:0 8px 24px #111b3850; padding:1rem; }
-.fiber-tree-detail > div:first-child { display:flex; justify-content:space-between; gap:.75rem; align-items:center; }
+.fiber-tree-detail { background:linear-gradient(145deg, #0b2345, #06152c); border:1px solid #63bfff8a; border-radius:.65rem; box-shadow:0 .5rem 2rem #000919dd; max-height:calc(100% - 5rem); overflow:auto; padding:1rem; position:absolute; right:clamp(1rem,4vw,4rem); top:4rem; width:min(32rem, calc(100% - 2rem)); z-index:3; }
+.fiber-tree-detail > div:first-child { align-items:center; display:flex; gap:.75rem; justify-content:space-between; }
 .fiber-tree-detail button { padding:.4rem .6rem; }
-.fiber-scope { margin:.45rem 0; padding-left:.75rem; border-left:2px solid #d4d9e1; }
+.fiber-scope { border-left:2px solid #5692cd; margin:.45rem 0; padding-left:.75rem; }
 .fiber-scope > summary { cursor:pointer; font-weight:700; }
-.fiber-node { margin:.35rem 0 .35rem .5rem; padding-left:.75rem; border-left:2px solid #eadfca; font-size:.9rem; }
-.fiber-node--faulted, .fiber-node__error { color:#a32d2d; }
-.fiber-node--cancelled, .fiber-node--cancellationrequested { color:#805000; }
+.fiber-node { border-left:2px solid #456f9d; font-size:.9rem; margin:.35rem 0 .35rem .5rem; padding-left:.75rem; }
+.fiber-node--faulted, .fiber-node__error { color:#ffc0ed; }
+.fiber-node--cancelled, .fiber-node--cancellationrequested { color:#ffe0a2; }

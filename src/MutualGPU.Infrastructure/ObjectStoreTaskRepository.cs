@@ -127,7 +127,7 @@ public sealed class ObjectStoreTaskRepository(
             if (task is null) continue;
             if (active is not null)
             {
-                task.Requeue(active.Id, active.Handle, AttemptState.Revoked, "restart_recovery");
+                task.Requeue(active.Id, active.Handle, AttemptState.Revoked, "restart_recovery", "The service restarted while this task was active.");
                 await SaveAsync(task, cancellationToken).ConfigureAwait(false);
                 recovered++;
             }
@@ -217,7 +217,7 @@ public sealed class ObjectStoreTaskRepository(
         {
             var sequence = await NextAttemptEventSequenceAsync(task.RequestorId, task.Id, changedAttempt.Id, cancellationToken).ConfigureAwait(false);
             var attemptEvent = keys.AttemptEvent(task.RequestorId, task.Id, changedAttempt.Id, sequence, changedAttempt.State.ToString().ToLowerInvariant());
-            await WriteAsync(attemptEvent, new AttemptStateEvent(changedAttempt.Id, changedAttempt.State, committedAt, changedAttempt.FailureStep), ObjectWriteConditions.IfNotExists, cancellationToken).ConfigureAwait(false);
+            await WriteAsync(attemptEvent, new AttemptStateEvent(changedAttempt.Id, changedAttempt.State, committedAt, changedAttempt.FailureStep, changedAttempt.FailureReason), ObjectWriteConditions.IfNotExists, cancellationToken).ConfigureAwait(false);
             committedKeys.Add(attemptEvent.Value);
         }
         if (task.Status is MutualGPU.Domain.TaskStatus.Queued)
@@ -297,7 +297,7 @@ public sealed class ObjectStoreTaskRepository(
 
     private sealed record CommitMarker(Guid OperationId, DateTimeOffset CommittedAt, IReadOnlyList<string> Keys);
 
-    private sealed record AttemptStateEvent(AttemptId AttemptId, AttemptState State, DateTimeOffset OccurredAt, string? FailureStep);
+    private sealed record AttemptStateEvent(AttemptId AttemptId, AttemptState State, DateTimeOffset OccurredAt, string? FailureStep, string? FailureReason = null);
 
     private sealed record TaskSummaryProjection(Guid OperationId, IReadOnlyList<TaskSummary> Tasks);
 
@@ -308,7 +308,8 @@ public sealed class ObjectStoreTaskRepository(
         task.Resources,
         task.Status,
         task.AssignmentCount,
-        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureStep);
+        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureStep,
+        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureReason);
 }
 
 public sealed record TaskRepositoryOptions

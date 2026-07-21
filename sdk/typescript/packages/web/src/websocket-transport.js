@@ -43,7 +43,7 @@ export class BrowserWebSocketTransport {
       headers: { Authorization: `Bearer ${this.presharedKey}`, "Content-Type": "application/x-protobuf" },
       body
     });
-    if (!response.ok) throw new Error(`MutualGPU provider enrollment failed (${response.status}): ${await response.text()}`);
+    if (!response.ok) throw new Error(await enrollmentError(response));
     return this.codec.decodeEnrollResponse(new Uint8Array(await response.arrayBuffer()));
   }
 
@@ -160,3 +160,17 @@ export class BrowserWebSocketTransport {
 }
 
 const wire = task => ({ taskId: task.taskId, attemptId: task.attemptId, taskHandle: task.taskHandle });
+
+async function enrollmentError(response) {
+  const body = await response.text();
+  try {
+    const problem = JSON.parse(body);
+    const conflicts = problem?.conflicts
+      ?.map(conflict => `${conflict.capabilityName}: ${conflict.paths?.join(", ") || "contract differs"}`)
+      .join("; ");
+    if (problem?.code) {
+      return `MutualGPU provider enrollment failed (${response.status}): ${problem.code}${conflicts ? ` (${conflicts})` : ""}.`;
+    }
+  } catch { /* retain the server's non-JSON response below */ }
+  return `MutualGPU provider enrollment failed (${response.status})${body ? `: ${body}` : "."}`;
+}

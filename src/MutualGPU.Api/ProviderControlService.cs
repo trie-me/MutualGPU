@@ -135,7 +135,7 @@ public sealed class ProviderControlService(
             : message.BodyCase is ProviderMessage.BodyOneofCase.Rejected
                 ? await session.Reject(executionUnitId, ParseTaskId(message.Rejected.TaskId), ParseAttemptId(message.Rejected.AttemptId), message.Rejected.TaskHandle, message.Rejected.Reason).RunAsync(cancellationToken).ConfigureAwait(false)
                 : message.BodyCase is ProviderMessage.BodyOneofCase.Failed
-                    ? await session.Fail(executionUnitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step).RunAsync(cancellationToken).ConfigureAwait(false)
+                    ? await session.Fail(executionUnitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step, message.Failed.Reason).RunAsync(cancellationToken).ConfigureAwait(false)
                     : message.BodyCase is ProviderMessage.BodyOneofCase.Completed
                         ? await session.Complete(executionUnitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false)
                         : message.BodyCase is ProviderMessage.BodyOneofCase.Progress

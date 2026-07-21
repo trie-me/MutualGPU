@@ -1,5 +1,5 @@
 import { renderResourceGrid } from './resource-grid.js';
-import { createFiberDiagnosticsOverlay } from './fiber-tree-overlay.js?v=20260721-forest16';
+import { createFiberDiagnosticsOverlay } from './fiber-tree-overlay.js?v=20260721-sharedcompute3';
 import { createScalarPayload } from './capability-form.js';
 import { renderTaskList } from './task-list.js';
 
@@ -49,6 +49,7 @@ function control(input) {
     }
     if (input.type === 'DateTimeOffset') element.placeholder = '2026-07-21T12:00:00+01:00';
   }
+  element.id = `task-input-${input.key}`; label.htmlFor = element.id;
   element.name = input.key; element.required = input.required && input.type !== 'Boolean'; if (input.default != null) element.value = input.default;
   if (input.type === 'Boolean') { const falseValue = document.createElement('input'); falseValue.type = 'hidden'; falseValue.name = input.key; falseValue.value = 'false'; element.value = 'true'; element.checked = String(input.default).toLowerCase() === 'true'; label.append(falseValue); }
   if (input.minimum != null) element.min = input.minimum; if (input.maximum != null) element.max = input.maximum;
@@ -88,16 +89,16 @@ function validateStep(selector) {
 
 async function load() {
   const response = await fetch('/api/capabilities/'); catalogue = await response.json();
-  const placeholder = new Option('Choose a task', '', true, true); placeholder.disabled = true;
+  const placeholder = new Option('Choose a task from the collection', '', true, true); placeholder.disabled = true;
   select.replaceChildren(placeholder, ...catalogue.map(capability => new Option(capability.name, capability.capabilityId)));
   renderInputs();
 }
 async function renderTasks() {
   try {
     const response = await fetch('/api/tasks/');
-    if (!response.ok) { taskList.textContent = 'Unable to refresh your tasks.'; return; }
+    if (!response.ok) { taskList.textContent = 'Your tasks are taking a quiet moment. Refresh to try again.'; return; }
     renderTaskList(taskList, await response.json(), { onChanged: renderTasks });
-  } catch { taskList.textContent = 'Unable to refresh your tasks.'; }
+  } catch { taskList.textContent = 'Your tasks are taking a quiet moment. Refresh to try again.'; }
 }
 
 async function submissionError(response) {
@@ -111,12 +112,12 @@ select.addEventListener('change', () => { renderInputs(); message.textContent = 
 form.addEventListener('submit', async event => {
   event.preventDefault();
   if (!validateStep('[data-wizard-step="2"]')) return;
-  if (!selectedResources) { message.textContent = 'Choose a resource tile before submitting.'; return; }
+  if (!selectedResources) { message.textContent = 'Choose a resource tile before adding your task to the queue.'; return; }
   const capability = selectedCapability(); const values = new FormData(form); const scalars = createScalarPayload(values.entries());
   const payload = new FormData(); payload.append('submission', JSON.stringify({ capabilityId: capability.capabilityId, contractHash: capability.contractHash, scalars, resources: selectedResources, idempotencyKey: crypto.randomUUID() }));
   [...values.entries()].filter(([, value]) => value instanceof File && value.size).forEach(([, value]) => payload.append('image', value));
   const response = await fetch('/api/tasks/', { method: 'POST', body: payload });
-  message.textContent = response.ok ? 'Task queued.' : await submissionError(response);
+  message.textContent = response.ok ? 'Your task has joined the queue. We’ll keep tracking each handoff in Your tasks.' : await submissionError(response);
   if (response.ok) {
     form.reset();
     select.value = '';
@@ -129,14 +130,18 @@ load().then(renderTasks).catch(() => { message.textContent = 'Capabilities are u
 setInterval(() => { void renderTasks(); }, 2000);
 document.querySelector('#refresh-tasks').addEventListener('click', () => { void renderTasks(); });
 
-document.querySelector('#webgpu-enrollment-toggle').addEventListener('click', () => {
+function openWebGpuEnrollment() {
   webGpuStatus.textContent = webGpuKey ? 'Save the provider password before starting your browser provider.' : '';
   webGpuDialog.showModal();
-});
+}
+
+document.querySelector('#webgpu-enrollment-toggle').addEventListener('click', openWebGpuEnrollment);
+document.querySelector('#hero-contribute').addEventListener('click', openWebGpuEnrollment);
+document.querySelector('#community-contribute').addEventListener('click', openWebGpuEnrollment);
 document.querySelector('#webgpu-enrollment-close').addEventListener('click', () => webGpuDialog.close());
 document.querySelector('#webgpu-enrollment-copy').addEventListener('click', async () => {
   if (!webGpuKey) return;
-  try { await navigator.clipboard.writeText(webGpuKey); webGpuStatus.textContent = 'Provider key copied. Keep it safe.'; }
+  try { await navigator.clipboard.writeText(webGpuKey); webGpuStatus.textContent = 'Provider password copied. Keep it safe, then start your browser provider.'; }
   catch { webGpuStatus.textContent = 'Copy was blocked. Select the key text and save it manually.'; }
 });
 webGpuNewButton.addEventListener('click', () => { void createWebGpuEnrollment(); });
@@ -152,7 +157,7 @@ async function createWebGpuEnrollment() {
     webGpuKey = issued.providerKey;
     webGpuKeyDisplay.textContent = webGpuKey;
     webGpuKeyPanel.hidden = false;
-    webGpuStatus.textContent = 'New provider password created. Copy and remember it before starting your browser provider.';
+    webGpuStatus.textContent = 'Provider password created. Copy and save it before starting your browser provider.';
   } catch (error) {
     webGpuStatus.textContent = error instanceof Error ? error.message : 'A provider password could not be created.';
   } finally {

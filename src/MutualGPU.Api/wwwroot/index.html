@@ -3,29 +3,151 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MutualGPU Work Exchange</title>
-  <link rel="stylesheet" href="/css/site.css">
-  <link rel="stylesheet" href="/css/mutualgpu.css?v=20260721-forest16">
-  <link rel="stylesheet" href="/css/fiber-tree-overlay.css?v=20260721-forest16">
+  <title>MutualGPU — Shared Compute</title>
+  <link rel="stylesheet" href="/css/site.css?v=20260721-sharedcompute1">
+  <link rel="stylesheet" href="/css/mutualgpu.css?v=20260721-sharedcompute1">
+  <link rel="stylesheet" href="/css/fiber-tree-overlay.css?v=20260721-sharedcompute3">
 </head>
 <body>
   <div id="application-shell">
-  <header><a class="brand" href="/">MutualGPU</a><span>Find a kind GPU before another cat does.</span><div class="header-actions"><a href="#task-list">My work ↗</a><button class="webgpu-toggle" id="webgpu-enrollment-toggle" type="button">Contribute Compute</button><button class="diagnostics-toggle" id="fiber-toggle" type="button">Runtime tree</button></div></header>
-  <main>
-    <section class="hero"><p class="eyebrow">MutualGPU Work Exchange</p><h1>Put idle GPU time to work.</h1><p>Choose a task, supply its inputs, then select the resources it needs.</p></section>
-    <div class="layout">
-      <section class="card request-builder" aria-labelledby="task-title"><h2 id="task-title">Create a task</h2><form id="task-form" enctype="multipart/form-data">
-        <section class="wizard-section" data-wizard-step="1"><p class="wizard-step">1. Select task</p><label>Capability <select id="capability-select" aria-label="Choose a capability"></select></label></section>
-        <section class="wizard-section" data-wizard-step="2"><p class="wizard-step">2. Supply task data</p><div id="dynamic-inputs"></div></section>
-        <section class="wizard-section" data-wizard-step="3"><p class="wizard-step">3. Select resources</p><p class="assist">Pick the minimum CPU/GPU and memory profile for this work. A busy profile queues until a matching node is ready.</p><div id="resource-picker" aria-live="polite"></div></section>
-        <button id="submit-task" type="submit" disabled>Queue task</button><p id="task-message" role="status"></p>
-      </form></section>
-      <aside class="card task-card" id="my-work" aria-labelledby="tasks-title"><div class="task-card__header"><h2 id="tasks-title">My work</h2><button id="refresh-tasks" type="button">Refresh</button></div><div id="task-list" aria-live="polite"></div></aside>
-    </div>
-  </main>
+    <header class="site-header">
+      <a class="brand" href="/"><img class="brand-mark" src="/images/mutualgpu-shared-compute.png" alt="">MutualGPU</a>
+      <p class="site-tagline">Shared compute. Limitless possibilities.</p>
+      <div class="header-actions">
+        <a class="header-link" href="#task-list">Your tasks <span aria-hidden="true">↘</span></a>
+        <button class="webgpu-toggle" id="webgpu-enrollment-toggle" type="button">Offer compute</button>
+        <button class="diagnostics-toggle" id="fiber-toggle" type="button">System activity</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">A question for the network</p>
+          <h1 id="hero-title">Can one stranger give another stranger one useful unit of computation?</h1>
+          <p class="hero-intro">MutualGPU is a shared-compute exchange for ready-to-run work. Choose a supported task, select the exact resource profile you trust, and let a willing provider carry it across the line.</p>
+          <div class="hero-actions">
+            <a class="hero-primary" href="#task-title">Ask the network <span aria-hidden="true">↘</span></a>
+            <button class="hero-secondary" id="hero-contribute" type="button">Offer one useful unit <span aria-hidden="true">↗</span></button>
+          </div>
+          <ul class="trust-list" aria-label="MutualGPU principles">
+            <li>No subscriptions or cloud checkout.</li>
+            <li>Task-first, not infrastructure-first.</li>
+            <li>Providers choose when to help.</li>
+          </ul>
+        </div>
+        <div class="hero-network">
+          <img src="/images/mutualgpu-shared-compute.png" alt="MutualGPU shared-compute mark: provider and consumer exchange one useful unit of computation.">
+          <p>Provider <span aria-hidden="true">↔</span> consumer · one useful unit of computation.</p>
+        </div>
+      </section>
+
+      <div class="principle-strip" aria-label="What to expect">
+        <p><span aria-hidden="true">01</span> Bring a task, not a container.</p>
+        <p><span aria-hidden="true">02</span> Pick the resource matrix you trust.</p>
+        <p><span aria-hidden="true">03</span> See every handoff to the result.</p>
+      </div>
+
+      <div class="layout">
+        <section class="card request-builder" aria-labelledby="task-title">
+          <div class="section-heading">
+            <p class="eyebrow">Request work</p>
+            <h2 id="task-title">Send useful work into the network.</h2>
+            <p>Four clear steps take your task from input to matching. The resource matrix stays precise; the flow around it explains exactly what happens next.</p>
+          </div>
+
+          <form id="task-form" enctype="multipart/form-data">
+            <section class="wizard-section" data-wizard-step="1" aria-labelledby="task-step-title">
+              <p class="wizard-step">Step 1 / Task type</p>
+              <h3 id="task-step-title">Choose what you want to make</h3>
+              <p class="assist">Choose a supported task. Each declares what it needs, what it returns, and the useful unit it asks a provider to run.</p>
+              <label for="capability-select">Task type <select id="capability-select" aria-label="Choose a task type"></select></label>
+            </section>
+
+            <section class="wizard-section" data-wizard-step="2" aria-labelledby="input-step-title">
+              <p class="wizard-step">Step 2 / Input</p>
+              <h3 id="input-step-title">Add the files and settings</h3>
+              <p class="assist">Fields appear once you choose a task. Required inputs are marked clearly; your selected task tells you what it expects.</p>
+              <div id="dynamic-inputs"></div>
+            </section>
+
+            <section class="wizard-section" data-wizard-step="3" aria-labelledby="resource-step-title">
+              <p class="wizard-step">Step 3 / Compute</p>
+              <h3 id="resource-step-title">Select CPU/GPU and memory</h3>
+              <p class="assist">Choose the exact tile where compute profile and unified-memory requirement meet. Ready tiles can start now; busy tiles wait for their matching node.</p>
+              <div id="resource-picker" aria-live="polite"></div>
+            </section>
+
+            <section class="submit-panel" aria-labelledby="queue-title">
+              <div>
+                <p class="wizard-step">Step 4 / Queue</p>
+                <h3 id="queue-title">Ready for the queue</h3>
+                <p class="assist">Queueing creates a task; it does not start work on this device. We’ll keep tracking every handoff in Your tasks.</p>
+              </div>
+              <button id="submit-task" type="submit" disabled>Ask for a useful unit <span aria-hidden="true">↗</span></button>
+              <p id="task-message" role="status"></p>
+            </section>
+          </form>
+        </section>
+
+        <aside class="card task-card" id="my-work" aria-labelledby="tasks-title">
+          <div class="task-card__header">
+            <div>
+              <p class="eyebrow">Your tasks</p>
+              <h2 id="tasks-title">Follow the handoff.</h2>
+            </div>
+            <button id="refresh-tasks" type="button">Refresh</button>
+          </div>
+          <p class="task-card__intro">Once you queue work, matching, provider acceptance, generation, and result delivery will all appear here.</p>
+          <div id="task-list" aria-live="polite"></div>
+        </aside>
+      </div>
+
+      <section class="community-callout" aria-labelledby="community-title">
+        <div>
+          <p class="eyebrow">Offer compute</p>
+          <h2 id="community-title">Give the network one useful unit.</h2>
+          <p>When your machine has capacity to spare, it can help another person’s task move forward. You choose when to connect, what to accept, and when to stop.</p>
+          <button class="community-callout__button" id="community-contribute" type="button">Become a provider <span aria-hidden="true">↗</span></button>
+        </div>
+        <div class="signal-stack" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+          <p>Shared capacity, offered on your terms.</p>
+        </div>
+      </section>
+    </main>
   </div>
-  <dialog class="webgpu-enrollment" id="webgpu-enrollment-dialog" aria-labelledby="webgpu-enrollment-title"><section><div class="webgpu-enrollment__header"><div><p class="eyebrow">Browser provider</p><h2 id="webgpu-enrollment-title">Contribute Compute</h2></div><button class="webgpu-enrollment__close" id="webgpu-enrollment-close" type="button" aria-label="Close enrollment">Close</button></div><p>MutualGPU lets you offer spare browser WebGPU capacity to work that needs it. Your browser remains in control: it can accept or decline work, and it only contributes while your provider is connected.</p><p class="assist">To contribute, run the browser provider and give it a provider password. If you do not have one yet, get a key below.</p><section class="webgpu-enrollment__key" id="webgpu-enrollment-key-panel" hidden aria-live="polite"><strong>Save this provider password now.</strong><p>This is the only time it is shown. Copy it somewhere safe before you start your provider.</p><code id="webgpu-enrollment-key"></code><button id="webgpu-enrollment-copy" type="button">Copy password</button></section><p id="webgpu-enrollment-status" role="status" aria-live="polite"></p><div class="webgpu-enrollment__actions"><button id="webgpu-new-enrollment" type="button">Get a key</button></div></section></dialog>
-  <aside class="fiber-overlay" id="fiber-overlay" hidden role="dialog" aria-labelledby="fiber-title"><div class="fiber-overlay__header"><strong id="fiber-title">Logical runtime forest</strong><div class="fiber-overlay__actions"><button id="fiber-reset" type="button">Reset view</button><button id="fiber-fit" type="button">Fit to screen</button><button id="fiber-task-only" type="button" aria-pressed="false">Task fibers only</button><button id="fiber-pause" type="button" aria-pressed="false">Pause</button><button id="fiber-close" type="button">Close</button></div></div><p class="assist">Scopes are larger nodes; fibers are smaller nodes. Scroll to zoom, drag to pan, click a node for detail.</p><div class="fiber-legend" aria-label="Forest legend"><span><i class="fiber-legend__scope"></i>Operational scope</span><span><i class="fiber-legend__running"></i>Active work</span><span><i class="fiber-legend__completed"></i>Completed work</span><span><i class="fiber-legend__cancelled"></i>Cancelled work</span><span><i class="fiber-legend__faulted"></i>Faulted work</span></div><p class="fiber-overlay__connection" id="fiber-status" role="status">Closed</p><p class="fiber-overlay__summary" id="fiber-summary"></p><div class="fiber-history" id="fiber-history" aria-label="Observed snapshot history"></div><section class="fiber-simulations" id="fiber-simulations" hidden aria-label="Simulated registrations"></section><canvas id="fiber-tree" class="fiber-forest" aria-label="Live logical runtime forest"></canvas><p id="fiber-selection" class="fiber-overlay__selection" aria-live="polite"></p><section class="fiber-tree-detail" id="fiber-tree-detail" hidden aria-label="Logical runtime tree detail"><div><strong>Logical runtime tree</strong><button id="fiber-tree-detail-close" type="button">Close tree</button></div><div id="fiber-tree-detail-body"></div></section></aside>
-  <script type="module" src="/js/mutualgpu.js?v=20260721-webgpu2"></script>
+
+  <dialog class="webgpu-enrollment" id="webgpu-enrollment-dialog" aria-labelledby="webgpu-enrollment-title">
+    <section>
+      <div class="webgpu-enrollment__header">
+      <div><p class="eyebrow">Offer compute</p><h2 id="webgpu-enrollment-title">Give the network one useful unit.</h2></div>
+        <button class="webgpu-enrollment__close" id="webgpu-enrollment-close" type="button" aria-label="Close contribution setup">Close</button>
+      </div>
+      <p>MutualGPU lets you offer spare browser WebGPU capacity to supported community tasks. Your browser remains in control: it can accept or decline work, and it only contributes while your provider is connected.</p>
+      <ol class="contribution-steps">
+        <li><strong>Understand the commitment.</strong><span>Only supported tasks arrive, and you can disconnect whenever you like.</span></li>
+        <li><strong>Create and save a provider password.</strong><span>It is shown once, so keep it somewhere safe before moving on.</span></li>
+        <li><strong>Connect your provider.</strong><span>When it is online, it can offer useful capacity to someone else’s task.</span></li>
+      </ol>
+      <p class="assist">To contribute, run the browser provider and give it a provider password. If you do not have one yet, create one below.</p>
+      <section class="webgpu-enrollment__key" id="webgpu-enrollment-key-panel" hidden aria-live="polite">
+        <strong>Save this provider password now.</strong>
+        <p>This is the only time it is shown. Copy it somewhere safe before you start your provider.</p>
+        <code id="webgpu-enrollment-key"></code>
+        <button id="webgpu-enrollment-copy" type="button">Copy password</button>
+      </section>
+      <p id="webgpu-enrollment-status" role="status" aria-live="polite"></p>
+      <div class="webgpu-enrollment__actions"><button id="webgpu-new-enrollment" type="button">Create provider password</button></div>
+    </section>
+  </dialog>
+
+  <aside class="fiber-overlay" id="fiber-overlay" hidden role="dialog" aria-labelledby="fiber-title">
+    <div class="fiber-overlay__header"><strong id="fiber-title">System activity</strong><div class="fiber-overlay__actions"><button id="fiber-reset" type="button">Reset view</button><button id="fiber-fit" type="button">Fit to screen</button><button id="fiber-task-only" type="button" aria-pressed="false">Task activity only</button><button id="fiber-pause" type="button" aria-pressed="false">Pause</button><button id="fiber-close" type="button">Close</button></div></div>
+    <p class="assist">For the curious: scopes are larger nodes and fibers are smaller nodes. Scroll to zoom, drag to pan, and click a node for detail.</p>
+    <div class="fiber-legend" aria-label="System activity legend"><span><i class="fiber-legend__scope"></i>Operational scope</span><span><i class="fiber-legend__running"></i>Active work</span><span><i class="fiber-legend__completed"></i>Completed work</span><span><i class="fiber-legend__cancelled"></i>Cancelled work</span><span><i class="fiber-legend__faulted"></i>Faulted work</span></div>
+    <p class="fiber-overlay__connection" id="fiber-status" role="status">Closed</p><p class="fiber-overlay__summary" id="fiber-summary"></p><div class="fiber-history" id="fiber-history" aria-label="Observed snapshot history"></div><section class="fiber-simulations" id="fiber-simulations" hidden aria-label="Simulated registrations"></section><canvas id="fiber-tree" class="fiber-forest" aria-label="Live logical runtime forest"></canvas><p id="fiber-selection" class="fiber-overlay__selection" aria-live="polite"></p><section class="fiber-tree-detail" id="fiber-tree-detail" hidden aria-label="Logical runtime tree detail"><div><strong>Logical runtime tree</strong><button id="fiber-tree-detail-close" type="button">Close tree</button></div><div id="fiber-tree-detail-body"></div></section>
+  </aside>
+  <script type="module" src="/js/mutualgpu.js?v=20260721-sharedcompute1"></script>
 </body>
 </html>

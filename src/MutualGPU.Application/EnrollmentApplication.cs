@@ -23,7 +23,7 @@ public sealed class EnrollmentApplication(IExecutionUnitRepository repository, I
         var conflicts = canonical
             .Select(candidate => existingDefinitions.FirstOrDefault(existing => StringComparer.Ordinal.Equals(existing.Name, candidate.Name)) is { } existing &&
                 !StringComparer.Ordinal.Equals(existing.ContractHash, candidate.ContractHash)
-                    ? new CapabilityContractConflict(existing.Id, CapabilityContracts.GetDelta(existing, candidate))
+                    ? new CapabilityContractConflict(existing.Id, existing.Name, CapabilityContracts.GetDelta(existing, candidate))
                     : null)
             .Where(static conflict => conflict is not null)
             .Cast<CapabilityContractConflict>()

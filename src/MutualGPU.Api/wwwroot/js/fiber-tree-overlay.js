@@ -1,4 +1,4 @@
-const COLORS = Object.freeze({ scope: '#111b38', running: '#4eaa75', terminal: '#5b315d', faulted: '#ff5c5c', cancelled: '#e99d20', edge: '#c6ced8', text: '#172033', muted: '#5a6371' });
+const COLORS = Object.freeze({ scope: '#77b8ff', running: '#68e39b', terminal: '#b785ff', faulted: '#ff9bee', cancelled: '#ffce6b', edge: '#4d8fca', text: '#d9efff', muted: '#8fa9cd', selected: '#e0c5ff' });
 const TASK_SCOPE_NAMES = new Set(['scheduler-evaluation', 'task-attempt', 'task-acceptance', 'task-phase', 'task-input-download', 'task-result-upload', 'task-completion', 'task-failure', 'simulated-task', 'simulated-input', 'simulated-inference', 'simulated-packaging', 'simulated-upload']);
 const HISTORY_KEY = 'mutualgpu.fiber-history.v1';
 const HISTORY_LIMIT = 24;
@@ -120,7 +120,7 @@ function createForestRenderer(canvas, onNodeClick) {
       const running = node.kind === 'fiber' && node.state.includes('running');
       const pulse = running ? 1.5 + Math.sin(Date.now() / 220) * 1.5 : 0;
       context.beginPath(); context.arc(node.x, node.y, (node.kind === 'scope' ? 16 : 11) + pulse, 0, Math.PI * 2); context.fill();
-      if (node.id === selected) { context.strokeStyle = '#ff5c5c'; context.lineWidth = 3; context.beginPath(); context.arc(node.x, node.y, node.kind === 'scope' ? 21 : 16, 0, Math.PI * 2); context.stroke(); }
+      if (node.id === selected) { context.strokeStyle = COLORS.selected; context.lineWidth = 3; context.beginPath(); context.arc(node.x, node.y, node.kind === 'scope' ? 21 : 16, 0, Math.PI * 2); context.stroke(); }
       context.fillStyle = COLORS.text; context.globalAlpha = node.opacity * terminalFade; context.font = node.kind === 'scope' ? '700 13px ui-sans-serif, system-ui' : '12px ui-sans-serif, system-ui';
       const label = node.kind === 'fiber' ? `${node.name} · ${node.state}` : node.name;
       context.fillText(label, node.x + 24, node.y + 4);

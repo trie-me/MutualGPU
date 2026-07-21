@@ -15,6 +15,7 @@ namespace MutualGPU.Api;
 public static class ProviderWebSocketEndpoints
 {
     private const int MaximumMessageBytes = 64 * 1024;
+    public const string CapabilityIdentityConflictCode = "capability_identity_conflict";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static async Task Enroll(
@@ -45,10 +46,33 @@ public static class ProviderWebSocketEndpoints
             context.Response.StatusCode = StatusCodes.Status400BadRequest;
             return;
         }
-        if (result is not EnrollResult.Enrolled enrolled) { context.Response.StatusCode = StatusCodes.Status409Conflict; return; }
+        if (result is EnrollResult.Conflict conflict)
+        {
+            context.Response.StatusCode = StatusCodes.Status409Conflict;
+            context.Response.ContentType = "application/problem+json";
+            await JsonSerializer.SerializeAsync(context.Response.Body, new EnrollmentConflictProblem(
+                Type: "https://mutualgpu.com/problems/capability-identity-conflict",
+                Title: "Capability identity conflict",
+                Status: StatusCodes.Status409Conflict,
+                Code: CapabilityIdentityConflictCode,
+                Detail: "A capability with the same name is already enrolled with a different execution contract.",
+                Conflicts: conflict.Conflicts.Select(static item => new EnrollmentConflictDetail(item.CapabilityName, item.Paths)).ToArray()), JsonOptions, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (result is not EnrollResult.Enrolled enrolled) { context.Response.StatusCode = StatusCodes.Status500InternalServerError; return; }
         context.Response.ContentType = "application/x-protobuf";
         await context.Response.Body.WriteAsync(new EnrollResponse { ExecutionUnitId = enrolled.Unit.Id.Value.ToString("D") }.ToByteArray(), cancellationToken).ConfigureAwait(false);
     }
+
+    private sealed record EnrollmentConflictProblem(
+        string Type,
+        string Title,
+        int Status,
+        string Code,
+        string Detail,
+        IReadOnlyList<EnrollmentConflictDetail> Conflicts);
+
+    private sealed record EnrollmentConflictDetail(string CapabilityName, IReadOnlyList<string> Paths);
 
     public static async Task Connect(
         HttpContext context,
@@ -157,7 +181,7 @@ public static class ProviderWebSocketEndpoints
         {
             ProviderMessage.BodyOneofCase.Accepted => await sessions.Accept(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), message.Accepted.TaskHandle, DateTimeOffset.UtcNow).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Rejected => await sessions.Reject(unitId, ParseTaskId(message.Rejected.TaskId), ParseAttemptId(message.Rejected.AttemptId), message.Rejected.TaskHandle, message.Rejected.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
-            ProviderMessage.BodyOneofCase.Failed => await sessions.Fail(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step).RunAsync(cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.Failed => await sessions.Fail(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step, message.Failed.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Completed => await sessions.Complete(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Progress => sessions.ReportProgress(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), message.Progress.TaskHandle, new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message)),
             ProviderMessage.BodyOneofCase.ResultUpload => await IssueUploadAsync(assignments, uploads, socket, sendGate, unitId, message.ResultUpload, cancellationToken).ConfigureAwait(false),

@@ -19,7 +19,8 @@ public sealed record TaskDto(
     string? FailureStep,
     bool CanReevaluate,
     bool CanRetrieveResult,
-    TaskProgressDto? Progress = null);
+    TaskProgressDto? Progress = null,
+    string? FailureReason = null);
 
 public sealed record TaskProgressDto(ulong SequenceNumber, DateTimeOffset ObservedAt, string? Phase, double? Percent, string? Message);
 

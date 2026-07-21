@@ -231,13 +231,14 @@ public static class MutualGpuEndpoints
 
     private static TaskDto ToDto(TaskSummary task, TaskProgress? progress = null) => new(
         task.TaskId.Value, task.CapabilityName, task.CreatedAt, task.Resources,
-        task.Status, task.AttemptCount, task.FailureStep, task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress));
+        task.Status, task.AttemptCount, task.FailureStep, task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress), task.FailureReason);
 
     private static TaskDto ToDto(TaskRequest task, TaskProgress? progress = null) => new(
         task.Id.Value, task.Capability.Name, task.CreatedAt, task.Resources,
         task.Status, task.AssignmentCount,
         task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureStep,
-        task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress));
+        task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress),
+        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureReason);
 
     private static TaskProgressDto? ToDto(TaskProgress? progress) => progress is null ? null : new TaskProgressDto(progress.SequenceNumber, progress.ObservedAt, progress.Phase, progress.Percent, progress.Message);
 

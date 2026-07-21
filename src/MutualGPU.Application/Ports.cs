@@ -35,7 +35,8 @@ public sealed record TaskSummary(
     MachineSpecifications Resources,
     MutualGPU.Domain.TaskStatus Status,
     int AttemptCount,
-    string? FailureStep = null);
+    string? FailureStep = null,
+    string? FailureReason = null);
 
 public interface ITaskSummaryReader
 {

@@ -31,7 +31,7 @@ public sealed class SchedulerApplication(
                 : null;
             if (!assignments.TryDeliver(candidate.ExecutionUnitId, new ProviderAssignment(task.Id, attempt.Id, attempt.Handle, task.Parameters.Scalars, input)))
             {
-                task.Requeue(attempt.Id, attempt.Handle, AttemptState.Revoked, "delivery_failed");
+                task.Requeue(attempt.Id, attempt.Handle, AttemptState.Revoked, "delivery_failed", "The provider connection closed before the task could be delivered.");
                 await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(candidate.ExecutionUnitId, task.Id, attempt.Id);
                 continue;

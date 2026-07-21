@@ -4,14 +4,20 @@ import { NodeGrpcTransport } from "@mutualgpu/provider-node";
 const apiBaseUrl = required("MUTUALGPU_API_URL");
 const presharedKey = required("MUTUALGPU_PROVIDER_KEY");
 const executionUnitId = required("MUTUALGPU_EXECUTION_UNIT_ID");
+const capabilityName = process.env.MUTUALGPU_DEMO_CAPABILITY ?? "exasplat";
+const machineTier = process.env.MUTUALGPU_DEMO_MACHINE_TIER ?? "Large";
+const computeTier = process.env.MUTUALGPU_DEMO_COMPUTE_TIER ?? "Large";
+const memoryGiB = positiveInteger(process.env.MUTUALGPU_DEMO_MEMORY_GIB ?? "32", "MUTUALGPU_DEMO_MEMORY_GIB");
+const resultSourceUrl = new URL(process.env.MUTUALGPU_DEMO_RESULT_URL ?? "https://github.com/jwg4/file_examples/raw/refs/heads/master/valid/files.zip");
 const apiUrl = new URL(apiBaseUrl);
 if (apiUrl.protocol !== "https:") throw new TypeError("MUTUALGPU_API_URL must use https.");
 if (!isGuid(executionUnitId)) throw new TypeError("MUTUALGPU_EXECUTION_UNIT_ID must be a GUID configured by the API host.");
+if (resultSourceUrl.protocol !== "https:") throw new TypeError("MUTUALGPU_DEMO_RESULT_URL must use https.");
 
 const definition = {
-  machine: { tier: "Large", specifications: { computeTier: "Large", memoryGiB: 32 } },
+  machine: { tier: machineTier, specifications: { computeTier, memoryGiB } },
   capabilities: [{
-    name: "tripo-splat",
+    name: capabilityName,
     inputs: [
       {
         key: "image_url",
@@ -66,37 +72,39 @@ const definition = {
         type: "Boolean",
         required: false,
         label: "Enable safety checker",
-        description: "Run safety checking on the input image before inference.",
-        default: "true"
+        description: "The demo provider does not bundle a qualified safety checker; submit false.",
+        default: "false"
       }
     ],
     output: { hasMetadata: true },
-    description: "TripoSplat-style image-to-splat form exercised by the local exchange demo."
+    description: `${capabilityName} synthetic image-to-splat form exercised by the live exchange demo.`
   }]
 };
 
 const provider = new ProviderClient(new NodeGrpcTransport(apiUrl, presharedKey));
 await provider.enroll(definition);
-console.log("MutualGPU local demo provider is connected. Open the requestor UI and submit a task.");
+console.log(`MutualGPU demo provider '${capabilityName}' (${computeTier}, ${memoryGiB} GiB) is connected.`);
 
 await provider.connect(async task => {
   console.log(`Running synthetic demo task ${task.taskId} (attempt ${task.attemptId}).`);
   await task.accept();
   await task.reportProgress({ phase: "prepare synthetic execution", percent: 10, message: "Preparing the local demonstration result." });
   await pause(1_500);
-  await task.reportProgress({ phase: "simulate TripoSplat inference", percent: 60, message: "Representing the inference portion of the demo." });
+  await task.reportProgress({ phase: `simulate ${capabilityName} inference`, percent: 60, message: "Representing the inference portion of the demo." });
   await pause(3_500);
   await task.reportProgress({ phase: "package Gaussian splat", percent: 90, message: "Packaging the synthetic provider result." });
 
-  // Valid empty ZIP (EOCD only). The API validates this exactly as it validates a
-  // real handler result, while making no claim that local GPU work took place.
-  const resultZip = Uint8Array.from(Buffer.from("UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "base64"));
+  // The public fixture is fetched and then published through MutualGPU's ordinary
+  // result upload. Requestors therefore receive the normal presigned result link,
+  // not an untrusted direct provider URL.
+  const resultZip = await downloadResultZip(resultSourceUrl);
   const { receipt } = await task.uploadResult({
     resultZip,
     metadata: {
-      provider: "node-local-demo",
+      provider: `node-live-demo:${capabilityName}`,
       taskId: task.taskId,
-      message: "Synthetic local-demo result; no GPU workload was executed."
+      sourceResultUrl: resultSourceUrl.href,
+      message: "Synthetic demo result; no GPU workload was executed."
     }
   });
   await task.complete(receipt);
@@ -111,6 +119,23 @@ function required(name) {
 
 function isGuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function positiveInteger(value, name) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new TypeError(`${name} must be a positive integer.`);
+  return parsed;
+}
+
+async function downloadResultZip(url) {
+  const response = await fetch(url, { headers: { Accept: "application/zip" } });
+  if (!response.ok) throw new Error(`Demo result download failed (${response.status}) from ${url}.`);
+  const length = Number.parseInt(response.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(length) && length > 50 * 1024 * 1024) throw new Error("Demo result ZIP exceeds MutualGPU's 50 MiB result limit.");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error(`Demo result from ${url} is not a ZIP file.`);
+  if (bytes.length > 50 * 1024 * 1024) throw new Error("Demo result ZIP exceeds MutualGPU's 50 MiB result limit.");
+  return bytes;
 }
 
 function pause(milliseconds) {

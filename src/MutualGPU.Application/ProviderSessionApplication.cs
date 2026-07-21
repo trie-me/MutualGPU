@@ -10,10 +10,10 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
         Transition(unitId, taskId, attemptId, handle, task => task.Accept(attemptId, handle, acceptedAt), remove: false);
 
     public Latent<bool> Reject(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string? reason) =>
-        Transition(unitId, taskId, attemptId, handle, task => task.Requeue(attemptId, handle, AttemptState.Rejected, reason), remove: true);
+        Transition(unitId, taskId, attemptId, handle, task => task.Requeue(attemptId, handle, AttemptState.Rejected, "provider_rejected", reason), remove: true);
 
-    public Latent<bool> Fail(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string? step) =>
-        Transition(unitId, taskId, attemptId, handle, task => task.Requeue(attemptId, handle, AttemptState.Failed, step), remove: true);
+    public Latent<bool> Fail(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string? step, string? reason) =>
+        Transition(unitId, taskId, attemptId, handle, task => task.Requeue(attemptId, handle, AttemptState.Failed, step, reason), remove: true);
 
     public Latent<bool> Complete(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt) => Latent<bool>.DelayAsync(async cancellationToken =>
     {
@@ -68,7 +68,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
         {
             try
             {
-                active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "disconnect_recovery_expired");
+                active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "disconnect_recovery_expired", "The provider disconnected and did not reconnect before the recovery window expired.");
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
                 changed++;
@@ -87,7 +87,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
             try
             {
                 if (active.Task.Attempts.SingleOrDefault(attempt => attempt.Id == active.Attempt.Id)?.State is not AttemptState.Disconnected) continue;
-                active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "disconnect_recovery_expired");
+                active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "disconnect_recovery_expired", "The provider disconnected and did not reconnect before the recovery window expired.");
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(unitId, active.Task.Id, active.Attempt.Id);
                 changed++;
@@ -105,7 +105,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
         {
             try
             {
-                active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "acknowledgement_timeout");
+                active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "acknowledgement_timeout", "The provider did not accept the task before the acknowledgement deadline.");
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
                 changed = true;

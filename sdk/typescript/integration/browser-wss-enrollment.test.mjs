@@ -71,7 +71,7 @@ function canonicalDefinition()
         { key: "guidance_scale", type: "Number", required: false, label: "Guidance scale", description: "Classifier-free guidance strength; values at or below 1 disable guidance.", default: "3" },
         { key: "output_format", type: "String", required: false, label: "Output format", description: "Generated Gaussian-splat file format.", default: "ply", allowedValues: ["ply", "splat"] },
         { key: "seed", type: "Integer", required: false, label: "Seed", description: "Optional random seed for reproducible output. Leave empty for a random seed." },
-        { key: "enable_safety_checker", type: "Boolean", required: false, label: "Enable safety checker", description: "Run safety checking on the input image before inference.", default: "true" }
+        { key: "enable_safety_checker", type: "Boolean", required: false, label: "Enable safety checker", description: "The browser provider does not bundle a qualified safety checker; submit false.", default: "false" }
       ],
       output: { hasMetadata: true },
       description: "TripoSplat-style image-to-splat form exercised by the local exchange demo."

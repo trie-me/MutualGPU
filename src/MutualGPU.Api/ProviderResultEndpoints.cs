@@ -86,7 +86,7 @@ public static class ProviderResultEndpoints
     /// </summary>
     private static async Task<IResult> ResultValidationFailedAsync(ProviderSessionApplication session, ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string code, CancellationToken cancellationToken)
     {
-        await session.Fail(unitId, taskId, attemptId, handle, "result_validation").RunAsync(cancellationToken).ConfigureAwait(false);
+        await session.Fail(unitId, taskId, attemptId, handle, "result_validation", code).RunAsync(cancellationToken).ConfigureAwait(false);
         return TypedResults.BadRequest(new { code });
     }
 
