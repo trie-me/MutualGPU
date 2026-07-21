@@ -39,6 +39,16 @@ The Development host uses an in-memory object store when `MutualGPU:Backblaze` i
 
 `ProviderCorsOrigins` is the explicit allow-list for Chrome provider HTTP enrollment and result uploads. Leave it empty when no browser provider is used; it does not permit arbitrary origins.
 
+To enable the hosted **Enroll my WebGPU** dialog, set a demo enrollment password. The endpoint is disabled unless this value is supplied. On ECS, use the corresponding `MutualGPU__WebGpuEnrollment__Password` task environment variable.
+
+```json
+"WebGpuEnrollment": {
+  "Password": "choose-a-demo-password"
+}
+```
+
+The dialog confirms WebGPU support before issuing a new provider key. The raw key is returned once to the browser; the durable registry stores only its binding and digest.
+
 MutualGPU rejects plaintext HTTP in every environment. For local development, install the .NET development certificate once and run an HTTPS listener:
 
 ```text

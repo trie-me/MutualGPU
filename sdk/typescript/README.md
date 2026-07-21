@@ -76,7 +76,7 @@ The automated `npm test` suite covers the remaining SDK control-message and resu
 
 ## Real-browser HTTPS and WSS integration test
 
-`npm run test:browser-integration` launches Chromium, bundles the checked-in browser SDK into the page at `MUTUALGPU_API_URL`, then uses `BrowserWebSocketTransport` and `ProviderClient` in that browser page. It performs the real authenticated HTTPS enrollment and waits for the real WSS `Connected` handshake. It uses the same canonical `tripo-splat` capability contract as the Node demo.
+`npm run test:browser-integration` launches Chromium, bundles the checked-in browser SDK into the page at `MUTUALGPU_API_URL`, then uses `BrowserWebSocketTransport` and `ProviderClient` in that browser page. It performs direct provider enrollment with its configured test key and waits for the real WSS `Connected` handshake. It deliberately does not mint a key or invoke the password-gated WebGPU enrollment UI.
 
 ```text
 MUTUALGPU_API_URL=https://mutualgpu.com \

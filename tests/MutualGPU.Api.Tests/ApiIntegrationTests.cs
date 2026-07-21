@@ -60,6 +60,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("/css/fiber-tree-overlay.css", page, StringComparison.Ordinal);
         Assert.Contains("class=\"layout\"", page, StringComparison.Ordinal);
         Assert.Contains("fiber-overlay", page, StringComparison.Ordinal);
+        Assert.Contains("webgpu-enrollment-toggle", page, StringComparison.Ordinal);
+        Assert.Contains("webgpu-enrollment-key", page, StringComparison.Ordinal);
         Assert.True(snapshot.IsSuccessStatusCode);
         Assert.Contains("roots", await snapshot.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
@@ -88,17 +90,20 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         var overlay = Path.Combine(root, "js", "fiber-tree-overlay.js");
         var form = Path.Combine(root, "js", "capability-form.js");
         var tasks = Path.Combine(root, "js", "task-list.js");
+        var browserSdk = Path.Combine(root, "js", "mutualgpu-provider-sdk.js");
 
         Assert.True(File.Exists(module));
         Assert.True(File.Exists(overlay));
         Assert.True(File.Exists(form));
         Assert.True(File.Exists(tasks));
+        Assert.True(File.Exists(browserSdk));
         var source = File.ReadAllText(module);
         Assert.Contains("renderResourceGrid", source, StringComparison.Ordinal);
         Assert.Contains("resource-tile", source, StringComparison.Ordinal);
         Assert.Contains("createFiberDiagnosticsOverlay", File.ReadAllText(overlay), StringComparison.Ordinal);
         Assert.Contains("createScalarPayload", File.ReadAllText(form), StringComparison.Ordinal);
         Assert.Contains("renderTaskList", File.ReadAllText(tasks), StringComparison.Ordinal);
+        Assert.Contains("BrowserWebSocketTransport", File.ReadAllText(browserSdk), StringComparison.Ordinal);
     }
 
     [Fact]

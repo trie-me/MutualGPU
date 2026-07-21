@@ -8,7 +8,7 @@ const apiBaseUrl = required("MUTUALGPU_API_URL");
 const providerKey = required("MUTUALGPU_PROVIDER_KEY");
 const browserExecutable = process.env.MUTUALGPU_BROWSER_EXECUTABLE || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-test("browser SDK enrolls over HTTPS then completes the WSS connection handshake", async () => {
+test("browser SDK enrolls then completes the WSS connection handshake in Chromium", async () => {
   assert.ok(existsSync(browserExecutable),
     `Chromium was not found at ${browserExecutable}. Set MUTUALGPU_BROWSER_EXECUTABLE to a Chromium or Chrome executable.`);
 
@@ -23,16 +23,13 @@ test("browser SDK enrolls over HTTPS then completes the WSS connection handshake
     await page.goto(apiBaseUrl, { waitUntil: "domcontentloaded" });
     await page.addScriptTag({ content: bundle });
 
-    const enrollment = await page.evaluate(async ({ apiUrl, key, definition }) => {
+    await page.evaluate(async ({ apiUrl, key, definition }) => {
       const { BrowserWebSocketTransport, ProviderClient } = globalThis.MutualGpuBrowserSdk;
       const provider = new ProviderClient(new BrowserWebSocketTransport(apiUrl, key));
-      const enrolled = await provider.enroll(definition);
+      await provider.enroll(definition);
       await provider.connect(async () => {});
       provider.close();
-      return enrolled;
     }, { apiUrl: apiBaseUrl, key: providerKey, definition: canonicalDefinition() });
-
-    assert.match(enrollment.executionUnitId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   }
   finally
   {

@@ -23,7 +23,6 @@ const webGpuStatus = document.querySelector('#webgpu-enrollment-status');
 const webGpuKeyPanel = document.querySelector('#webgpu-enrollment-key-panel');
 const webGpuKeyDisplay = document.querySelector('#webgpu-enrollment-key');
 const webGpuEnrollButton = document.querySelector('#webgpu-enroll');
-const webGpuNewButton = document.querySelector('#webgpu-new-enrollment');
 
 function control(input) {
   const label = document.createElement('label'); label.textContent = input.label;
@@ -136,7 +135,7 @@ setInterval(() => { void renderTasks(); }, 2000);
 document.querySelector('#refresh-tasks').addEventListener('click', () => { void renderTasks(); });
 
 document.querySelector('#webgpu-enrollment-toggle').addEventListener('click', () => {
-  webGpuStatus.textContent = webGpuProvider ? 'This browser is already connected. Choose New enrollment to issue another key.' : webGpuSupportMessage();
+  webGpuStatus.textContent = webGpuProvider ? 'A new enrollment will mint a new provider key and replace this page’s current connection.' : webGpuSupportMessage();
   webGpuDialog.showModal();
 });
 document.querySelector('#webgpu-enrollment-close').addEventListener('click', () => webGpuDialog.close());
@@ -145,19 +144,16 @@ document.querySelector('#webgpu-enrollment-copy').addEventListener('click', asyn
   try { await navigator.clipboard.writeText(webGpuKey); webGpuStatus.textContent = 'Provider key copied. Keep it safe.'; }
   catch { webGpuStatus.textContent = 'Copy was blocked. Select the key text and save it manually.'; }
 });
-webGpuForm.addEventListener('submit', event => { event.preventDefault(); void enrollWebGpu(false); });
-webGpuNewButton.addEventListener('click', () => { void enrollWebGpu(true); });
+webGpuForm.addEventListener('submit', event => { event.preventDefault(); void enrollWebGpu(); });
 
 function webGpuSupportMessage() {
   return navigator.gpu ? 'WebGPU detected. Enter the enrollment password to continue.' : 'WebGPU is unavailable in this browser. Use a current Chromium-based browser with WebGPU enabled.';
 }
 
-async function enrollWebGpu(forceNew) {
+async function enrollWebGpu() {
   if (!navigator.gpu) { webGpuStatus.textContent = webGpuSupportMessage(); return; }
-  if (!forceNew && webGpuProvider) { webGpuStatus.textContent = 'This browser is already enrolled and connected.'; return; }
   if (!webGpuForm.reportValidity()) return;
   webGpuEnrollButton.disabled = true;
-  webGpuNewButton.disabled = true;
   webGpuStatus.textContent = 'Checking WebGPU support…';
   try {
     const adapter = await navigator.gpu.requestAdapter();
@@ -182,7 +178,6 @@ async function enrollWebGpu(forceNew) {
     webGpuStatus.textContent = error instanceof Error ? error.message : 'WebGPU enrollment failed.';
   } finally {
     webGpuEnrollButton.disabled = false;
-    webGpuNewButton.disabled = false;
   }
 }
 
