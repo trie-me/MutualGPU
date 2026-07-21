@@ -4,7 +4,13 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "node --test packages/core/test/*.test.mjs packages/node/test/*.test.mjs packages/web/test/*.test.mjs",
+    "test:browser-integration": "node --test integration/browser-wss-enrollment.test.mjs",
+    "build:browser-bundle": "node scripts/build-browser-bundle.mjs",
     "smoke:node": "node samples/node-smoke-provider.mjs",
     "demo:node": "node samples/node-demo-provider.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.8",
+    "playwright-core": "^1.55.0"
   }
 }

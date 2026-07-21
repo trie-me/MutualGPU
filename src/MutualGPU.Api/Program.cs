@@ -41,6 +41,7 @@ builder.Services.AddCors(options => options.AddPolicy("mutualgpu-provider", poli
 }));
 
 var providerCredentials = builder.Configuration.GetSection("MutualGPU:Providers").Get<ProviderCredential[]>() ?? [];
+var webGpuEnrollment = builder.Configuration.GetSection("MutualGPU:WebGpuEnrollment").Get<WebGpuEnrollmentOptions>() ?? new(null);
 var providerKeys = providerCredentials
     .Where(static credential => Guid.TryParse(credential.ExecutionUnitId, out _) && !String.IsNullOrWhiteSpace(credential.PresharedKey))
     .ToDictionary(static credential => new ExecutionUnitId(Guid.Parse(credential.ExecutionUnitId)), static credential => credential.PresharedKey);
@@ -95,9 +96,12 @@ else if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
 else
 {
     builder.Services.AddSingleton(_ => new ConfiguredPresharedKeyRegistry(providerKeys, objectKeys));
+    builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
     builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
     builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
 }
+builder.Services.AddSingleton(webGpuEnrollment);
+builder.Services.AddSingleton<ProviderKeyIssuer>();
 builder.Services.AddSingleton<ObjectStoreExecutionUnitRepository>();
 builder.Services.AddSingleton<IExecutionUnitRepository>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
 builder.Services.AddSingleton<ICapabilityReader>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
@@ -195,6 +199,7 @@ app.MapGet("/health/ready", (StartupProjectionState state) => state.IsReady
 app.MapGrpcService<ProviderControlService>();
 app.MapPost("/provider/enroll", ProviderWebSocketEndpoints.Enroll);
 app.Map("/provider/connect", ProviderWebSocketEndpoints.Connect);
+app.MapPost("/api/webgpu-enrollments", WebGpuEnrollmentEndpoints.Create);
 app.MapPost("/provider/tasks/{taskId:guid}/attempts/{attemptId:guid}/upload-token", ProviderResultEndpoints.IssueToken);
 app.MapPost("/provider/tasks/{taskId:guid}/attempts/{attemptId:guid}/result", ProviderResultEndpoints.Upload);
 app.MapPost("/provider/tasks/{taskId:guid}/attempts/{attemptId:guid}/complete/{receipt}", ProviderResultEndpoints.Complete);

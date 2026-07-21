@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using MutualGPU.Application;
@@ -7,10 +8,10 @@ using MutualGPU.Domain;
 namespace MutualGPU.Infrastructure;
 
 /// <summary>Static MVP registry. Keys are configuration values and are compared in fixed time.</summary>
-public sealed class ConfiguredPresharedKeyRegistry : IExecutionUnitAuthenticator, IExecutionUnitKeyResolver
+public sealed class ConfiguredPresharedKeyRegistry : IExecutionUnitKeyRegistry
 {
-    private readonly IReadOnlyDictionary<ExecutionUnitId, byte[]> keys;
-    private readonly IReadOnlyDictionary<ExecutionUnitId, string> configuredKeys;
+    private readonly ConcurrentDictionary<ExecutionUnitId, byte[]> keys;
+    private readonly ConcurrentDictionary<ExecutionUnitId, string> configuredKeys;
     private readonly MutualGpuObjectKeys objectKeys;
 
     public ConfiguredPresharedKeyRegistry(
@@ -19,12 +20,22 @@ public sealed class ConfiguredPresharedKeyRegistry : IExecutionUnitAuthenticator
     {
         ArgumentNullException.ThrowIfNull(configuredKeys);
         ArgumentNullException.ThrowIfNull(objectKeys);
-        this.configuredKeys = configuredKeys;
+        this.configuredKeys = new ConcurrentDictionary<ExecutionUnitId, string>(configuredKeys);
         this.objectKeys = objectKeys;
-        keys = configuredKeys.ToDictionary(
+        keys = new ConcurrentDictionary<ExecutionUnitId, byte[]>(configuredKeys.ToDictionary(
             static pair => pair.Key,
             static pair => Encoding.UTF8.GetBytes(pair.Value),
-            EqualityComparer<ExecutionUnitId>.Default);
+            EqualityComparer<ExecutionUnitId>.Default));
+    }
+
+    /// <summary>Development/in-memory key binding used when no durable registry is configured.</summary>
+    public Task ProvisionAsync(ExecutionUnitId executionUnitId, string presharedKey, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (String.IsNullOrWhiteSpace(presharedKey)) throw new ArgumentException("A provider key is required.", nameof(presharedKey));
+        if (!configuredKeys.TryAdd(executionUnitId, presharedKey)) throw new InvalidOperationException("The execution unit key already exists.");
+        keys[executionUnitId] = Encoding.UTF8.GetBytes(presharedKey);
+        return Task.CompletedTask;
     }
 
     public Task<ExecutionUnitId?> AuthenticateAsync(string? presharedKey, CancellationToken cancellationToken)

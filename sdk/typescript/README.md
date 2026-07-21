@@ -74,6 +74,25 @@ On Node versions that do not use the platform trust store by default, prepend `N
 
 The automated `npm test` suite covers the remaining SDK control-message and result-upload paths with canonical protocol fixtures. Use a public HTTPS endpoint only for a later test where the SDK process is genuinely on another network.
 
+## Real-browser HTTPS and WSS integration test
+
+`npm run test:browser-integration` launches Chromium, bundles the checked-in browser SDK into the page at `MUTUALGPU_API_URL`, then uses `BrowserWebSocketTransport` and `ProviderClient` in that browser page. It performs the real authenticated HTTPS enrollment and waits for the real WSS `Connected` handshake. It uses the same canonical `tripo-splat` capability contract as the Node demo.
+
+```text
+MUTUALGPU_API_URL=https://mutualgpu.com \
+MUTUALGPU_PROVIDER_KEY=your-provider-key \
+MUTUALGPU_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+npm run test:browser-integration
+```
+
+For the protected demo key file, run this repeatable wrapper from `examples/MutualGPU`:
+
+```text
+just browser-sdk-integration-file /private/tmp/mutualgpu-provider-keys.v2DiHW 1
+```
+
+The test needs Chromium or Chrome but does not claim to execute a GPU workload. Browser WebGPU workload acceptance is a separate test because the SDK transport does not itself require `navigator.gpu`.
+
 ## Full local demo
 
 The API host and `npm run demo:node` make a complete local requestor demo. The Node process is a simulated provider, not a GPU worker: it executes the normal enrollment, gRPC session, acceptance, result upload, and completion path, then publishes a clearly marked synthetic ZIP result.

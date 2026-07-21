@@ -14,6 +14,19 @@
 .task-list__actions { display:flex; gap:.45rem; align-items:center; }
 .task-list__actions button { padding:.35rem .55rem; }
 .diagnostics-toggle { background:transparent; border:1px solid #ffffff80; padding:.4rem .6rem; }
+.webgpu-toggle { background:var(--green); padding:.4rem .65rem; }
+.webgpu-enrollment { background:var(--cream); border:1px solid #eadfca; border-radius:1rem; box-shadow:0 1rem 3rem #111b3870; color:var(--navy); max-width:34rem; padding:0; width:calc(100% - 2rem); }
+.webgpu-enrollment::backdrop { background:#111b38aa; }
+.webgpu-enrollment form { padding:1.25rem; }
+.webgpu-enrollment__header { align-items:start; display:flex; gap:1rem; justify-content:space-between; }
+.webgpu-enrollment__header h2 { margin:.15rem 0 .6rem; }
+.webgpu-enrollment__header .eyebrow { margin:0; }
+.webgpu-enrollment__close, .webgpu-enrollment__secondary { background:white; border:1px solid var(--navy); color:var(--navy); padding:.45rem .65rem; }
+.webgpu-enrollment__key { background:white; border:1px dashed var(--plum); border-radius:.7rem; margin:1rem 0; padding:1rem; }
+.webgpu-enrollment__key p { margin:.35rem 0 .7rem; }
+.webgpu-enrollment__key code { background:#f5f0e6; display:block; font-size:.78rem; overflow-wrap:anywhere; padding:.65rem; }
+.webgpu-enrollment__key button { margin-top:.65rem; padding:.45rem .65rem; }
+.webgpu-enrollment__actions { display:flex; flex-wrap:wrap; gap:.6rem; }
 .request-builder { min-width:0; }
 .wizard-section { border-top:1px solid #eadfca; margin-top:1.25rem; padding-top:1.25rem; }
 .wizard-section:first-of-type { border-top:0; margin-top:0; padding-top:0; }

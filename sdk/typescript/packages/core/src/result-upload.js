@@ -29,7 +29,9 @@ export async function uploadProviderResult({ apiBaseUrl, presharedKey, task, tok
   appendFile(form, "logs", result?.logs, "text/plain", "logs.txt");
 
   const endpoint = new URL(`/provider/tasks/${encodeURIComponent(task.taskId)}/attempts/${encodeURIComponent(task.attemptId)}/result`, apiBase);
-  const response = await fetchImpl(endpoint, {
+  // Keep native browser fetch bound to Window when the caller uses the default.
+  // Custom test and application implementations remain ordinary callables.
+  const response = await fetchImpl.call(globalThis, endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${presharedKey}`,

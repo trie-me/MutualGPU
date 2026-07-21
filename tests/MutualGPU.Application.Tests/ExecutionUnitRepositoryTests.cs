@@ -35,6 +35,35 @@ public sealed class ExecutionUnitRepositoryTests
     }
 
     [Fact]
+    public async Task Sdk_style_reenrollment_computes_the_omitted_server_owned_contract_hash()
+    {
+        var store = new InMemoryObjectStore();
+        var keys = new MutualGpuObjectKeys();
+        var id = ExecutionUnitId.New();
+        var registry = new ObjectStoreProviderKeyRegistry(store, keys);
+        await registry.ProvisionAsync(id, "browser-provider-key", CancellationToken.None);
+        var locks = new RepositoryLockRegistry();
+        var repository = new ObjectStoreExecutionUnitRepository(store, keys, registry, locks);
+        var application = new EnrollmentApplication(repository, new Events(), locks);
+        var sdkDefinition = new CapabilityDefinition(
+            new CapabilityId(Guid.Empty),
+            "web-runner",
+            [new InputDefinition("image_url", CapabilityInputType.Image, true, "Image")],
+            new OutputDefinition(HasMetadata: true),
+            String.Empty);
+
+        var first = Assert.IsType<EnrollResult.Enrolled>(await application.Enroll(new EnrollCommand(
+            id, Machine(ResourceTier.Large, ResourceTier.Large, 32), [sdkDefinition])).RunAsync());
+        var second = Assert.IsType<EnrollResult.Enrolled>(await application.Enroll(new EnrollCommand(
+            id, Machine(ResourceTier.Large, ResourceTier.Large, 32), [sdkDefinition])).RunAsync());
+
+        var expectedHash = CapabilityContracts.ComputeHash(sdkDefinition.Inputs, sdkDefinition.Output);
+        Assert.Equal(new EnrollmentVersion(1), first.Unit.Version);
+        Assert.Equal(new EnrollmentVersion(2), second.Unit.Version);
+        Assert.Equal(expectedHash, Assert.Single(second.Unit.CurrentEnrollment.Capabilities).ContractHash);
+    }
+
+    [Fact]
     public async Task Enrollment_replacements_append_immutable_events_before_advancing_the_identity_projection()
     {
         var store = new InMemoryObjectStore();

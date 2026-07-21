@@ -35,7 +35,16 @@ public static class ProviderWebSocketEndpoints
         try { definition = JsonSerializer.Deserialize<EnrollmentDefinition>(request.Definition.Span, JsonOptions); }
         catch (JsonException) { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
         if (definition is null) { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
-        var result = await enrollment.Enroll(new EnrollCommand(unitId, definition.Machine, definition.Capabilities)).RunAsync(cancellationToken).ConfigureAwait(false);
+        EnrollResult result;
+        try
+        {
+            result = await enrollment.Enroll(new EnrollCommand(unitId, definition.Machine, definition.Capabilities)).RunAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (DomainRuleViolation)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
         if (result is not EnrollResult.Enrolled enrolled) { context.Response.StatusCode = StatusCodes.Status409Conflict; return; }
         context.Response.ContentType = "application/x-protobuf";
         await context.Response.Body.WriteAsync(new EnrollResponse { ExecutionUnitId = enrolled.Unit.Id.Value.ToString("D") }.ToByteArray(), cancellationToken).ConfigureAwait(false);

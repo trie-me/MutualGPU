@@ -56,13 +56,16 @@ public sealed class EnrollmentApplication(IExecutionUnitRepository repository, I
 
     private static CapabilityDefinition Canonicalize(CapabilityDefinition definition)
     {
-        definition.Validate();
         // Capability identifiers are server-owned.  A provider supplies a definition,
         // never an identifier that could collide with another provider's catalogue.
-        return definition with
+        // Compute the contract digest before validation: SDK callers deliberately omit
+        // this server-owned continuity field from their enrollment definition.
+        var canonical = definition with
         {
             Id = CapabilityId.New(),
             ContractHash = CapabilityContracts.ComputeHash(definition.Inputs, definition.Output),
         };
+        canonical.Validate();
+        return canonical;
     }
 }

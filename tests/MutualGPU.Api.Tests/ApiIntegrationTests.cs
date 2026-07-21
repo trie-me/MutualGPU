@@ -33,6 +33,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
             builder.UseSetting("MutualGPU:Providers:0:ExecutionUnitId", ProviderId.Value.ToString("D"));
             builder.UseSetting("MutualGPU:Providers:0:PresharedKey", ProviderKey);
             builder.UseSetting("MutualGPU:ProviderCorsOrigins:0", "https://provider.example");
+            builder.UseSetting("MutualGPU:WebGpuEnrollment:Password", "browser-integration-password");
         });
     }
 
@@ -160,6 +161,25 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
 
         Assert.True(response.IsSuccessStatusCode);
         Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+    }
+
+    [Fact]
+    public async Task Password_gated_webgpu_enrollment_issues_a_fresh_registry_key()
+    {
+        using var client = CreateHttpsClient();
+        using var rejected = await client.PostAsJsonAsync("/api/webgpu-enrollments", new { password = "not-the-password" });
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, rejected.StatusCode);
+
+        using var created = await client.PostAsJsonAsync("/api/webgpu-enrollments", new { password = "browser-integration-password" });
+        Assert.True(created.IsSuccessStatusCode);
+        Assert.Equal("no-store", created.Headers.CacheControl?.ToString());
+        using var body = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        var key = body.RootElement.GetProperty("providerKey").GetString();
+        var executionUnitId = body.RootElement.GetProperty("executionUnitId").GetGuid();
+        Assert.False(String.IsNullOrWhiteSpace(key));
+
+        var registry = factory.Services.GetRequiredService<IExecutionUnitKeyRegistry>();
+        Assert.Equal(new ExecutionUnitId(executionUnitId), await registry.AuthenticateAsync(key, CancellationToken.None));
     }
 
     [Fact]

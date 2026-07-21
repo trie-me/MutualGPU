@@ -35,7 +35,10 @@ export class BrowserWebSocketTransport {
   async enroll(definition) {
     if (!this.apiBaseUrl || typeof this.fetchImpl !== "function") throw new TypeError("apiBaseUrl and fetch are required to enroll a browser provider");
     const body = this.codec.encodeEnrollRequest({ definition: new TextEncoder().encode(JSON.stringify(definition)) });
-    const response = await this.fetchImpl(new URL("/provider/enroll", this.apiBaseUrl), {
+    // Native window.fetch performs a receiver check in Chromium. Calling a saved
+    // function reference as a transport member makes `this` the transport rather
+    // than Window, which works in Node but fails in an actual browser.
+    const response = await this.fetchImpl.call(globalThis, new URL("/provider/enroll", this.apiBaseUrl), {
       method: "POST",
       headers: { Authorization: `Bearer ${this.presharedKey}`, "Content-Type": "application/x-protobuf" },
       body

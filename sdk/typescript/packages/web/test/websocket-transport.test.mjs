@@ -12,6 +12,7 @@ test("browser transport derives its session from one API base URL", () => {
 test("browser transport enrolls through the authenticated protobuf HTTP endpoint", async () => {
   let encoded;
   let request;
+  let receiver;
   const transport = new BrowserWebSocketTransport(
     "wss://mutualgpu.example/provider/connect",
     "provider-key",
@@ -20,7 +21,8 @@ test("browser transport enrolls through the authenticated protobuf HTTP endpoint
       decodeEnrollResponse: bytes => ({ executionUnitId: `unit-${bytes.length}` })
     },
     "https://mutualgpu.example/",
-    async (url, init) => {
+    async function (url, init) {
+      receiver = this;
       request = { url, init };
       return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([4, 5]).buffer };
     });
@@ -31,6 +33,7 @@ test("browser transport enrolls through the authenticated protobuf HTTP endpoint
   assert.equal(response.executionUnitId, "unit-2");
   assert.equal(request.url.pathname, "/provider/enroll");
   assert.equal(request.init.headers.Authorization, "Bearer provider-key");
+  assert.equal(receiver, globalThis);
   assert.deepEqual(JSON.parse(new TextDecoder().decode(encoded.definition)), definition);
 });
 
