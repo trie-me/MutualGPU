@@ -2,7 +2,6 @@ import { renderResourceGrid } from './resource-grid.js';
 import { createFiberDiagnosticsOverlay } from './fiber-tree-overlay.js?v=20260721-forest16';
 import { createScalarPayload } from './capability-form.js';
 import { renderTaskList } from './task-list.js';
-import { ProviderClient, BrowserWebSocketTransport } from './mutualgpu-provider-sdk.js';
 
 const select = document.querySelector('#capability-select');
 const form = document.querySelector('#task-form');
@@ -12,17 +11,13 @@ const taskList = document.querySelector('#task-list');
 let catalogue = [];
 let selectedResources = null;
 let sort = { computeDescending: false, memoryDescending: true };
-let webGpuProvider = null;
 let webGpuKey = null;
-let webGpuDevice = null;
 
 const webGpuDialog = document.querySelector('#webgpu-enrollment-dialog');
-const webGpuForm = document.querySelector('#webgpu-enrollment-form');
-const webGpuPassword = document.querySelector('#webgpu-enrollment-password');
 const webGpuStatus = document.querySelector('#webgpu-enrollment-status');
 const webGpuKeyPanel = document.querySelector('#webgpu-enrollment-key-panel');
 const webGpuKeyDisplay = document.querySelector('#webgpu-enrollment-key');
-const webGpuEnrollButton = document.querySelector('#webgpu-enroll');
+const webGpuNewButton = document.querySelector('#webgpu-new-enrollment');
 
 function control(input) {
   const label = document.createElement('label'); label.textContent = input.label;
@@ -135,7 +130,7 @@ setInterval(() => { void renderTasks(); }, 2000);
 document.querySelector('#refresh-tasks').addEventListener('click', () => { void renderTasks(); });
 
 document.querySelector('#webgpu-enrollment-toggle').addEventListener('click', () => {
-  webGpuStatus.textContent = webGpuProvider ? 'A new enrollment will mint a new provider key and replace this page’s current connection.' : webGpuSupportMessage();
+  webGpuStatus.textContent = webGpuKey ? 'Save the provider password before starting your browser provider.' : '';
   webGpuDialog.showModal();
 });
 document.querySelector('#webgpu-enrollment-close').addEventListener('click', () => webGpuDialog.close());
@@ -144,53 +139,25 @@ document.querySelector('#webgpu-enrollment-copy').addEventListener('click', asyn
   try { await navigator.clipboard.writeText(webGpuKey); webGpuStatus.textContent = 'Provider key copied. Keep it safe.'; }
   catch { webGpuStatus.textContent = 'Copy was blocked. Select the key text and save it manually.'; }
 });
-webGpuForm.addEventListener('submit', event => { event.preventDefault(); void enrollWebGpu(); });
+webGpuNewButton.addEventListener('click', () => { void createWebGpuEnrollment(); });
 
-function webGpuSupportMessage() {
-  return navigator.gpu ? 'WebGPU detected. Enter the enrollment password to continue.' : 'WebGPU is unavailable in this browser. Use a current Chromium-based browser with WebGPU enabled.';
-}
-
-async function enrollWebGpu() {
-  if (!navigator.gpu) { webGpuStatus.textContent = webGpuSupportMessage(); return; }
-  if (!webGpuForm.reportValidity()) return;
-  webGpuEnrollButton.disabled = true;
-  webGpuStatus.textContent = 'Checking WebGPU support…';
+async function createWebGpuEnrollment() {
+  webGpuNewButton.disabled = true;
+  webGpuStatus.textContent = 'Creating a fresh provider password…';
   try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) throw new Error('No WebGPU adapter is available.');
-    webGpuDevice = await adapter.requestDevice();
-    const issued = await issueWebGpuKey(webGpuPassword.value);
-    webGpuProvider?.close();
-    const provider = new ProviderClient(new BrowserWebSocketTransport(window.location.origin, issued.providerKey));
-    await provider.enroll({
-      machine: { tier: 'Small', specifications: { computeTier: 'Small', memoryGiB: 8 } },
-      capabilities: []
-    });
-    await provider.connect(async task => task.reject('This browser enrollment verifies WebGPU availability and cannot run workloads yet.'));
-    webGpuProvider = provider;
+    const response = await fetch('/api/webgpu-enrollments', { method: 'POST' });
+    if (!response.ok) throw new Error(`A provider key could not be issued (HTTP ${response.status}).`);
+    const issued = await response.json();
+    if (!issued?.providerKey) throw new Error('The server did not return a provider password.');
     webGpuKey = issued.providerKey;
     webGpuKeyDisplay.textContent = webGpuKey;
     webGpuKeyPanel.hidden = false;
-    webGpuPassword.value = '';
-    webGpuStatus.textContent = 'WebGPU is enrolled and connected.';
-    webGpuDevice.lost.then(() => { if (webGpuProvider === provider) webGpuStatus.textContent = 'The WebGPU device was lost; this provider is no longer available.'; });
+    webGpuStatus.textContent = 'New provider password created. Copy and remember it before starting your browser provider.';
   } catch (error) {
-    webGpuStatus.textContent = error instanceof Error ? error.message : 'WebGPU enrollment failed.';
+    webGpuStatus.textContent = error instanceof Error ? error.message : 'A provider password could not be created.';
   } finally {
-    webGpuEnrollButton.disabled = false;
+    webGpuNewButton.disabled = false;
   }
-}
-
-async function issueWebGpuKey(password) {
-  const response = await fetch('/api/webgpu-enrollments', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password })
-  });
-  if (response.status === 401) throw new Error('The enrollment password was not accepted.');
-  if (response.status === 404) throw new Error('WebGPU enrollment is not enabled on this host.');
-  if (!response.ok) throw new Error(`A provider key could not be issued (HTTP ${response.status}).`);
-  const issued = await response.json();
-  if (!issued?.providerKey) throw new Error('The server did not return a provider key.');
-  return issued;
 }
 
 createFiberDiagnosticsOverlay({ overlay: document.querySelector('#fiber-overlay'), tree: document.querySelector('#fiber-tree'), toggle: document.querySelector('#fiber-toggle'), close: document.querySelector('#fiber-close'), reset: document.querySelector('#fiber-reset'), fit: document.querySelector('#fiber-fit'), taskOnly: document.querySelector('#fiber-task-only'), pause: document.querySelector('#fiber-pause'), status: document.querySelector('#fiber-status'), summary: document.querySelector('#fiber-summary'), history: document.querySelector('#fiber-history'), simulations: document.querySelector('#fiber-simulations'), selection: document.querySelector('#fiber-selection'), treeDetail: document.querySelector('#fiber-tree-detail'), treeDetailBody: document.querySelector('#fiber-tree-detail-body'), treeDetailClose: document.querySelector('#fiber-tree-detail-close') });

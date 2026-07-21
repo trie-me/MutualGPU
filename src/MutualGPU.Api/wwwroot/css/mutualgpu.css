@@ -17,7 +17,7 @@
 .webgpu-toggle { background:var(--green); padding:.4rem .65rem; }
 .webgpu-enrollment { background:var(--cream); border:1px solid #eadfca; border-radius:1rem; box-shadow:0 1rem 3rem #111b3870; color:var(--navy); max-width:34rem; padding:0; width:calc(100% - 2rem); }
 .webgpu-enrollment::backdrop { background:#111b38aa; }
-.webgpu-enrollment form { padding:1.25rem; }
+.webgpu-enrollment > section { padding:1.25rem; }
 .webgpu-enrollment__header { align-items:start; display:flex; gap:1rem; justify-content:space-between; }
 .webgpu-enrollment__header h2 { margin:.15rem 0 .6rem; }
 .webgpu-enrollment__header .eyebrow { margin:0; }

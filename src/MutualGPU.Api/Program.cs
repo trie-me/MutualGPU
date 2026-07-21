@@ -41,7 +41,6 @@ builder.Services.AddCors(options => options.AddPolicy("mutualgpu-provider", poli
 }));
 
 var providerCredentials = builder.Configuration.GetSection("MutualGPU:Providers").Get<ProviderCredential[]>() ?? [];
-var webGpuEnrollment = builder.Configuration.GetSection("MutualGPU:WebGpuEnrollment").Get<WebGpuEnrollmentOptions>() ?? new(null);
 var providerKeys = providerCredentials
     .Where(static credential => Guid.TryParse(credential.ExecutionUnitId, out _) && !String.IsNullOrWhiteSpace(credential.PresharedKey))
     .ToDictionary(static credential => new ExecutionUnitId(Guid.Parse(credential.ExecutionUnitId)), static credential => credential.PresharedKey);
@@ -100,7 +99,6 @@ else
     builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
     builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
 }
-builder.Services.AddSingleton(webGpuEnrollment);
 builder.Services.AddSingleton<ProviderKeyIssuer>();
 builder.Services.AddSingleton<ObjectStoreExecutionUnitRepository>();
 builder.Services.AddSingleton<IExecutionUnitRepository>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
