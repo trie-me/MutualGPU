@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { ProviderClient } from "@mutualgpu/provider-core";
 import { NodeGrpcTransport } from "@mutualgpu/provider-node";
 
@@ -6,28 +5,25 @@ const apiBaseUrl = required("MUTUALGPU_API_URL");
 const presharedKey = required("MUTUALGPU_PROVIDER_KEY");
 const executionUnitId = required("MUTUALGPU_EXECUTION_UNIT_ID");
 const capabilityName = process.env.MUTUALGPU_SMOKE_CAPABILITY ?? "mutualgpu-node-api-smoke";
-const compute = process.env.MUTUALGPU_SMOKE_COMPUTE ?? "Large";
-const memory = process.env.MUTUALGPU_SMOKE_MEMORY ?? "Large";
+const tier = process.env.MUTUALGPU_SMOKE_TIER ?? "Large";
+const computeTier = process.env.MUTUALGPU_SMOKE_COMPUTE_TIER ?? "Large";
+const memoryGiB = Number.parseInt(process.env.MUTUALGPU_SMOKE_MEMORY_GIB ?? "32", 10);
 
 const apiUrl = new URL(apiBaseUrl);
 if (apiUrl.protocol !== "https:") throw new TypeError("MUTUALGPU_API_URL must use https.");
 if (!isGuid(executionUnitId)) throw new TypeError("MUTUALGPU_EXECUTION_UNIT_ID must be a UUID configured by the API host.");
 
-// The server owns the capability ID and normalizes the contract hash. The ID here
-// merely satisfies the enrollment JSON shape.
 const definition = {
-  machine: { compute, memory },
+  machine: { tier, specifications: { computeTier, memoryGiB } },
   capabilities: [{
-    id: randomUUID(),
     name: capabilityName,
     inputs: [],
     output: { hasMetadata: true },
-    contractHash: "server-computed",
     description: "Minimal Node SDK to MutualGPU API gRPC smoke capability."
   }]
 };
 
-const transport = new NodeGrpcTransport(apiUrl, presharedKey, apiUrl);
+const transport = new NodeGrpcTransport(apiUrl, presharedKey);
 const provider = new ProviderClient(transport);
 
 await provider.enroll(definition);

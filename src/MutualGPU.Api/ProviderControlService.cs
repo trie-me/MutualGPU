@@ -22,7 +22,8 @@ public sealed class ProviderControlService(
     IObjectStore store,
     MutualGpuObjectKeys keys,
     DisconnectRecoveryService recovery,
-    MutualGpuFiberOwner fibers) : ProviderControl.ProviderControlBase
+    MutualGpuFiberOwner fibers,
+    TaskAttemptFiberTracker taskFibers) : ProviderControl.ProviderControlBase
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -64,7 +65,7 @@ public sealed class ProviderControlService(
         using var cancellation = context.CancellationToken.Register(static state => _ = ((FiberScope)state!).CloseAsync(), scope);
         var fiber = scope.Start(Latent<int>.DelayAsync(async _ =>
         {
-            await ConnectCoreAsync(requestStream, responseStream, context).ConfigureAwait(false);
+            await ConnectCoreAsync(requestStream, responseStream, context, scope).ConfigureAwait(false);
             return 0;
         }), new FiberDescriptor("provider-session"));
         var outcome = await fiber.JoinAsync().ConfigureAwait(false);
@@ -73,7 +74,7 @@ public sealed class ProviderControlService(
         if (outcome is Outcome<int>.Cancelled) throw new RpcException(new Status(StatusCode.Cancelled, "Provider session cancelled."));
     }
 
-    private async Task ConnectCoreAsync(IAsyncStreamReader<ProviderMessage> requestStream, IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context)
+    private async Task ConnectCoreAsync(IAsyncStreamReader<ProviderMessage> requestStream, IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context, FiberScope sessionScope)
     {
         var executionUnitId = Authenticate(context.RequestHeaders.GetValue("authorization"));
         var unit = await units.GetAsync(executionUnitId, context.CancellationToken).ConfigureAwait(false)
@@ -96,11 +97,22 @@ public sealed class ProviderControlService(
             sendAssignments = WriteAssignmentsAsync(lease, responseStream, responseGate, context.CancellationToken);
             while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
             {
-                await ApplyMessageAsync(executionUnitId, requestStream.Current, responseStream, responseGate, context.CancellationToken).ConfigureAwait(false);
+                var message = requestStream.Current;
+                await fibers.RunObservedAsync(
+                    sessionScope,
+                    "provider-message",
+                    MessageName(message),
+                    async token =>
+                    {
+                        await ApplyMessageAsync(executionUnitId, message, responseStream, responseGate, token).ConfigureAwait(false);
+                        return 0;
+                    },
+                    context.CancellationToken).ConfigureAwait(false);
             }
         }
         finally
         {
+            await taskFibers.CancelExecutionUnitAsync(executionUnitId).ConfigureAwait(false);
             if (connections.IsCurrent(lease))
             {
                 if (await session.Disconnect(executionUnitId).RunAsync(CancellationToken.None).ConfigureAwait(false) > 0) recovery.Start(executionUnitId);
@@ -137,6 +149,34 @@ public sealed class ProviderControlService(
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
         {
             await WriteAsync(response, responseGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);
+        }
+        if (message.BodyCase is ProviderMessage.BodyOneofCase.Accepted)
+        {
+            taskFibers.Start(executionUnitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId));
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), "task-acceptance", "accept assignment", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
+        {
+            var phase = String.IsNullOrWhiteSpace(message.Progress.Phase) ? "provider work" : message.Progress.Phase;
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), "task-phase", $"{phase} {message.Progress.Percent:0}%", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.ResultUpload)
+        {
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.ResultUpload.TaskId), ParseAttemptId(message.ResultUpload.AttemptId), "task-result-upload", "authorize result upload", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.InputDownload)
+        {
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.InputDownload.TaskId), ParseAttemptId(message.InputDownload.AttemptId), "task-input-download", "authorize input download", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
+        {
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), "task-completion", "record completion", cancellationToken).ConfigureAwait(false);
+            await taskFibers.CompleteAsync(executionUnitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId)).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Failed)
+        {
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), "task-failure", $"record failure: {message.Failed.Step}", cancellationToken).ConfigureAwait(false);
+            await taskFibers.CompleteAsync(executionUnitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId)).ConfigureAwait(false);
         }
     }
 
@@ -215,6 +255,18 @@ public sealed class ProviderControlService(
 
     private static AttemptId ParseAttemptId(string value) => Guid.TryParse(value, out var id)
         ? new AttemptId(id) : throw new RpcException(new Status(StatusCode.InvalidArgument, "Attempt ID is invalid."));
+
+    private static string MessageName(ProviderMessage message) => message.BodyCase switch
+    {
+        ProviderMessage.BodyOneofCase.Accepted => "accept-assignment",
+        ProviderMessage.BodyOneofCase.Rejected => "reject-assignment",
+        ProviderMessage.BodyOneofCase.Progress => "report-progress",
+        ProviderMessage.BodyOneofCase.ResultUpload => "authorize-result-upload",
+        ProviderMessage.BodyOneofCase.InputDownload => "authorize-input-download",
+        ProviderMessage.BodyOneofCase.Completed => "complete-assignment",
+        ProviderMessage.BodyOneofCase.Failed => "fail-assignment",
+        _ => "process-provider-message",
+    };
 
     private ExecutionUnitId Authenticate(string? authorization)
     {

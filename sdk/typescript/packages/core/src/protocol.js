@@ -53,6 +53,10 @@ const number = (fields, field) => fields.get(field)?.at(-1) ?? 0;
 const taskWire = task => new Writer().string(1, task.taskId).string(2, task.attemptId).string(3, task.taskHandle).finish();
 const decodeTask = fields => ({ taskId: text(fields, 1), attemptId: text(fields, 2), taskHandle: text(fields, 3) });
 const taskWriter = (writer, task) => writer.string(1, task.taskId).string(2, task.attemptId).string(3, task.taskHandle);
+// InputDownloadRequest and ResultUploadRequest predate the other task control
+// messages and place the authorization handle first on the canonical wire.
+const handleFirstTaskWire = task => new Writer().string(1, task.taskHandle).string(2, task.taskId).string(3, task.attemptId).finish();
+const decodeHandleFirstTask = fields => ({ taskHandle: text(fields, 1), taskId: text(fields, 2), attemptId: text(fields, 3) });
 const encodeConnect = value => new Writer().tag(1, 0).uint(value.protocolVersion ?? 1).string(2, value.activeTaskHandle).string(3, value.authorization).finish();
 const decodeConnect = fields => ({ protocolVersion: number(fields, 1), activeTaskHandle: text(fields, 2), authorization: text(fields, 3) });
 const encodeRejected = value => taskWriter(new Writer(), value).string(4, value.reason).finish();
@@ -68,8 +72,8 @@ const encodeProvider = value => {
   else if (value.accepted) writer.message(2, taskWire(value.accepted));
   else if (value.rejected) writer.message(3, encodeRejected(value.rejected));
   else if (value.progress) writer.message(4, encodeProgress(value.progress));
-  else if (value.inputDownload) writer.message(5, taskWire(value.inputDownload));
-  else if (value.resultUpload) writer.message(6, taskWire(value.resultUpload));
+  else if (value.inputDownload) writer.message(5, handleFirstTaskWire(value.inputDownload));
+  else if (value.resultUpload) writer.message(6, handleFirstTaskWire(value.resultUpload));
   else if (value.completed) writer.message(7, taskWriter(new Writer(), value.completed).string(4, value.completed.receipt).finish());
   else if (value.failed) writer.message(8, encodeFailed(value.failed));
   else throw new TypeError("a ProviderMessage body is required");
@@ -82,8 +86,8 @@ const decodeProvider = value => {
   if (fields.has(2)) return { accepted: decodeTask(nested(fields, 2)) };
   if (fields.has(3)) return { rejected: decodeRejected(nested(fields, 3)) };
   if (fields.has(4)) return { progress: decodeProgress(nested(fields, 4)) };
-  if (fields.has(5)) return { inputDownload: decodeTask(nested(fields, 5)) };
-  if (fields.has(6)) return { resultUpload: decodeTask(nested(fields, 6)) };
+  if (fields.has(5)) return { inputDownload: decodeHandleFirstTask(nested(fields, 5)) };
+  if (fields.has(6)) return { resultUpload: decodeHandleFirstTask(nested(fields, 6)) };
   if (fields.has(7)) { const message = nested(fields, 7); return { completed: { ...decodeTask(message), receipt: text(message, 4) } }; }
   if (fields.has(8)) return { failed: decodeFailed(nested(fields, 8)) };
   throw new TypeError("ProviderMessage body is required");

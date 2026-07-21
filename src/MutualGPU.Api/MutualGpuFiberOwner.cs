@@ -1,4 +1,5 @@
 using NetCats.AspNetCore;
+using NetCats.Core;
 using NetCats.Runtime;
 
 namespace MutualGPU.Api;
@@ -25,6 +26,39 @@ public sealed class MutualGpuFiberOwner : IHostedService
     public FiberScope ProviderSessions { get; }
 
     public FiberScope Startup { get; }
+
+    /// <summary>
+    /// Runs one meaningful unit of adapter work in its own short-lived scope. The
+    /// scope is intentionally retained by the diagnostics projection after it
+    /// completes, so the runtime forest shows work arriving and leaving without
+    /// changing the ownership semantics of the application operation.
+    /// </summary>
+    public async Task<T> RunObservedAsync<T>(
+        FiberScope parent,
+        string scopeName,
+        string fiberName,
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        var scope = parent.CreateChild(new FiberScopeOptions(scopeName));
+        try
+        {
+            var fiber = scope.Start(Latent<T>.DelayAsync(operation), new FiberDescriptor(fiberName));
+            using var cancellation = cancellationToken.Register(static state => ((Fiber<T>)state!).RequestCancellation(), fiber);
+            var outcome = await fiber.JoinAsync().ConfigureAwait(false);
+            return outcome switch
+            {
+                Outcome<T>.Succeeded succeeded => succeeded.Value,
+                Outcome<T>.Faulted faulted => throw faulted.Error,
+                Outcome<T>.Cancelled => throw new OperationCanceledException(cancellationToken),
+                _ => throw new InvalidOperationException("Unknown fiber outcome."),
+            };
+        }
+        finally
+        {
+            await scope.CloseAsync().ConfigureAwait(false);
+        }
+    }
 
     public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 

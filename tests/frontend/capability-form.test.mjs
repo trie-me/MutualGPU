@@ -11,8 +11,7 @@ test('submission scalars omit resource controls, files, and empty optional value
     ['preserveColour', 'false'],
     ['preserveColour', 'true'],
     ['deadline', ''],
-    ['compute', 'Large'],
-    ['memory', 'Medium'],
+    ['tier', 'Large'],
     ['image', fakeFile],
   ]);
 

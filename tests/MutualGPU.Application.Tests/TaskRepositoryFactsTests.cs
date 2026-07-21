@@ -12,7 +12,7 @@ public sealed class TaskRepositoryFactsTests
         var keys = new MutualGpuObjectKeys([1, 2, 3]);
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
 
         await repository.SaveAsync(task, CancellationToken.None);
         task.Assign(AttemptId.New(), ExecutionUnitId.New(), "opaque-handle", DateTimeOffset.UtcNow);
@@ -38,7 +38,7 @@ public sealed class TaskRepositoryFactsTests
         var keys = new MutualGpuObjectKeys([1, 2, 3]);
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         await repository.SaveAsync(task, CancellationToken.None);
         var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), "opaque-handle", DateTimeOffset.UtcNow);
         await repository.SaveAsync(task, CancellationToken.None);
@@ -62,7 +62,7 @@ public sealed class TaskRepositoryFactsTests
         var keys = new MutualGpuObjectKeys([1, 2, 3]);
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         await repository.SaveAsync(task, CancellationToken.None);
         var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), "opaque-handle", DateTimeOffset.UtcNow);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
@@ -84,8 +84,8 @@ public sealed class TaskRepositoryFactsTests
         var keys = new MutualGpuObjectKeys([1, 2, 3]);
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
-        var marker = keys.QueueMarker(task.Capability.Id, task.Resources, task.CreatedAt, task.Id);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var marker = keys.QueueMarker(task.Capability.Id, task.Tier, task.CreatedAt, task.Id);
 
         await repository.SaveAsync(task, CancellationToken.None);
         await store.DeleteAsync(marker, CancellationToken.None);
@@ -107,8 +107,8 @@ public sealed class TaskRepositoryFactsTests
         var keys = new MutualGpuObjectKeys([1, 2, 3]);
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
-        var marker = keys.QueueMarker(task.Capability.Id, task.Resources, task.CreatedAt, task.Id);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var marker = keys.QueueMarker(task.Capability.Id, task.Tier, task.CreatedAt, task.Id);
 
         await repository.SaveAsync(task, CancellationToken.None);
         byte[] stale;

@@ -16,8 +16,7 @@ import { NodeGrpcTransport } from "@mutualgpu/provider-node";
 
 const transport = new NodeGrpcTransport(
   "https://api.example",
-  process.env.MUTUALGPU_PROVIDER_KEY,
-  "https://api.example/");
+  process.env.MUTUALGPU_PROVIDER_KEY);
 const provider = new ProviderClient(transport);
 
 await provider.enroll(definition);
@@ -39,9 +38,8 @@ import { ProviderClient } from "@mutualgpu/provider-core";
 import { BrowserWebSocketTransport } from "@mutualgpu/provider-web";
 
 const transport = new BrowserWebSocketTransport(
-  "wss://api.example/provider/connect",
-  providerKey,
-  "https://api.example/");
+  "https://api.example/",
+  providerKey);
 const provider = new ProviderClient(transport);
 
 await provider.enroll(definition);

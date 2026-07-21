@@ -54,7 +54,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.True(openApi.IsSuccessStatusCode);
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, insecureHealth.StatusCode);
         Assert.Contains("MutualGPU", page, StringComparison.Ordinal);
-        Assert.Contains("resource-capacity-matrix", page, StringComparison.Ordinal);
+        Assert.Contains("resource-picker", page, StringComparison.Ordinal);
         Assert.Contains("/css/site.css", page, StringComparison.Ordinal);
         Assert.Contains("/css/fiber-tree-overlay.css", page, StringComparison.Ordinal);
         Assert.Contains("class=\"layout\"", page, StringComparison.Ordinal);
@@ -93,8 +93,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.True(File.Exists(form));
         Assert.True(File.Exists(tasks));
         var source = File.ReadAllText(module);
-        Assert.Contains("memoryAxis", source, StringComparison.Ordinal);
-        Assert.Contains("computeAxis", source, StringComparison.Ordinal);
+        Assert.Contains("renderResourceGrid", source, StringComparison.Ordinal);
+        Assert.Contains("resource-tile", source, StringComparison.Ordinal);
         Assert.Contains("createFiberDiagnosticsOverlay", File.ReadAllText(overlay), StringComparison.Ordinal);
         Assert.Contains("createScalarPayload", File.ReadAllText(form), StringComparison.Ordinal);
         Assert.Contains("renderTaskList", File.ReadAllText(tasks), StringComparison.Ordinal);
@@ -112,25 +112,39 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
-    public void Public_enums_serialize_as_named_strings()
+    public void Public_resource_tiers_serialize_as_named_strings()
     {
         var task = new TaskDto(
             Guid.CreateVersion7(), "Example", DateTimeOffset.UnixEpoch,
-            ResourceTier.ExtraLarge, ResourceTier.Medium, MutualGPU.Domain.TaskStatus.Queued,
+            new MachineSpecifications(ResourceTier.ExtraLarge, 128), MutualGPU.Domain.TaskStatus.Queued,
             0, null, true, false);
 
         var json = JsonSerializer.Serialize(task, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
-        Assert.Contains("\"compute\":\"ExtraLarge\"", json, StringComparison.Ordinal);
-        Assert.Contains("\"memory\":\"Medium\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"computeTier\":\"ExtraLarge\"", json, StringComparison.Ordinal);
         Assert.Contains("\"status\":\"Queued\"", json, StringComparison.Ordinal);
 
         var submitted = JsonSerializer.Deserialize<SubmitTaskRequestDto>("""
-            {"capabilityId":"00000000-0000-0000-0000-000000000001","contractHash":"example","scalars":{},"compute":"Large","memory":"Medium"}
+            {"capabilityId":"00000000-0000-0000-0000-000000000001","contractHash":"example","scalars":{},"resources":{"computeTier":"Large","memoryGiB":32}}
             """, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.NotNull(submitted);
-        Assert.Equal(ResourceTier.Large, submitted.Compute);
-        Assert.Equal(ResourceTier.Medium, submitted.Memory);
+        Assert.Equal(new MachineSpecifications(ResourceTier.Large, 32), submitted.Resources);
+    }
+
+    [Theory]
+    [MemberData(nameof(WebpHeaders))]
+    public void Image_validation_accepts_standard_webp_container_variants(byte[] image)
+    {
+        Assert.True(MutualGpuEndpoints.TryValidateImage("image/webp", image, out var extension));
+        Assert.Equal("webp", extension);
+    }
+
+    public static IEnumerable<object[]> WebpHeaders()
+    {
+        // 512 × 256 VP8 lossy frame header.
+        yield return [new byte[] { 82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 32, 10, 0, 0, 0, 0, 0, 0, 157, 1, 42, 0, 2, 0, 1 }];
+        // 512 × 256 VP8L lossless frame header.
+        yield return [new byte[] { 82, 73, 70, 70, 18, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76, 5, 0, 0, 0, 47, 255, 193, 63, 0 }];
     }
 
     [Fact]
@@ -149,10 +163,10 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
-    public async Task Requestor_cookie_can_submit_a_named_resource_tier_and_list_the_idempotent_task()
+    public async Task Requestor_cookie_can_submit_a_resource_profile_and_list_the_idempotent_task()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "requestor-api-test", [], new OutputDefinition(), "requestor-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Large, ResourceTier.Medium), [capability]));
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Large, ResourceTier.Large, 32), [capability]));
         var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
         var connections = factory.Services.GetRequiredService<ProviderConnectionRegistry>();
         await units.SaveAsync(unit, CancellationToken.None);
@@ -163,15 +177,14 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
 
         var catalogue = await client.GetFromJsonAsync<CapabilityAvailabilityDto[]>("/api/capabilities/");
         var available = Assert.Single(catalogue!, item => item.CapabilityId == capability.Id.Value);
-        Assert.Contains(available.ResourceAvailability, profile => profile.Compute is ResourceTier.Large && profile.Memory is ResourceTier.Medium);
-        var submission = new SubmitTaskRequestDto(capability.Id.Value, capability.ContractHash, new Dictionary<string, string>(), ResourceTier.Large, ResourceTier.Medium, "requestor-idempotency-key");
+        Assert.Contains(available.MachineAvailability, item => item.ComputeTier is ResourceTier.Large && item.MemoryGiB == 32);
+        var submission = new SubmitTaskRequestDto(capability.Id.Value, capability.ContractHash, new Dictionary<string, string>(), new MachineSpecifications(ResourceTier.Large, 32), "requestor-idempotency-key");
 
         using var createdResponse = await client.PostAsJsonAsync("/api/tasks/", submission);
         Assert.Equal(System.Net.HttpStatusCode.Created, createdResponse.StatusCode);
         var created = await createdResponse.Content.ReadFromJsonAsync<TaskDto>();
         Assert.NotNull(created);
-        Assert.Equal(ResourceTier.Large, created.Compute);
-        Assert.Equal(ResourceTier.Medium, created.Memory);
+        Assert.Equal(new MachineSpecifications(ResourceTier.Large, 32), created.Resources);
         Assert.Equal(MutualGPU.Domain.TaskStatus.Queued, created.Status);
 
         using var repeatedResponse = await client.PostAsJsonAsync("/api/tasks/", submission);
@@ -186,7 +199,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     {
         var image = new InputDefinition("image", CapabilityInputType.Image, true, "Source image", ContentTypes: ["image/png"]);
         var capability = new CapabilityDefinition(CapabilityId.New(), "requestor-image-test", [image], new OutputDefinition(), "requestor-image-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
         var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
         var connections = factory.Services.GetRequiredService<ProviderConnectionRegistry>();
         await units.SaveAsync(unit, CancellationToken.None);
@@ -194,7 +207,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var client = CreateHttpsClient();
         using var landing = await client.GetAsync("/");
         Assert.True(landing.IsSuccessStatusCode);
-        var submission = new SubmitTaskRequestDto(capability.Id.Value, capability.ContractHash, new Dictionary<string, string>(), ResourceTier.Medium, ResourceTier.Medium, "image-request-key");
+        var submission = new SubmitTaskRequestDto(capability.Id.Value, capability.ContractHash, new Dictionary<string, string>(), new MachineSpecifications(ResourceTier.Medium, 16), "image-request-key");
         using var payload = new MultipartFormDataContent();
         payload.Add(new StringContent(JsonSerializer.Serialize(submission)), "submission");
         payload.Add(FilePart(OnePixelPng(), "image/png"), "image", "source.png");
@@ -208,12 +221,12 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     public async Task Grpc_provider_session_authenticates_delivers_assignment_and_issues_upload_authorization()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "grpc-session-test", [], new OutputDefinition(), "grpc-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
         var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
         var scheduler = factory.Services.GetRequiredService<SchedulerApplication>();
         await units.SaveAsync(unit, CancellationToken.None);
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string> { ["seed"] = "42" }, null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string> { ["seed"] = "42" }, null), DateTimeOffset.UtcNow);
         await tasks.SaveAsync(task, CancellationToken.None);
 
         using var channel = GrpcChannel.ForAddress("https://localhost", new GrpcChannelOptions { HttpHandler = factory.Server.CreateHandler() });
@@ -247,12 +260,12 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     public async Task Websocket_provider_session_authenticates_delivers_assignment_and_issues_upload_authorization()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "websocket-session-test", [], new OutputDefinition(), "websocket-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
         var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
         var scheduler = factory.Services.GetRequiredService<SchedulerApplication>();
         await units.SaveAsync(unit, CancellationToken.None);
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string> { ["seed"] = "24" }, null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string> { ["seed"] = "24" }, null), DateTimeOffset.UtcNow);
         await tasks.SaveAsync(task, CancellationToken.None);
 
         using var socket = await factory.Server.CreateWebSocketClient().ConnectAsync(new Uri("wss://localhost/provider/connect"), CancellationToken.None);
@@ -287,9 +300,9 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
             CapabilityId.New(), "artifact-test", [],
             new OutputDefinition(HasThumbnail: true, HasPreview: true, HasMetadata: true, HasLogs: true, PreviewContentTypes: ["image/png"]),
             "artifact-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
         var requestor = RequestorId.New();
-        var task = new TaskRequest(TaskId.New(), requestor, capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), requestor, capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var attempt = task.Assign(AttemptId.New(), unit.Id, "artifact-test-handle", DateTimeOffset.UtcNow);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
@@ -343,8 +356,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     {
         using var client = CreateHttpsClient();
         var capability = new CapabilityDefinition(CapabilityId.New(), "upload-before-accept-test", [], new OutputDefinition(), "contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var attempt = task.Assign(AttemptId.New(), unit.Id, "upload-before-accept-handle", DateTimeOffset.UtcNow);
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
         var connections = factory.Services.GetRequiredService<ProviderConnectionRegistry>();
@@ -363,8 +376,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     {
         using var client = CreateHttpsClient();
         var capability = new CapabilityDefinition(CapabilityId.New(), "revoked-upload-test", [], new OutputDefinition(), "contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var attempt = task.Assign(AttemptId.New(), unit.Id, "revoked-upload-handle", DateTimeOffset.UtcNow);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
@@ -396,8 +409,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     {
         using var client = CreateHttpsClient();
         var capability = new CapabilityDefinition(CapabilityId.New(), "zip-validation-test", [], new OutputDefinition(), "zip-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var attempt = task.Assign(AttemptId.New(), unit.Id, "zip-validation-handle", DateTimeOffset.UtcNow);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
@@ -433,8 +446,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     {
         using var client = CreateHttpsClient();
         var capability = new CapabilityDefinition(CapabilityId.New(), "checksum-validation-test", [], new OutputDefinition(), "checksum-contract");
-        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var attempt = task.Assign(AttemptId.New(), unit.Id, "checksum-validation-handle", DateTimeOffset.UtcNow);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
         var tasks = factory.Services.GetRequiredService<ITaskRepository>();
@@ -505,6 +518,9 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         }
         return content.ToArray();
     }
+
+    private static MachineProfile Machine(ResourceTier tier, ResourceTier computeTier, int memoryGiB) =>
+        new(tier, new MachineSpecifications(computeTier, memoryGiB));
 
     private static Task SendAsync(WebSocket socket, ProviderMessage message) => socket.SendAsync(message.ToByteArray(), WebSocketMessageType.Binary, endOfMessage: true, CancellationToken.None);
 

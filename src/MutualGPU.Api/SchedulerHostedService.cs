@@ -26,16 +26,36 @@ public sealed class SchedulerHostedService(SchedulerApplication scheduler, Provi
             var timerTick = Task.Delay(TimeSpan.FromSeconds(1), timeProvider, waitCancellation.Token);
             var signalTick = signal.WaitAsync(waitCancellation.Token).AsTask();
             var completed = await Task.WhenAny(timerTick, signalTick).ConfigureAwait(false);
-            if (completed == signalTick) await signalTick.ConfigureAwait(false);
+            var wasSignalled = completed == signalTick;
+            if (wasSignalled) await signalTick.ConfigureAwait(false);
             waitCancellation.Cancel();
             try { await (completed == timerTick ? signalTick : timerTick).ConfigureAwait(false); }
             catch (OperationCanceledException) { }
-            await sessions.RevokeExpired(timeProvider.GetUtcNow().Subtract(TimeSpan.FromSeconds(30))).RunAsync(stoppingToken).ConfigureAwait(false);
-            await sessions.RevokeDisconnected(timeProvider.GetUtcNow().Subtract(TimeSpan.FromSeconds(155))).RunAsync(stoppingToken).ConfigureAwait(false);
-            using var activity = telemetry.Activities.StartActivity("mutualgpu.scheduler.evaluate");
-            telemetry.AttemptsAssigned(await scheduler.Evaluate(timeProvider.GetUtcNow()).RunAsync(stoppingToken).ConfigureAwait(false));
+            if (wasSignalled)
+            {
+                await fibers.RunObservedAsync(
+                    fibers.Scheduler,
+                    "scheduler-evaluation",
+                    "assign-queued-tasks",
+                    EvaluateAsync,
+                    stoppingToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await EvaluateAsync(stoppingToken).ConfigureAwait(false);
+            }
         }
         return 0;
+    }
+
+    private async Task<int> EvaluateAsync(CancellationToken cancellationToken)
+    {
+        await sessions.RevokeExpired(timeProvider.GetUtcNow().Subtract(TimeSpan.FromSeconds(30))).RunAsync(cancellationToken).ConfigureAwait(false);
+        await sessions.RevokeDisconnected(timeProvider.GetUtcNow().Subtract(TimeSpan.FromSeconds(155))).RunAsync(cancellationToken).ConfigureAwait(false);
+        using var activity = telemetry.Activities.StartActivity("mutualgpu.scheduler.evaluate");
+        var assigned = await scheduler.Evaluate(timeProvider.GetUtcNow()).RunAsync(cancellationToken).ConfigureAwait(false);
+        telemetry.AttemptsAssigned(assigned);
+        return assigned;
     }
 }
 

@@ -8,7 +8,7 @@ public sealed class TaskAttemptStateTests
     public void Disconnected_attempt_can_only_be_rebound_by_its_current_handle()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UnixEpoch);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UnixEpoch);
         var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), "valid-handle", DateTimeOffset.UnixEpoch);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UnixEpoch.AddSeconds(1));
         task.Disconnect(attempt.Id, attempt.Handle, DateTimeOffset.UnixEpoch.AddSeconds(2));

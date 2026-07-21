@@ -9,9 +9,9 @@ public sealed class SchedulerApplicationTests
     public async Task Scheduler_assigns_the_best_idle_connected_candidate_and_marks_it_busy()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, new ResourceProfile(ResourceTier.Medium, ResourceTier.Small), new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Medium, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var unit = ExecutionUnitId.New();
-        var presence = new FakePresence(new ProviderCandidate(unit, capability.Id, new ResourceProfile(ResourceTier.Medium, ResourceTier.Medium), true));
+        var presence = new FakePresence(Candidate(unit, capability.Id, ResourceTier.Medium));
         var assignments = new FakeAssignments(presence);
         var scheduler = new SchedulerApplication(new FakeQueue(task), presence, new FakeTasks(), assignments);
 
@@ -33,11 +33,11 @@ public sealed class SchedulerApplicationTests
             TaskId.New(),
             requestor,
             capability,
-            ResourceProfile.Automatic,
+            ResourceTier.Automatic,
             new TaskParameters(new Dictionary<string, string>(), image, ImageContentType: "image/png", ImageExtension: "png", ImageLength: 42, ImageSha256: "digest"),
             DateTimeOffset.UtcNow);
         var unit = ExecutionUnitId.New();
-        var presence = new FakePresence(new ProviderCandidate(unit, capability.Id, ResourceProfile.Automatic, true));
+        var presence = new FakePresence(Candidate(unit, capability.Id, ResourceTier.Small));
         var assignments = new FakeAssignments(presence);
         var scheduler = new SchedulerApplication(
             new FakeQueue(task),
@@ -58,17 +58,17 @@ public sealed class SchedulerApplicationTests
     }
 
     [Fact]
-    public async Task Higher_tier_work_is_assigned_before_older_lower_tier_work_and_preserves_specialist_capacity()
+    public async Task Older_matching_work_is_assigned_first_and_preserves_specialist_capacity()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var now = DateTimeOffset.UtcNow;
-        var lower = NewTask(capability, new ResourceProfile(ResourceTier.Small, ResourceTier.Small), now.AddMinutes(-5));
-        var higher = NewTask(capability, new ResourceProfile(ResourceTier.Large, ResourceTier.Large), now);
+        var lower = NewTask(capability, ResourceTier.Small, now.AddMinutes(-5));
+        var higher = NewTask(capability, ResourceTier.Large, now);
         var smallUnit = ExecutionUnitId.New();
         var largeUnit = ExecutionUnitId.New();
         var presence = new FakePresence(
-            new ProviderCandidate(smallUnit, capability.Id, new ResourceProfile(ResourceTier.Small, ResourceTier.Small), true),
-            new ProviderCandidate(largeUnit, capability.Id, new ResourceProfile(ResourceTier.Large, ResourceTier.Large), true));
+            Candidate(smallUnit, capability.Id, ResourceTier.Small),
+            Candidate(largeUnit, capability.Id, ResourceTier.Large));
         var assignments = new FakeAssignments(presence);
         var scheduler = new SchedulerApplication(new FakeQueue(lower, higher), presence, new FakeTasks(), assignments);
 
@@ -77,20 +77,20 @@ public sealed class SchedulerApplicationTests
         Assert.Equal(2, count);
         Assert.Collection(
             assignments.Delivered,
-            item => { Assert.Equal(higher.Id, item.Assignment.TaskId); Assert.Equal(largeUnit, item.UnitId); },
-            item => { Assert.Equal(lower.Id, item.Assignment.TaskId); Assert.Equal(smallUnit, item.UnitId); });
+            item => { Assert.Equal(lower.Id, item.Assignment.TaskId); Assert.Equal(smallUnit, item.UnitId); },
+            item => { Assert.Equal(higher.Id, item.Assignment.TaskId); Assert.Equal(largeUnit, item.UnitId); });
     }
 
     [Fact]
-    public async Task Exact_resource_match_is_preferred_over_a_better_node()
+    public async Task Exact_tier_match_is_preferred_over_a_higher_tier_node()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = NewTask(capability, new ResourceProfile(ResourceTier.Medium, ResourceTier.Medium), DateTimeOffset.UtcNow);
+        var task = NewTask(capability, ResourceTier.Medium, DateTimeOffset.UtcNow);
         var exact = ExecutionUnitId.New();
         var better = ExecutionUnitId.New();
         var presence = new FakePresence(
-            new ProviderCandidate(better, capability.Id, new ResourceProfile(ResourceTier.Large, ResourceTier.Large), true),
-            new ProviderCandidate(exact, capability.Id, new ResourceProfile(ResourceTier.Medium, ResourceTier.Medium), true));
+            Candidate(better, capability.Id, ResourceTier.Large),
+            Candidate(exact, capability.Id, ResourceTier.Medium));
         var assignments = new FakeAssignments(presence);
         var scheduler = new SchedulerApplication(new FakeQueue(task), presence, new FakeTasks(), assignments);
 
@@ -100,16 +100,37 @@ public sealed class SchedulerApplicationTests
     }
 
     [Fact]
+    public async Task Machine_specifications_are_task_matching_constraints()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var task = NewTask(capability, ResourceTier.Large, DateTimeOffset.UtcNow);
+        var unit = ExecutionUnitId.New();
+        var presence = new FakePresence(new ProviderCandidate(
+            unit,
+            capability.Id,
+            ResourceTier.Large,
+            new MachineSpecifications(ResourceTier.Small, 4),
+            true));
+        var assignments = new FakeAssignments(presence);
+        var scheduler = new SchedulerApplication(new FakeQueue(task), presence, new FakeTasks(), assignments);
+
+        await scheduler.Evaluate(DateTimeOffset.UtcNow).RunAsync(CancellationToken.None);
+
+        Assert.Empty(assignments.Delivered);
+        Assert.Equal(MutualGPU.Domain.TaskStatus.Queued, task.Status);
+    }
+
+    [Fact]
     public async Task One_pass_assigns_until_all_candidates_are_exhausted_and_leaves_unmatched_work_queued()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var now = DateTimeOffset.UtcNow;
-        var first = NewTask(capability, ResourceProfile.Automatic, now);
-        var second = NewTask(capability, ResourceProfile.Automatic, now.AddSeconds(1));
-        var third = NewTask(capability, ResourceProfile.Automatic, now.AddSeconds(2));
+        var first = NewTask(capability, ResourceTier.Automatic, now);
+        var second = NewTask(capability, ResourceTier.Automatic, now.AddSeconds(1));
+        var third = NewTask(capability, ResourceTier.Automatic, now.AddSeconds(2));
         var presence = new FakePresence(
-            new ProviderCandidate(ExecutionUnitId.New(), capability.Id, ResourceProfile.Automatic, true),
-            new ProviderCandidate(ExecutionUnitId.New(), capability.Id, ResourceProfile.Automatic, true));
+            Candidate(ExecutionUnitId.New(), capability.Id, ResourceTier.Small),
+            Candidate(ExecutionUnitId.New(), capability.Id, ResourceTier.Medium));
         var assignments = new FakeAssignments(presence);
         var scheduler = new SchedulerApplication(new FakeQueue(first, second, third), presence, new FakeTasks(), assignments);
 
@@ -125,8 +146,8 @@ public sealed class SchedulerApplicationTests
     public async Task Failed_transport_delivery_requeues_the_assignment_without_consuming_a_provider_slot()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = NewTask(capability, ResourceProfile.Automatic, DateTimeOffset.UtcNow);
-        var presence = new FakePresence(new ProviderCandidate(ExecutionUnitId.New(), capability.Id, ResourceProfile.Automatic, true));
+        var task = NewTask(capability, ResourceTier.Automatic, DateTimeOffset.UtcNow);
+        var presence = new FakePresence(Candidate(ExecutionUnitId.New(), capability.Id, ResourceTier.Small));
         var assignments = new FakeAssignments(presence, shouldDeliver: false);
         var scheduler = new SchedulerApplication(new FakeQueue(task), presence, new FakeTasks(), assignments);
 
@@ -138,8 +159,11 @@ public sealed class SchedulerApplicationTests
         Assert.Single(assignments.Removed);
     }
 
-    private static TaskRequest NewTask(CapabilityDefinition capability, ResourceProfile resources, DateTimeOffset createdAt) =>
-        new(TaskId.New(), RequestorId.New(), capability, resources, new TaskParameters(new Dictionary<string, string>(), null), createdAt);
+    private static TaskRequest NewTask(CapabilityDefinition capability, ResourceTier tier, DateTimeOffset createdAt) =>
+        new(TaskId.New(), RequestorId.New(), capability, tier, new TaskParameters(new Dictionary<string, string>(), null), createdAt);
+
+    private static ProviderCandidate Candidate(ExecutionUnitId unit, CapabilityId capability, ResourceTier tier) =>
+        new(unit, capability, tier, new MachineSpecifications(tier is ResourceTier.Automatic ? ResourceTier.Small : tier, 16), true);
 
     private sealed class FakeQueue(params TaskRequest[] tasks) : IQueuedTaskReader
     {

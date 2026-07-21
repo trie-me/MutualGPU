@@ -6,16 +6,14 @@ public sealed record SubmitTaskRequestDto(
     Guid CapabilityId,
     string ContractHash,
     IReadOnlyDictionary<string, string> Scalars,
-    ResourceTier Compute,
-    ResourceTier Memory,
+    MachineSpecifications Resources,
     string? IdempotencyKey = null);
 
 public sealed record TaskDto(
     Guid TaskId,
     string CapabilityName,
     DateTimeOffset CreatedAt,
-    ResourceTier Compute,
-    ResourceTier Memory,
+    MachineSpecifications Resources,
     MutualGPU.Domain.TaskStatus Status,
     int AttemptCount,
     string? FailureStep,

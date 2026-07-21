@@ -52,6 +52,7 @@ public static class ProviderWebSocketEndpoints
         IObjectStore store,
         MutualGpuObjectKeys keys,
         DisconnectRecoveryService recovery,
+        TaskAttemptFiberTracker taskFibers,
         MutualGpuFiberOwner fibers,
         CancellationToken cancellationToken)
     {
@@ -64,7 +65,7 @@ public static class ProviderWebSocketEndpoints
         {
             var fiber = scope.Start(Latent<int>.DelayAsync(async fiberCancellationToken =>
             {
-                await ConnectCoreAsync(socket, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, fiberCancellationToken).ConfigureAwait(false);
+                await ConnectCoreAsync(socket, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, fiberCancellationToken).ConfigureAwait(false);
                 return 0;
             }), new FiberDescriptor("provider-websocket-session"));
             outcome = await fiber.JoinAsync().ConfigureAwait(false);
@@ -87,6 +88,7 @@ public static class ProviderWebSocketEndpoints
         IObjectStore store,
         MutualGpuObjectKeys keys,
         DisconnectRecoveryService recovery,
+        TaskAttemptFiberTracker taskFibers,
         CancellationToken cancellationToken)
     {
         ProviderMessage first;
@@ -116,7 +118,7 @@ public static class ProviderWebSocketEndpoints
             while (socket.State is WebSocketState.Open)
             {
                 var message = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false);
-                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, unitId, message, cancellationToken).ConfigureAwait(false);
+                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, taskFibers, unitId, message, cancellationToken).ConfigureAwait(false);
                 if (!valid) { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Invalid task handle.", cancellationToken).ConfigureAwait(false); break; }
                 if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
                     await SendAsync(socket, sendGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);
@@ -125,6 +127,7 @@ public static class ProviderWebSocketEndpoints
         catch (WebSocketException) { }
         finally
         {
+            await taskFibers.CancelExecutionUnitAsync(unitId).ConfigureAwait(false);
             if (connections.IsCurrent(lease))
             {
                 if (await sessions.Disconnect(unitId).RunAsync(CancellationToken.None).ConfigureAwait(false) > 0) recovery.Start(unitId);
@@ -139,17 +142,51 @@ public static class ProviderWebSocketEndpoints
         }
     }
 
-    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, ExecutionUnitId unitId, ProviderMessage message, CancellationToken cancellationToken) => message.BodyCase switch
+    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, ExecutionUnitId unitId, ProviderMessage message, CancellationToken cancellationToken)
     {
-        ProviderMessage.BodyOneofCase.Accepted => await sessions.Accept(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), message.Accepted.TaskHandle, DateTimeOffset.UtcNow).RunAsync(cancellationToken).ConfigureAwait(false),
-        ProviderMessage.BodyOneofCase.Rejected => await sessions.Reject(unitId, ParseTaskId(message.Rejected.TaskId), ParseAttemptId(message.Rejected.AttemptId), message.Rejected.TaskHandle, message.Rejected.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
-        ProviderMessage.BodyOneofCase.Failed => await sessions.Fail(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step).RunAsync(cancellationToken).ConfigureAwait(false),
-        ProviderMessage.BodyOneofCase.Completed => await sessions.Complete(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false),
-        ProviderMessage.BodyOneofCase.Progress => sessions.ReportProgress(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), message.Progress.TaskHandle, new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message)),
-        ProviderMessage.BodyOneofCase.ResultUpload => await IssueUploadAsync(assignments, uploads, socket, sendGate, unitId, message.ResultUpload, cancellationToken).ConfigureAwait(false),
-        ProviderMessage.BodyOneofCase.InputDownload => await IssueInputAsync(assignments, store, keys, socket, sendGate, unitId, message.InputDownload, cancellationToken).ConfigureAwait(false),
-        _ => false,
-    };
+        var accepted = message.BodyCase switch
+        {
+            ProviderMessage.BodyOneofCase.Accepted => await sessions.Accept(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), message.Accepted.TaskHandle, DateTimeOffset.UtcNow).RunAsync(cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.Rejected => await sessions.Reject(unitId, ParseTaskId(message.Rejected.TaskId), ParseAttemptId(message.Rejected.AttemptId), message.Rejected.TaskHandle, message.Rejected.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.Failed => await sessions.Fail(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step).RunAsync(cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.Completed => await sessions.Complete(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.Progress => sessions.ReportProgress(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), message.Progress.TaskHandle, new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message)),
+            ProviderMessage.BodyOneofCase.ResultUpload => await IssueUploadAsync(assignments, uploads, socket, sendGate, unitId, message.ResultUpload, cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.InputDownload => await IssueInputAsync(assignments, store, keys, socket, sendGate, unitId, message.InputDownload, cancellationToken).ConfigureAwait(false),
+            _ => false,
+        };
+        if (!accepted) return false;
+
+        if (message.BodyCase is ProviderMessage.BodyOneofCase.Accepted)
+        {
+            taskFibers.Start(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId));
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), "task-acceptance", "accept assignment", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
+        {
+            var phase = String.IsNullOrWhiteSpace(message.Progress.Phase) ? "provider work" : message.Progress.Phase;
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), "task-phase", $"{phase} {message.Progress.Percent:0}%", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.InputDownload)
+        {
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.InputDownload.TaskId), ParseAttemptId(message.InputDownload.AttemptId), "task-input-download", "authorize input download", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.ResultUpload)
+        {
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.ResultUpload.TaskId), ParseAttemptId(message.ResultUpload.AttemptId), "task-result-upload", "authorize result upload", cancellationToken).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
+        {
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), "task-completion", "record completion", cancellationToken).ConfigureAwait(false);
+            await taskFibers.CompleteAsync(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId)).ConfigureAwait(false);
+        }
+        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Failed)
+        {
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), "task-failure", $"record failure: {message.Failed.Step}", cancellationToken).ConfigureAwait(false);
+            await taskFibers.CompleteAsync(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId)).ConfigureAwait(false);
+        }
+        return true;
+    }
 
     private static async Task WriteAssignmentsAsync(WebSocket socket, ProviderSessionLease lease, IObjectStore store, MutualGpuObjectKeys keys, SemaphoreSlim sendGate, CancellationToken cancellationToken)
     {

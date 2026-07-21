@@ -10,14 +10,14 @@ public sealed class ResourceMatrixProjectionTests
     {
         var matrix = ResourceMatrixProjection.Create(
         [
-            new(ResourceTier.Small, ResourceTier.Large, 1, 1),
-            new(ResourceTier.Large, ResourceTier.Small, 2, 0),
-            new(ResourceTier.Large, ResourceTier.Large, 1, 1),
+            new(ResourceTier.Small, 32, 1, 1),
+            new(ResourceTier.Large, 8, 2, 0),
+            new(ResourceTier.Large, 32, 1, 1),
         ]);
 
-        Assert.Equal([ResourceTier.Small, ResourceTier.Large], matrix.MemoryAxis);
-        Assert.Equal([ResourceTier.Large, ResourceTier.Small], matrix.ComputeAxis.Select(static row => row.Compute));
-        Assert.Equal(ResourceTier.Small, matrix.ComputeAxis[0].Cells[0].Memory);
+        Assert.Equal([8, 32], matrix.MemoryGiBAxis);
+        Assert.Equal([ResourceTier.Large, ResourceTier.Small], matrix.ComputeAxis.Select(static row => row.ComputeTier));
+        Assert.Equal(8, matrix.ComputeAxis[0].Cells[0].MemoryGiB);
         Assert.Equal(0, matrix.ComputeAxis[0].Cells[0].IdleCount);
     }
 }

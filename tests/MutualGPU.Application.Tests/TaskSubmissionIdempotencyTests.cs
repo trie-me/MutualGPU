@@ -11,7 +11,7 @@ public sealed class TaskSubmissionIdempotencyTests
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [new InputDefinition("seed", CapabilityInputType.Integer, true, "Seed")], new OutputDefinition(), "hash");
         var repository = new Tasks();
         var app = new TaskSubmissionApplication(new Capabilities(capability), new Presence(capability.Id), repository, new Events());
-        var command = new SubmitTaskCommand(RequestorId.New(), capability.Id, "hash", new Dictionary<string, string> { ["seed"] = "42" }, null, ResourceProfile.Automatic, DateTimeOffset.UtcNow, "same-key");
+        var command = new SubmitTaskCommand(RequestorId.New(), capability.Id, "hash", new Dictionary<string, string> { ["seed"] = "42" }, null, ResourceTier.Automatic, DateTimeOffset.UtcNow, "same-key");
 
         var first = Assert.IsType<SubmitTaskResult.Created>(await app.Submit(command).RunAsync());
         var duplicate = Assert.IsType<SubmitTaskResult.Created>(await app.Submit(command).RunAsync());
@@ -38,7 +38,7 @@ public sealed class TaskSubmissionIdempotencyTests
             "hash",
             new Dictionary<string, string>(),
             ArtifactId.New(),
-            ResourceProfile.Automatic,
+            ResourceTier.Automatic,
             DateTimeOffset.UtcNow,
             "same-image-key",
             TaskId.New(),
@@ -57,6 +57,22 @@ public sealed class TaskSubmissionIdempotencyTests
         Assert.Equal("idempotency_key_reused", changed.Code);
     }
 
+    [Fact]
+    public async Task Submission_queues_a_profile_that_has_no_current_matching_machine()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var app = new TaskSubmissionApplication(new Capabilities(capability), new Presence(capability.Id), new Tasks(), new Events());
+        var command = new SubmitTaskCommand(
+            RequestorId.New(), capability.Id, "hash", new Dictionary<string, string>(), null,
+            ResourceTier.ExtraLarge, DateTimeOffset.UtcNow);
+
+        var result = await app.Submit(command).RunAsync();
+
+        var created = Assert.IsType<SubmitTaskResult.Created>(result);
+        Assert.Equal(new MachineSpecifications(ResourceTier.ExtraLarge, MachineSpecificationsPolicy.MinimumMemoryGiB), created.Task.Resources);
+        Assert.Equal(MutualGPU.Domain.TaskStatus.Queued, created.Task.Status);
+    }
+
     private sealed class Capabilities(CapabilityDefinition capability) : ICapabilityReader
     {
         public Task<CapabilityDefinition?> GetAsync(CapabilityId capabilityId, CancellationToken cancellationToken) => Task.FromResult<CapabilityDefinition?>(capability);
@@ -64,7 +80,8 @@ public sealed class TaskSubmissionIdempotencyTests
 
     private sealed class Presence(CapabilityId capabilityId) : IProviderPresence
     {
-        public IReadOnlyList<ProviderCandidate> GetConnectedCandidates(CapabilityId requested) => [new(ExecutionUnitId.New(), capabilityId, ResourceProfile.Automatic, true)];
+        public IReadOnlyList<ProviderCandidate> GetConnectedCandidates(CapabilityId requested) =>
+            [new(ExecutionUnitId.New(), capabilityId, ResourceTier.Small, new MachineSpecifications(ResourceTier.Small, 8), true)];
     }
 
     private sealed class Tasks : ITaskRepository

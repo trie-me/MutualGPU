@@ -88,6 +88,7 @@ builder.Services.AddSingleton<TaskSubmissionApplication>();
 builder.Services.AddSingleton<ProviderSessionApplication>();
 builder.Services.AddSingleton<SchedulerApplication>();
 builder.Services.AddSingleton<MutualGpuFiberOwner>();
+builder.Services.AddSingleton<TaskAttemptFiberTracker>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<MutualGpuFiberOwner>());
 builder.Services.AddHostedService<SchedulerHostedService>();
 builder.Services.AddSingleton<DisconnectRecoveryService>();
@@ -97,12 +98,21 @@ builder.Services.AddHostedService<StartupProjectionHostedService>();
 
 // Diagnostics are not part of the normal request path. Enable explicitly with
 // NetCats__FiberDiagnostics__Enabled=true; no observer or projection is created otherwise.
+var demoForestSimulationsEnabled = false;
 if (Boolean.TryParse(builder.Configuration["NetCats:FiberDiagnostics:Enabled"], out var diagnosticsEnabled) && diagnosticsEnabled)
 {
     builder.Services.AddNetCatsFiberDiagnostics(options =>
     {
         options.EnableInProduction = builder.Configuration.GetValue("NetCats:FiberDiagnostics:EnableInProduction", false);
+        options.CompletedRetention = TimeSpan.FromSeconds(3);
     });
+    if (builder.Configuration.GetValue("MutualGPU:Demo:SimulateForest", false))
+    {
+        demoForestSimulationsEnabled = true;
+        builder.Services.AddSingleton<DemoSimulationRegistry>();
+        builder.Services.AddSingleton<DemoForestSimulationHostedService>();
+        builder.Services.AddHostedService(static services => services.GetRequiredService<DemoForestSimulationHostedService>());
+    }
 }
 
 var app = builder.Build();
@@ -161,6 +171,13 @@ tasks.MapGet("/{taskId:guid}/result", MutualGpuEndpoints.GetTaskResult);
 if (diagnosticsEnabled)
 {
     app.MapNetCatsFiberDiagnostics("/_netcats/fibers");
+}
+if (demoForestSimulationsEnabled)
+{
+    app.MapGet("/_netcats/fiber-simulations", (DemoSimulationRegistry simulations) => Results.Json(simulations.Snapshot()));
+    app.MapGet("/_netcats/fiber-simulations/scenarios", (DemoForestSimulationHostedService simulations) => Results.Json(simulations.List()));
+    app.MapPost("/_netcats/fiber-simulations/scenarios/{id}", (string id, DemoForestSimulationHostedService simulations) =>
+        simulations.Run(id) ? Results.Accepted() : Results.Conflict());
 }
 
 app.Run();

@@ -28,7 +28,7 @@ export class ProviderClient {
     this.#reconnectDelay = reconnectDelay;
   }
 
-  async enroll(definition) { return this.#transport.enroll(definition); }
+  async enroll(definition) { return this.#transport.enroll(normalizeEnrollment(definition)); }
 
   async connect(handler) {
     if (typeof handler !== "function") throw new TypeError("A task handler is required");
@@ -179,3 +179,30 @@ export class ProviderClient {
     }
   }
 }
+
+// Capability identity and continuity fields belong to the server protocol. Keep
+// their placeholders inside the SDK so consumers only describe capabilities.
+const normalizeEnrollment = definition => {
+  if (!definition || typeof definition !== "object" || !definition.machine || !Array.isArray(definition.capabilities)) {
+    throw new TypeError("An enrollment requires a machine profile and capabilities array.");
+  }
+
+  const tiers = new Set(["Small", "Medium", "Large", "ExtraLarge"]);
+  const { tier, specifications } = definition.machine;
+  if (!tiers.has(tier)) throw new TypeError("A machine must advertise a concrete T-shirt tier.");
+  if (!specifications || !tiers.has(specifications.computeTier) || !Number.isInteger(specifications.memoryGiB) || specifications.memoryGiB <= 0) {
+    throw new TypeError("Machine specifications require a concrete CPU/GPU tier and positive integer memoryGiB.");
+  }
+
+  return {
+    ...definition,
+    capabilities: definition.capabilities.map(capability => {
+      if (!capability || typeof capability !== "object") throw new TypeError("Every capability must be an object.");
+      return {
+        ...capability,
+        id: { value: "00000000-0000-0000-0000-000000000000" },
+        contractHash: "server-computed"
+      };
+    })
+  };
+};

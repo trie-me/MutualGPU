@@ -72,11 +72,16 @@ class NativeGrpcSession {
   }
 
   async enroll(definition) {
-    const session = this.#http2.connect(this.#endpoint.origin);
+    // Enrollment and the long-running provider stream share one HTTP/2/TLS
+    // session. Closing the unary session immediately after its response can race
+    // Kestrel's GOAWAY write on macOS and produces a spurious SslStream failure.
+    const session = this.#getSession();
     const stream = session.request(grpcHeaders("/mutualgpu.v1.ProviderControl/Enroll", this.#presharedKey));
     const reader = new FrameReader();
     const responses = [];
+    let rejectSession = () => {};
     const result = new Promise((resolve, reject) => {
+      rejectSession = reject;
       let grpcStatus = "0";
       let grpcMessage = "";
       let httpStatus = 200;
@@ -92,7 +97,7 @@ class NativeGrpcSession {
       });
       // HTTP/2 sessions may fail before their request stream gets a chance to
       // surface an error. Propagate that as a normal enrollment rejection.
-      session.on("error", reject);
+      session.once("error", rejectSession);
       stream.on("error", reject);
       stream.on("end", () => {
         if (httpStatus !== 200) {
@@ -109,8 +114,12 @@ class NativeGrpcSession {
     try {
       stream.end(frame(this.#codec.encodeEnrollRequest({ definition: new TextEncoder().encode(JSON.stringify(definition)) })));
       return await result;
-    } finally {
+    } catch (error) {
+      if (this.#session === session) this.#session = null;
       session.close();
+      throw error;
+    } finally {
+      session.off("error", rejectSession);
     }
   }
 
@@ -122,7 +131,7 @@ class NativeGrpcSession {
     this.#closed = false;
     this.#connected = false;
     this.#onDisconnect = onDisconnect;
-    const session = this.#http2.connect(this.#endpoint.origin);
+    const session = this.#getSession();
     const stream = session.request(grpcHeaders("/mutualgpu.v1.ProviderControl/Connect", this.#presharedKey));
     this.#session = session;
     this.#stream = stream;
@@ -242,6 +251,16 @@ class NativeGrpcSession {
       ...this.#completionWaiters.splice(0)
     ]) waiter.reject(error);
   }
+
+  #getSession() {
+    if (this.#session && !this.#session.destroyed && !this.#session.closed) return this.#session;
+    const session = this.#http2.connect(this.#endpoint.origin);
+    this.#session = session;
+    session.once("close", () => {
+      if (this.#session === session) this.#session = null;
+    });
+    return session;
+  }
 }
 
 /**
@@ -254,9 +273,10 @@ export class NodeGrpcTransport {
 
   constructor(endpointOrClient, presharedKey, apiBaseUrl, fetchImpl = globalThis.fetch, codec = MutualGpuProtocol, http2Implementation = http2) {
     this.presharedKey = presharedKey;
-    this.apiBaseUrl = apiBaseUrl;
+    const nativeEndpoint = typeof endpointOrClient === "string" || endpointOrClient instanceof URL;
+    this.apiBaseUrl = apiBaseUrl ?? (nativeEndpoint ? endpointOrClient : undefined);
     this.fetchImpl = fetchImpl;
-    if (typeof endpointOrClient === "string" || endpointOrClient instanceof URL) {
+    if (nativeEndpoint) {
       this.#native = new NativeGrpcSession(endpointOrClient, presharedKey, codec, http2Implementation);
     } else {
       this.#legacy = endpointOrClient;

@@ -15,8 +15,8 @@ public static class MutualGpuEndpoints
             item.Capability.Id.Value,
             item.Capability.Name,
             item.Capability.ContractHash,
-            item.Resources.Select(profile => new ResourceAvailabilityDto(
-                profile.Resources.Compute, profile.Resources.Memory, profile.ConnectedCount, profile.IdleCount)).ToArray(),
+            item.Machines.Select(availability => new MachineAvailabilityDto(
+                availability.Specifications.ComputeTier, availability.Specifications.MemoryGiB, availability.ConnectedCount, availability.IdleCount)).ToArray(),
                 item.Capability.Inputs.Select(input => new CapabilityInputDto(input.Key, input.Type.ToString(), input.Required, input.Label, input.Description, input.Default, input.Minimum, input.Maximum, input.AllowedValues, input.ContentTypes)).ToArray())).ToArray());
     }
 
@@ -75,7 +75,7 @@ public static class MutualGpuEndpoints
                 request.ContractHash,
                 request.Scalars ?? new Dictionary<string, string>(StringComparer.Ordinal),
                 image,
-                new ResourceProfile(request.Compute, request.Memory),
+                request.Resources,
                 DateTimeOffset.UtcNow,
                 request.IdempotencyKey,
                 taskId,
@@ -150,8 +150,33 @@ public static class MutualGpuEndpoints
     private static bool TryWebpDimensions(byte[] bytes, out int width, out int height)
     {
         width = height = 0;
-        if (bytes.Length < 30 || !bytes.AsSpan(0, 4).SequenceEqual("RIFF"u8) || !bytes.AsSpan(8, 4).SequenceEqual("WEBP"u8)) return false;
-        if (bytes.AsSpan(12, 4).SequenceEqual("VP8X"u8)) { width = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16); height = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16); return true; }
+        if (bytes.Length < 16 || !bytes.AsSpan(0, 4).SequenceEqual("RIFF"u8) || !bytes.AsSpan(8, 4).SequenceEqual("WEBP"u8)) return false;
+
+        if (bytes.AsSpan(12, 4).SequenceEqual("VP8X"u8) && bytes.Length >= 30)
+        {
+            width = 1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16);
+            height = 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16);
+            return true;
+        }
+
+        // Lossy VP8 frame: three-byte frame tag, then the 0x9d012a start code
+        // and 14-bit little-endian dimensions.
+        if (bytes.AsSpan(12, 4).SequenceEqual("VP8 "u8) && bytes.Length >= 30 && bytes.AsSpan(23, 3).SequenceEqual(new byte[] { 0x9d, 0x01, 0x2a }))
+        {
+            width = (bytes[26] | (bytes[27] << 8)) & 0x3fff;
+            height = (bytes[28] | (bytes[29] << 8)) & 0x3fff;
+            return true;
+        }
+
+        // Lossless VP8L image: signature byte then a packed 14-bit width and height.
+        if (bytes.AsSpan(12, 4).SequenceEqual("VP8L"u8) && bytes.Length >= 25 && bytes[20] == 0x2f)
+        {
+            var packed = (uint)(bytes[21] | (bytes[22] << 8) | (bytes[23] << 16) | (bytes[24] << 24));
+            width = (int)(packed & 0x3fff) + 1;
+            height = (int)((packed >> 14) & 0x3fff) + 1;
+            return true;
+        }
+
         return false;
     }
 
@@ -205,11 +230,11 @@ public static class MutualGpuEndpoints
     }
 
     private static TaskDto ToDto(TaskSummary task, TaskProgress? progress = null) => new(
-        task.TaskId.Value, task.CapabilityName, task.CreatedAt, task.Resources.Compute, task.Resources.Memory,
+        task.TaskId.Value, task.CapabilityName, task.CreatedAt, task.Resources,
         task.Status, task.AttemptCount, task.FailureStep, task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress));
 
     private static TaskDto ToDto(TaskRequest task, TaskProgress? progress = null) => new(
-        task.Id.Value, task.Capability.Name, task.CreatedAt, task.Resources.Compute, task.Resources.Memory,
+        task.Id.Value, task.Capability.Name, task.CreatedAt, task.Resources,
         task.Status, task.AssignmentCount,
         task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureStep,
         task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress));

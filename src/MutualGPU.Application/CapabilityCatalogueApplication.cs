@@ -5,9 +5,9 @@ namespace MutualGPU.Application;
 
 public sealed record CapabilityAvailability(
     CapabilityDefinition Capability,
-    IReadOnlyList<ResourceAvailability> Resources);
+    IReadOnlyList<MachineAvailability> Machines);
 
-public sealed record ResourceAvailability(ResourceProfile Resources, int ConnectedCount, int IdleCount);
+public sealed record MachineAvailability(MachineSpecifications Specifications, int ConnectedCount, int IdleCount);
 
 public sealed class CapabilityCatalogueApplication(IExecutionUnitRepository units, IProviderPresence presence)
 {
@@ -17,12 +17,12 @@ public sealed class CapabilityCatalogueApplication(IExecutionUnitRepository unit
         return capabilities.Select(capability =>
         {
             var candidates = presence.GetConnectedCandidates(capability.Id);
-            var resources = candidates.GroupBy(static candidate => candidate.Resources)
-                .Select(group => new ResourceAvailability(group.Key, group.Count(), group.Count(static candidate => candidate.IsIdle)))
-                .OrderBy(static profile => profile.Resources.Compute)
-                .ThenBy(static profile => profile.Resources.Memory)
+            var machines = candidates.GroupBy(static candidate => candidate.Specifications)
+                .Select(group => new MachineAvailability(group.Key, group.Count(), group.Count(static candidate => candidate.IsIdle)))
+                .OrderByDescending(static availability => availability.Specifications.ComputeTier)
+                .ThenBy(static availability => availability.Specifications.MemoryGiB)
                 .ToArray();
-            return new CapabilityAvailability(capability, resources);
-        }).Where(static item => item.Resources.Count > 0).OrderBy(static item => item.Capability.Name, StringComparer.Ordinal).ToArray();
+            return new CapabilityAvailability(capability, machines);
+        }).Where(static item => item.Machines.Count > 0).OrderBy(static item => item.Capability.Name, StringComparer.Ordinal).ToArray();
     });
 }

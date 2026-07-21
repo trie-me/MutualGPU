@@ -13,19 +13,16 @@ public enum ResourceTier
     ExtraLarge = 5,
 }
 
-public sealed record ResourceProfile(ResourceTier Compute, ResourceTier Memory)
+public static class ResourceTierPolicy
 {
-    public static ResourceProfile Automatic { get; } = new(ResourceTier.Automatic, ResourceTier.Automatic);
+    public static bool IsValidRequest(ResourceTier tier) =>
+        tier is >= ResourceTier.Automatic and <= ResourceTier.ExtraLarge;
 
-    public bool IsValid => IsValidTier(Compute) && IsValidTier(Memory);
+    public static bool IsConcrete(ResourceTier tier) =>
+        tier is >= ResourceTier.Small and <= ResourceTier.ExtraLarge;
 
-    public bool Satisfies(ResourceProfile minimum) =>
-        Satisfies(Compute, minimum.Compute) && Satisfies(Memory, minimum.Memory);
-
-    private static bool Satisfies(ResourceTier candidate, ResourceTier minimum) =>
-        minimum is ResourceTier.Automatic or ResourceTier.Unspecified || candidate >= minimum;
-
-    private static bool IsValidTier(ResourceTier tier) => tier is >= ResourceTier.Automatic and <= ResourceTier.ExtraLarge;
+    public static bool Satisfies(ResourceTier candidate, ResourceTier requested) =>
+        IsConcrete(candidate) && (requested is ResourceTier.Automatic || candidate >= requested);
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -123,18 +120,57 @@ public sealed record CapabilityDefinition(
     }
 }
 
-public sealed record MachineProfile(ResourceTier Compute, ResourceTier Memory)
+/// <summary>Coarse CPU/GPU and memory dimensions exposed to requestors.</summary>
+public sealed record MachineSpecifications(ResourceTier ComputeTier, int MemoryGiB);
+
+public static class MachineSpecificationsPolicy
 {
-    public ResourceProfile Resources => new(Compute, Memory);
+    public const int MinimumMemoryGiB = 8;
+    public const int MaximumMemoryGiB = 128;
+
+    /// <summary>
+    /// Coarse Apple-silicon MacBook WebGPU profiles. Memory is an inclusive range,
+    /// rather than an exact model SKU: a profile may request any value from 8 GiB
+    /// through the profile's published upper bound.
+    /// </summary>
+    public static int MaximumMemoryFor(ResourceTier computeTier) => computeTier switch
+    {
+        ResourceTier.Small => 16,       // M1-class: 8 CPU / 8 GPU cores
+        ResourceTier.Medium => 24,      // M2/M3-class: 8 CPU / 10 GPU cores
+        ResourceTier.Large => 48,       // Pro-class: 12 CPU / 18–20 GPU cores
+        ResourceTier.ExtraLarge => MaximumMemoryGiB, // Max-class: 16 CPU / 40 GPU cores
+        _ => 0,
+    };
+
+    public static bool IsValid(MachineSpecifications specifications) =>
+        ResourceTierPolicy.IsConcrete(specifications.ComputeTier) &&
+        specifications.MemoryGiB >= MinimumMemoryGiB &&
+        specifications.MemoryGiB <= MaximumMemoryFor(specifications.ComputeTier);
+
+    /// <summary>A node may satisfy a smaller CPU/GPU and memory request.</summary>
+    public static bool Satisfies(MachineSpecifications candidate, MachineSpecifications requested) =>
+        IsValid(candidate) && IsValid(requested) &&
+        candidate.ComputeTier >= requested.ComputeTier && candidate.MemoryGiB >= requested.MemoryGiB;
 }
+
+/// <summary>
+/// Tier is provider classification metadata. Specifications describe the capacity that
+/// requestors select and that scheduling matches.
+/// </summary>
+public sealed record MachineProfile(ResourceTier Tier, MachineSpecifications Specifications);
 
 public sealed record EnrollmentDefinition(MachineProfile Machine, IReadOnlyList<CapabilityDefinition> Capabilities)
 {
     public void Validate()
     {
-        if (!Machine.Resources.IsValid)
+        if (!ResourceTierPolicy.IsConcrete(Machine.Tier))
         {
-            throw new DomainRuleViolation("machine_resource_profile_invalid", "The machine resource profile is invalid.");
+            throw new DomainRuleViolation("machine_tier_invalid", "A machine must advertise a concrete T-shirt tier.");
+        }
+
+        if (!MachineSpecificationsPolicy.IsValid(Machine.Specifications))
+        {
+            throw new DomainRuleViolation("machine_specifications_invalid", "Machine specifications require a concrete CPU/GPU tier and positive memory GiB.");
         }
 
         if (Capabilities.GroupBy(static capability => capability.Name, StringComparer.Ordinal).Any(static group => group.Count() > 1))

@@ -3,6 +3,12 @@ import assert from "node:assert/strict";
 import { BrowserWebSocketTransport } from "../src/websocket-transport.js";
 import { MutualGpuProtocol } from "@mutualgpu/provider-core/protocol";
 
+test("browser transport derives its session from one API base URL", () => {
+  const transport = new BrowserWebSocketTransport("https://mutualgpu.example/", "provider-key");
+  assert.equal(transport.apiBaseUrl, "https://mutualgpu.example/");
+  assert.equal(transport.url, "wss://mutualgpu.example/provider/connect");
+});
+
 test("browser transport enrolls through the authenticated protobuf HTTP endpoint", async () => {
   let encoded;
   let request;
@@ -19,12 +25,13 @@ test("browser transport enrolls through the authenticated protobuf HTTP endpoint
       return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([4, 5]).buffer };
     });
 
-  const response = await transport.enroll({ machine: { compute: "Medium" } });
+  const definition = { machine: { tier: "Medium", specifications: { computeTier: "Medium", memoryGiB: 16 } } };
+  const response = await transport.enroll(definition);
 
   assert.equal(response.executionUnitId, "unit-2");
   assert.equal(request.url.pathname, "/provider/enroll");
   assert.equal(request.init.headers.Authorization, "Bearer provider-key");
-  assert.deepEqual(JSON.parse(new TextDecoder().decode(encoded.definition)), { machine: { compute: "Medium" } });
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(encoded.definition)), definition);
 });
 
 test("browser transport uses the canonical codec and waits for Connected before resolving", async () => {
@@ -122,7 +129,7 @@ test("browser transport rebinds the supplied active handle and reports a closed 
 test("browser transport rejects cleartext control-plane endpoints", () => {
   assert.throws(
     () => new BrowserWebSocketTransport("ws://mutualgpu.example/provider/connect", "provider-key", "https://mutualgpu.example/"),
-    /require a wss session URL/);
+    /require an https API URL or wss session URL/);
   assert.throws(
     () => new BrowserWebSocketTransport("wss://mutualgpu.example/provider/connect", "provider-key", "http://mutualgpu.example/"),
     /require an https API base URL/);

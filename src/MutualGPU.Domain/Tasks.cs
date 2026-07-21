@@ -70,17 +70,16 @@ public sealed class TaskRequest
         TaskId id,
         RequestorId requestorId,
         CapabilityDefinition capability,
-        ResourceProfile resources,
+        MachineSpecifications resources,
         TaskParameters parameters,
         DateTimeOffset createdAt)
     {
         ArgumentNullException.ThrowIfNull(capability);
-        ArgumentNullException.ThrowIfNull(resources);
         ArgumentNullException.ThrowIfNull(parameters);
         capability.Validate();
-        if (!resources.IsValid)
+        if (!MachineSpecificationsPolicy.IsValid(resources))
         {
-            throw new DomainRuleViolation("task_resource_profile_invalid", "The requested resource profile is invalid.");
+            throw new DomainRuleViolation("task_resources_invalid", "A task requires a concrete CPU/GPU tier and positive memory GiB.");
         }
 
         Id = id;
@@ -92,13 +91,26 @@ public sealed class TaskRequest
         Status = TaskStatus.Queued;
     }
 
+    public TaskRequest(
+        TaskId id,
+        RequestorId requestorId,
+        CapabilityDefinition capability,
+        ResourceTier tier,
+        TaskParameters parameters,
+        DateTimeOffset createdAt)
+        : this(id, requestorId, capability, LegacyResources(tier), parameters, createdAt)
+    {
+    }
+
     public TaskId Id { get; }
 
     public RequestorId RequestorId { get; }
 
     public CapabilityDefinition Capability { get; }
 
-    public ResourceProfile Resources { get; }
+    public MachineSpecifications Resources { get; }
+
+    public ResourceTier Tier => Resources.ComputeTier;
 
     public TaskParameters Parameters { get; }
 
@@ -227,13 +239,20 @@ public sealed class TaskRequest
         task.attempts.AddRange(snapshot.Attempts);
         return task;
     }
+
+    private static MachineSpecifications LegacyResources(ResourceTier tier) => tier switch
+    {
+        ResourceTier.Unspecified => new MachineSpecifications(ResourceTier.Unspecified, 0),
+        ResourceTier.Automatic => new MachineSpecifications(ResourceTier.Small, MachineSpecificationsPolicy.MinimumMemoryGiB),
+        _ => new MachineSpecifications(tier, MachineSpecificationsPolicy.MinimumMemoryGiB),
+    };
 }
 
 public sealed record TaskRequestSnapshot(
     TaskId Id,
     RequestorId RequestorId,
     CapabilityDefinition Capability,
-    ResourceProfile Resources,
+    MachineSpecifications Resources,
     TaskParameters Parameters,
     DateTimeOffset CreatedAt,
     TaskStatus Status,

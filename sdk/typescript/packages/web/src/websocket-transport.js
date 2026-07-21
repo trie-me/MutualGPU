@@ -14,13 +14,18 @@ export class BrowserWebSocketTransport {
   #onDisconnect = null;
   #disconnectReported = false;
 
-  constructor(url, presharedKey, codecOrApiBaseUrl = MutualGpuProtocol, apiBaseUrl, fetchImpl = globalThis.fetch) {
-    const endpoint = new URL(url);
-    if (endpoint.protocol !== "wss:") throw new TypeError("MutualGPU browser providers require a wss session URL.");
+  constructor(urlOrApiBaseUrl, presharedKey, codecOrApiBaseUrl = MutualGpuProtocol, apiBaseUrl, fetchImpl = globalThis.fetch) {
+    const supplied = new URL(urlOrApiBaseUrl);
+    const baseUrlOnly = supplied.protocol === "https:";
+    if (!baseUrlOnly && supplied.protocol !== "wss:") throw new TypeError("MutualGPU browser providers require an https API URL or wss session URL.");
+    const endpoint = baseUrlOnly ? new URL("/provider/connect", supplied) : supplied;
+    if (baseUrlOnly) endpoint.protocol = "wss:";
     this.url = endpoint.href;
     this.presharedKey = presharedKey;
     this.codec = typeof codecOrApiBaseUrl === "string" ? MutualGpuProtocol : codecOrApiBaseUrl;
-    this.apiBaseUrl = typeof codecOrApiBaseUrl === "string" ? codecOrApiBaseUrl : apiBaseUrl;
+    this.apiBaseUrl = baseUrlOnly
+      ? supplied.href
+      : typeof codecOrApiBaseUrl === "string" ? codecOrApiBaseUrl : apiBaseUrl;
     if (this.apiBaseUrl && new URL(this.apiBaseUrl).protocol !== "https:") {
       throw new TypeError("MutualGPU browser providers require an https API base URL.");
     }

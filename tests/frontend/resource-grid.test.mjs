@@ -7,82 +7,65 @@ class Element {
     this.children = [];
     this.attributes = new Map();
     this.className = '';
-    this.scope = '';
     this.textContent = '';
+    this.dataset = {};
+    this.style = { setProperty() {} };
   }
 
-  append(...children) {
-    this.children.push(...children);
-  }
-
-  replaceChildren(...children) {
-    this.children = children;
-  }
-
-  setAttribute(name, value) {
-    this.attributes.set(name, value);
-  }
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.children = children; }
+  setAttribute(name, value) { this.attributes.set(name, value); }
 }
 
-globalThis.document = {
-  createElement: (tagName) => new Element(tagName),
-};
+globalThis.document = { createElement: tagName => new Element(tagName) };
 
-const { createResourceMatrix, memoryTiersForCompute, orderResourceTiers, renderResourceMatrix, resourceTiers } = await import('../../src/MutualGPU.Api/wwwroot/js/resource-grid.js');
+const { renderResourceGrid, resourceTiers } = await import('../../src/MutualGPU.Api/wwwroot/js/resource-grid.js');
 
-test('resource controls only offer automatic or an available memory tier for the selected compute tier', () => {
-  const resources = [
-    { compute: 'Small', memory: 'Large' },
-    { compute: 'Large', memory: 'Medium' },
-    { compute: 'Large', memory: 'Large' },
-  ];
-
-  assert.deepEqual(resourceTiers, ['Automatic', 'Small', 'Medium', 'Large', 'ExtraLarge']);
-  assert.deepEqual(orderResourceTiers(new Set(resources.map(item => item.compute))), ['Small', 'Large']);
-  assert.deepEqual(memoryTiersForCompute(resources, 'Automatic'), ['Automatic']);
-  assert.deepEqual(memoryTiersForCompute(resources, 'Large'), ['Medium', 'Large']);
-});
-
-test('named tiers retain memory x-axis ordering and descending compute y-axis ordering', () => {
-  const matrix = createResourceMatrix([
-    { compute: 'Small', memory: 'Large', connectedCount: 1, idleCount: 1 },
-    { compute: 'ExtraLarge', memory: 'Small', connectedCount: 1, idleCount: 0 },
-    { compute: 'Large', memory: 'Medium', connectedCount: 1, idleCount: 1 },
-  ]);
-
-  assert.deepEqual(matrix.memoryAxis, ['Small', 'Medium', 'Large']);
-  assert.deepEqual(matrix.computeAxis.map(row => row.compute), ['ExtraLarge', 'Large', 'Small']);
-});
-
-test('capacity matrix renders memory across x and descending compute down y', () => {
+test('resource picker uses the fixed MacBook CPU/GPU profiles and descending memory rows', () => {
   const container = new Element('div');
-  renderResourceMatrix(container, {
-    memoryAxis: ['Small', 'Large'],
-    computeAxis: [
-      { compute: 'Large', cells: [
-        { memory: 'Small', connectedCount: 2, idleCount: 0, isSelectable: true },
-        { memory: 'Large', connectedCount: 1, idleCount: 1, isSelectable: true },
-      ] },
-      { compute: 'Small', cells: [
-        { memory: 'Small', connectedCount: 0, idleCount: 0, isSelectable: false },
-        { memory: 'Large', connectedCount: 1, idleCount: 1, isSelectable: true },
-      ] },
-    ],
-  });
-
-  const [table] = container.children;
-  const [head, body] = table.children;
-  const [headerRow] = head.children;
-  const [largeRow, smallRow] = body.children;
-
-  assert.equal(table.attributes.get('aria-label'), 'Available CPU/GPU and memory capacity');
-  assert.deepEqual(headerRow.children.map((cell) => cell.textContent), [
-    'CPU/GPU tier ↓ · Memory tier →', 'Small', 'Large',
+  renderResourceGrid(container, [
+    { computeTier: 'Small', memoryGiB: 64, connectedCount: 1, idleCount: 1 },
+    { computeTier: 'Large', memoryGiB: 8, connectedCount: 1, idleCount: 0 },
+    { computeTier: 'Large', memoryGiB: 64, connectedCount: 1, idleCount: 1 },
   ]);
-  assert.equal(largeRow.children[0].textContent, 'Large');
-  assert.equal(smallRow.children[0].textContent, 'Small');
-  assert.equal(largeRow.children[1].textContent, '0 idle / 2 connected');
-  assert.equal(largeRow.children[1].className, 'resource-capacity-matrix__waiting');
-  assert.equal(smallRow.children[1].textContent, '—');
-  assert.equal(smallRow.children[1].className, 'resource-capacity-matrix__unavailable');
+
+  assert.deepEqual(resourceTiers, ['Small', 'Medium', 'Large', 'ExtraLarge']);
+  const [, grid] = container.children;
+  assert.equal(grid.attributes.get('aria-label'), 'Choose CPU/GPU and memory resources');
+  assert.equal(grid.children[0].textContent, 'Memory ↓ / CPU-GPU →');
+  assert.match(grid.children[1].textContent, /M1-class/);
+  assert.match(grid.children[4].textContent, /Max-class/);
+  assert.equal(grid.children[5].textContent, '128 GiB');
+  assert.equal(grid.children.find(cell => cell.textContent === '8 GiB').textContent, '8 GiB');
+});
+
+test('resource tiles select the exact advertised profile and surface queueing state', () => {
+  const container = new Element('div');
+  let selected;
+  renderResourceGrid(container, [
+    { computeTier: 'Large', memoryGiB: 32, connectedCount: 2, idleCount: 1 },
+  ], { onSelect: profile => { selected = profile; } });
+
+  const [, grid] = container.children;
+  const tile = grid.children.find(child => child.dataset.computeTier === 'Large' && child.dataset.memoryGiB === '32');
+  assert.equal(tile.className, 'resource-tile');
+  assert.equal(tile.children[0].textContent, '12-core CPU · 20-core GPU');
+  assert.equal(tile.children[1].textContent, '32 GiB unified memory');
+  assert.equal(tile.children[2].textContent, '1 ready · 2 connected');
+  tile.onclick();
+  assert.deepEqual(selected, { computeTier: 'Large', memoryGiB: 32 });
+});
+
+test('axis sort buttons provide a reversible resource ordering', () => {
+  const container = new Element('div');
+  let nextSort;
+  renderResourceGrid(container, [
+    { computeTier: 'Small', memoryGiB: 8, connectedCount: 1, idleCount: 1 },
+  ], { onSort: value => { nextSort = value; } });
+
+  const [controls] = container.children;
+  assert.equal(controls.children[0].textContent, 'CPU/GPU low → high');
+  assert.equal(controls.children[1].textContent, 'Memory high → low');
+  controls.children[0].onclick();
+  assert.deepEqual(nextSort, { computeDescending: true, memoryDescending: true });
 });

@@ -9,11 +9,16 @@ public sealed class ProviderEnvelopeTests
     public void TypeScript_and_browser_protobuf_fixtures_are_canonical_dotnet_messages()
     {
         var connect = ProviderMessage.Parser.ParseFrom(Convert.FromBase64String("CgcIARoDa2V5"));
+        var resultUpload = ProviderMessage.Parser.ParseFrom(Convert.FromBase64String("MhcKBmhhbmRsZRIEdGFzaxoHYXR0ZW1wdA=="));
         var assignment = ServerMessage.Parser.ParseFrom(Convert.FromBase64String("ElMKBHRhc2sSB2F0dGVtcHQaBmhhbmRsZSIKCgRzZWVkEgI0MiouChdodHRwczovL2lucHV0LmV4YW1wbGUvYRIJaW1hZ2UvcG5nGCoiBmRpZ2VzdA=="));
 
         Assert.Equal(ProviderMessage.BodyOneofCase.Connect, connect.BodyCase);
         Assert.Equal((uint)1, connect.Connect.ProtocolVersion);
         Assert.Equal("key", connect.Connect.Authorization);
+        Assert.Equal(ProviderMessage.BodyOneofCase.ResultUpload, resultUpload.BodyCase);
+        Assert.Equal("handle", resultUpload.ResultUpload.TaskHandle);
+        Assert.Equal("task", resultUpload.ResultUpload.TaskId);
+        Assert.Equal("attempt", resultUpload.ResultUpload.AttemptId);
         Assert.Equal(ServerMessage.BodyOneofCase.Assignment, assignment.BodyCase);
         Assert.Equal("42", assignment.Assignment.Scalars["seed"]);
         Assert.Equal("https://input.example/a", assignment.Assignment.Input.Url);

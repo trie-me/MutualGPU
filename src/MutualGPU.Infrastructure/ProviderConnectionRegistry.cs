@@ -23,7 +23,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
             });
             var sessionId = Guid.CreateVersion7();
             if (connections.TryGetValue(unit.Id, out var previous)) previous.Outbound.Writer.TryComplete();
-            connections[unit.Id] = new Connection(sessionId, unit.CurrentEnrollment.Machine.Resources, unit.CurrentEnrollment.Capabilities.Select(static capability => capability.Id).ToHashSet(), true, channel);
+            connections[unit.Id] = new Connection(sessionId, unit.CurrentEnrollment.Machine, unit.CurrentEnrollment.Capabilities.Select(static capability => capability.Id).ToHashSet(), true, channel);
             return new ProviderSessionLease(unit.Id, sessionId, channel.Reader);
         }
     }
@@ -67,7 +67,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         lock (gate)
         {
             return connections.Where(pair => pair.Value.Capabilities.Contains(capabilityId))
-                .Select(pair => new ProviderCandidate(pair.Key, capabilityId, pair.Value.Resources, pair.Value.IsIdle)).ToArray();
+                .Select(pair => new ProviderCandidate(pair.Key, capabilityId, pair.Value.Machine.Tier, pair.Value.Machine.Specifications, pair.Value.IsIdle)).ToArray();
         }
     }
 
@@ -161,7 +161,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     private readonly Dictionary<(ExecutionUnitId UnitId, TaskId TaskId, AttemptId AttemptId), ActiveProviderAssignment> active = [];
     private readonly Dictionary<TaskId, TaskProgress> progresses = [];
 
-    private sealed record Connection(Guid SessionId, ResourceProfile Resources, IReadOnlySet<CapabilityId> Capabilities, bool IsIdle, Channel<ProviderAssignment> Outbound);
+    private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlySet<CapabilityId> Capabilities, bool IsIdle, Channel<ProviderAssignment> Outbound);
 }
 
 public sealed record ProviderSessionLease(ExecutionUnitId ExecutionUnitId, Guid SessionId, ChannelReader<ProviderAssignment> Assignments);

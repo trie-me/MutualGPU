@@ -4,8 +4,45 @@ import { ProviderClient, ProviderClientError } from "../src/provider.js";
 import { uploadProviderResult } from "../src/result-upload.js";
 import { MutualGpuProtocol } from "../src/protocol.js";
 
+test("provider enrollment hides server-owned capability identity fields", async () => {
+  let enrolled;
+  const provider = new ProviderClient({
+    enroll: async definition => { enrolled = definition; },
+    close() {}
+  });
+
+  await provider.enroll({
+    machine: { tier: "Large", specifications: { computeTier: "Large", memoryGiB: 32 } },
+    capabilities: [{ name: "render", inputs: [], output: { hasMetadata: true } }]
+  });
+
+  assert.deepEqual(enrolled.capabilities[0], {
+    name: "render",
+    inputs: [],
+    output: { hasMetadata: true },
+    id: { value: "00000000-0000-0000-0000-000000000000" },
+    contractHash: "server-computed"
+  });
+  assert.deepEqual(enrolled.machine, { tier: "Large", specifications: { computeTier: "Large", memoryGiB: 32 } });
+});
+
+test("provider enrollment keeps scheduling tier separate from hardware specifications", async () => {
+  const provider = new ProviderClient({ enroll: async () => {}, close() {} });
+  const capability = { name: "render", inputs: [], output: {} };
+
+  await assert.rejects(
+    provider.enroll({ machine: { tier: "Automatic", specifications: { computeTier: "Large", memoryGiB: 32 } }, capabilities: [capability] }),
+    /concrete T-shirt tier/);
+  await assert.rejects(
+    provider.enroll({ machine: { tier: "Large", specifications: { computeTier: "Large", memoryGiB: 0 } }, capabilities: [capability] }),
+    /positive integer memoryGiB/);
+});
+
 test("canonical protobuf bytes round-trip with the .NET provider contracts", () => {
   const connect = MutualGpuProtocol.encodeProvider({ connect: { protocolVersion: 1, authorization: "key" } });
+  const resultUpload = MutualGpuProtocol.encodeProvider({
+    resultUpload: { taskId: "task", attemptId: "attempt", taskHandle: "handle" }
+  });
   const assignment = MutualGpuProtocol.encodeServer({
     assignment: {
       taskId: "task", attemptId: "attempt", taskHandle: "handle", scalars: { seed: "42" },
@@ -14,8 +51,12 @@ test("canonical protobuf bytes round-trip with the .NET provider contracts", () 
   });
 
   assert.equal(Buffer.from(connect).toString("base64"), "CgcIARoDa2V5");
+  assert.equal(Buffer.from(resultUpload).toString("base64"), "MhcKBmhhbmRsZRIEdGFzaxoHYXR0ZW1wdA==");
   assert.equal(Buffer.from(assignment).toString("base64"), "ElMKBHRhc2sSB2F0dGVtcHQaBmhhbmRsZSIKCgRzZWVkEgI0MiouChdodHRwczovL2lucHV0LmV4YW1wbGUvYRIJaW1hZ2UvcG5nGCoiBmRpZ2VzdA==");
   assert.deepEqual(MutualGpuProtocol.decodeProvider(connect), { connect: { protocolVersion: 1, activeTaskHandle: "", authorization: "key" } });
+  assert.deepEqual(MutualGpuProtocol.decodeProvider(resultUpload), {
+    resultUpload: { taskHandle: "handle", taskId: "task", attemptId: "attempt" }
+  });
   assert.deepEqual(MutualGpuProtocol.decodeServer(assignment), {
     assignment: {
       taskId: "task", attemptId: "attempt", taskHandle: "handle", scalars: { seed: "42" },

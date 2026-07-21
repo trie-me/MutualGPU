@@ -5,20 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MutualGPU Work Exchange</title>
   <link rel="stylesheet" href="/css/site.css">
-  <link rel="stylesheet" href="/css/mutualgpu.css">
-  <link rel="stylesheet" href="/css/fiber-tree-overlay.css">
+  <link rel="stylesheet" href="/css/mutualgpu.css?v=20260721-forest16">
+  <link rel="stylesheet" href="/css/fiber-tree-overlay.css?v=20260721-forest16">
 </head>
 <body>
+  <div id="application-shell">
   <header><a class="brand" href="/">MutualGPU</a><span>Find a kind GPU before another cat does.</span><a href="#task-list">My work ↗</a><button class="diagnostics-toggle" id="fiber-toggle" type="button">Runtime tree</button></header>
   <main>
-    <section class="hero"><p class="eyebrow">MutualGPU Work Exchange</p><h1>Put idle GPU time to work.</h1><p>Choose a currently connected capability, set its resource floor, and queue work for a mutual provider.</p></section>
+    <section class="hero"><p class="eyebrow">MutualGPU Work Exchange</p><h1>Put idle GPU time to work.</h1><p>Choose a task, supply its inputs, then select the resources it needs.</p></section>
     <div class="layout">
-      <section class="card"><h2>Available capacity</h2><p class="assist">Memory runs across; CPU/GPU compute runs from highest to lowest.</p><div id="resource-capacity-matrix" aria-live="polite"></div></section>
-      <aside class="card checkout" aria-labelledby="capability-title"><h2 id="capability-title">Your task</h2><label>Capability <select id="capability-select" aria-label="Choose a capability"></select></label><form id="task-form"></form><p id="task-message" role="status"></p></aside>
+      <section class="card request-builder" aria-labelledby="task-title"><h2 id="task-title">Create a task</h2><form id="task-form" enctype="multipart/form-data">
+        <section class="wizard-section" data-wizard-step="1"><p class="wizard-step">1. Select task</p><label>Capability <select id="capability-select" aria-label="Choose a capability"></select></label></section>
+        <section class="wizard-section" data-wizard-step="2"><p class="wizard-step">2. Supply task data</p><div id="dynamic-inputs"></div></section>
+        <section class="wizard-section" data-wizard-step="3"><p class="wizard-step">3. Select resources</p><p class="assist">Pick the minimum CPU/GPU and memory profile for this work. A busy profile queues until a matching node is ready.</p><div id="resource-picker" aria-live="polite"></div></section>
+        <button id="submit-task" type="submit" disabled>Queue task</button><p id="task-message" role="status"></p>
+      </form></section>
+      <aside class="card task-card" id="my-work" aria-labelledby="tasks-title"><div class="task-card__header"><h2 id="tasks-title">My work</h2><button id="refresh-tasks" type="button">Refresh</button></div><div id="task-list" aria-live="polite"></div></aside>
     </div>
-    <section class="card task-card" aria-labelledby="tasks-title"><h2 id="tasks-title">My work</h2><div id="task-list" aria-live="polite"></div></section>
   </main>
-  <aside class="fiber-overlay" id="fiber-overlay" hidden role="dialog" aria-labelledby="fiber-title"><div class="fiber-overlay__header"><strong id="fiber-title">Logical runtime tree</strong><button id="fiber-close" type="button">Close</button></div><p class="assist">Structured ownership, not operating-system threads.</p><p class="fiber-overlay__connection" id="fiber-status" role="status">Closed</p><p class="fiber-overlay__summary" id="fiber-summary"></p><div id="fiber-tree"></div></aside>
-  <script type="module" src="/js/mutualgpu.js"></script>
+  </div>
+  <aside class="fiber-overlay" id="fiber-overlay" hidden role="dialog" aria-labelledby="fiber-title"><div class="fiber-overlay__header"><strong id="fiber-title">Logical runtime forest</strong><div class="fiber-overlay__actions"><button id="fiber-reset" type="button">Reset view</button><button id="fiber-fit" type="button">Fit to screen</button><button id="fiber-task-only" type="button" aria-pressed="false">Task fibers only</button><button id="fiber-pause" type="button" aria-pressed="false">Pause</button><button id="fiber-close" type="button">Close</button></div></div><p class="assist">Scopes are larger nodes; fibers are smaller nodes. Scroll to zoom, drag to pan, click a node for detail.</p><div class="fiber-legend" aria-label="Forest legend"><span><i class="fiber-legend__scope"></i>Operational scope</span><span><i class="fiber-legend__running"></i>Active work</span><span><i class="fiber-legend__completed"></i>Completed work</span><span><i class="fiber-legend__cancelled"></i>Cancelled work</span><span><i class="fiber-legend__faulted"></i>Faulted work</span></div><p class="fiber-overlay__connection" id="fiber-status" role="status">Closed</p><p class="fiber-overlay__summary" id="fiber-summary"></p><div class="fiber-history" id="fiber-history" aria-label="Observed snapshot history"></div><section class="fiber-simulations" id="fiber-simulations" hidden aria-label="Simulated registrations"></section><canvas id="fiber-tree" class="fiber-forest" aria-label="Live logical runtime forest"></canvas><p id="fiber-selection" class="fiber-overlay__selection" aria-live="polite"></p><section class="fiber-tree-detail" id="fiber-tree-detail" hidden aria-label="Logical runtime tree detail"><div><strong>Logical runtime tree</strong><button id="fiber-tree-detail-close" type="button">Close tree</button></div><div id="fiber-tree-detail-body"></div></section></aside>
+  <script type="module" src="/js/mutualgpu.js?v=20260721-forest16"></script>
 </body>
 </html>

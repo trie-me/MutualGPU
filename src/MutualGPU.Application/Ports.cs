@@ -32,7 +32,7 @@ public sealed record TaskSummary(
     TaskId TaskId,
     string CapabilityName,
     DateTimeOffset CreatedAt,
-    ResourceProfile Resources,
+    MachineSpecifications Resources,
     MutualGPU.Domain.TaskStatus Status,
     int AttemptCount,
     string? FailureStep = null);
@@ -62,7 +62,12 @@ public interface IProviderPresence
     IReadOnlyList<ProviderCandidate> GetConnectedCandidates(CapabilityId capabilityId);
 }
 
-public sealed record ProviderCandidate(ExecutionUnitId ExecutionUnitId, CapabilityId CapabilityId, ResourceProfile Resources, bool IsIdle);
+public sealed record ProviderCandidate(
+    ExecutionUnitId ExecutionUnitId,
+    CapabilityId CapabilityId,
+    ResourceTier Tier,
+    MachineSpecifications Specifications,
+    bool IsIdle);
 
 /// <summary>Internal assignment data. The requestor identity is used only by the
 /// transport adapter to create one scoped presigned input URL; it never crosses the wire.</summary>

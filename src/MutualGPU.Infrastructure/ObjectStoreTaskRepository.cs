@@ -95,7 +95,7 @@ public sealed class ObjectStoreTaskRepository(
     public async Task<IReadOnlyList<TaskRequest>> GetQueuedAsync(CancellationToken cancellationToken)
     {
         var queued = new List<TaskRequest>();
-        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v1/queue"), cancellationToken).ConfigureAwait(false))
+        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v3/queue"), cancellationToken).ConfigureAwait(false))
         {
             var marker = await ReadAsync<QueueMarker>(entry.Key, cancellationToken).ConfigureAwait(false);
             if (marker is null) continue;
@@ -108,7 +108,7 @@ public sealed class ObjectStoreTaskRepository(
     public async Task<int> RecoverAsync(CancellationToken cancellationToken)
     {
         var ids = new HashSet<(RequestorId RequestorId, TaskId TaskId)>();
-        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v1/requestors"), cancellationToken).ConfigureAwait(false))
+        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v3/requestors"), cancellationToken).ConfigureAwait(false))
         {
             var segments = entry.Key.Value.Split('/', StringSplitOptions.RemoveEmptyEntries);
             var requestorIndex = Array.FindIndex(segments, static segment => StringComparer.Ordinal.Equals(segment, "requestors"));
@@ -175,7 +175,7 @@ public sealed class ObjectStoreTaskRepository(
         IReadOnlyDictionary<(RequestorId RequestorId, TaskId TaskId), TaskRequest> tasks,
         CancellationToken cancellationToken)
     {
-        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v1/queue"), cancellationToken).ConfigureAwait(false))
+        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v3/queue"), cancellationToken).ConfigureAwait(false))
         {
             var marker = await ReadAsync<QueueMarker>(entry.Key, cancellationToken).ConfigureAwait(false);
             if (marker is null ||
@@ -293,7 +293,7 @@ public sealed class ObjectStoreTaskRepository(
         await store.PutAsync(key, content, conditions, cancellationToken).ConfigureAwait(false);
     }
 
-    private sealed record QueueMarker(TaskId TaskId, RequestorId RequestorId, CapabilityId CapabilityId, ResourceProfile Resources, DateTimeOffset CreatedAt);
+    private sealed record QueueMarker(TaskId TaskId, RequestorId RequestorId, CapabilityId CapabilityId, MachineSpecifications Resources, DateTimeOffset CreatedAt);
 
     private sealed record CommitMarker(Guid OperationId, DateTimeOffset CommittedAt, IReadOnlyList<string> Keys);
 

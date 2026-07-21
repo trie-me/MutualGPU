@@ -10,14 +10,35 @@ public sealed record SubmitTaskCommand(
     string ContractHash,
     IReadOnlyDictionary<string, string> Scalars,
     ArtifactId? Image,
-    ResourceProfile Resources,
+    MachineSpecifications Resources,
     DateTimeOffset SubmittedAt,
     string? IdempotencyKey = null,
     TaskId? TaskId = null,
     string? ImageContentType = null,
     string? ImageExtension = null,
     long? ImageLength = null,
-    string? ImageSha256 = null);
+    string? ImageSha256 = null)
+{
+    public SubmitTaskCommand(
+        RequestorId requestorId,
+        CapabilityId capabilityId,
+        string contractHash,
+        IReadOnlyDictionary<string, string> scalars,
+        ArtifactId? image,
+        ResourceTier tier,
+        DateTimeOffset submittedAt,
+        string? idempotencyKey = null,
+        TaskId? taskId = null,
+        string? imageContentType = null,
+        string? imageExtension = null,
+        long? imageLength = null,
+        string? imageSha256 = null)
+        : this(requestorId, capabilityId, contractHash, scalars, image,
+            tier is ResourceTier.Automatic ? new MachineSpecifications(ResourceTier.Small, MachineSpecificationsPolicy.MinimumMemoryGiB) : new MachineSpecifications(tier, MachineSpecificationsPolicy.MinimumMemoryGiB),
+            submittedAt, idempotencyKey, taskId, imageContentType, imageExtension, imageLength, imageSha256)
+    {
+    }
+}
 
 public abstract record SubmitTaskResult
 {
@@ -41,7 +62,13 @@ public sealed class TaskSubmissionApplication(
     public Latent<SubmitTaskResult> Submit(SubmitTaskCommand command) => Latent<SubmitTaskResult>.DelayAsync(async cancellationToken =>
     {
         var capability = await capabilities.GetAsync(command.CapabilityId, cancellationToken).ConfigureAwait(false);
-        if (capability is null || presence.GetConnectedCandidates(command.CapabilityId).Count is 0)
+        if (capability is null)
+        {
+            return new SubmitTaskResult.Unavailable();
+        }
+
+        var candidates = presence.GetConnectedCandidates(command.CapabilityId);
+        if (candidates.Count is 0)
         {
             return new SubmitTaskResult.Unavailable();
         }
@@ -79,9 +106,9 @@ public sealed class TaskSubmissionApplication(
     private static IReadOnlyDictionary<string, string[]> Validate(CapabilityDefinition capability, SubmitTaskCommand command)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
-        if (!command.Resources.IsValid)
+        if (!MachineSpecificationsPolicy.IsValid(command.Resources))
         {
-            errors["resources"] = ["Choose a valid resource profile."];
+            errors["resources"] = ["Choose an available CPU/GPU and memory tile."];
         }
 
         foreach (var input in capability.Inputs)

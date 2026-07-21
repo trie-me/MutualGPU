@@ -8,7 +8,7 @@ namespace MutualGPU.Infrastructure;
 /// <summary>Centralizes the versioned Backblaze layout and prevents raw provider keys reaching object names.</summary>
 public sealed class MutualGpuObjectKeys(byte[] providerKeyPepper)
 {
-    private const string Root = "mutualgpu/v1";
+    private const string Root = "mutualgpu/v3";
     private readonly byte[] providerKeyPepper = providerKeyPepper?.ToArray() ?? throw new ArgumentNullException(nameof(providerKeyPepper));
 
     public ObjectKey CapabilityDefinition(CapabilityId capabilityId) => new($"{Root}/capabilities/{capabilityId.Value:N}/definition.json");
@@ -64,8 +64,11 @@ public sealed class MutualGpuObjectKeys(byte[] providerKeyPepper)
     public ObjectKey ResultLogs(RequestorId requestorId, TaskId taskId, AttemptId attemptId) =>
         new($"{Root}/requestors/{requestorId.Value:N}/tasks/{taskId.Value:N}/results/{attemptId.Value:N}/logs.txt");
 
-    public ObjectKey QueueMarker(CapabilityId capabilityId, ResourceProfile resources, DateTimeOffset createdAt, TaskId taskId) =>
-        new($"{Root}/queue/{capabilityId.Value:N}/{AllocationTier(resources):D2}/{createdAt.UtcTicks:D19}-{taskId.Value:N}.json");
+    public ObjectKey QueueMarker(CapabilityId capabilityId, MachineSpecifications resources, DateTimeOffset createdAt, TaskId taskId) =>
+        new($"{Root}/queue/{capabilityId.Value:N}/{(int)resources.ComputeTier:D2}-{resources.MemoryGiB:D5}/{createdAt.UtcTicks:D19}-{taskId.Value:N}.json");
+
+    public ObjectKey QueueMarker(CapabilityId capabilityId, ResourceTier tier, DateTimeOffset createdAt, TaskId taskId) =>
+        QueueMarker(capabilityId, new MachineSpecifications(tier is ResourceTier.Automatic ? ResourceTier.Small : tier, MachineSpecificationsPolicy.MinimumMemoryGiB), createdAt, taskId);
 
     public ObjectKey Commit(Guid operationId) => new($"{Root}/commits/{operationId:N}.json");
 
@@ -80,8 +83,6 @@ public sealed class MutualGpuObjectKeys(byte[] providerKeyPepper)
 
         return Convert.ToHexString(HMACSHA256.HashData(providerKeyPepper, Encoding.UTF8.GetBytes(presharedKey))).ToLowerInvariant();
     }
-
-    private static int AllocationTier(ResourceProfile resources) => Math.Max((int)resources.Compute, (int)resources.Memory);
 
     private static string SafeExtension(string extension) => SafeName(extension.TrimStart('.'));
 

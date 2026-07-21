@@ -67,7 +67,7 @@ public sealed class DisconnectRecoveryTests
         {
             UnitId = ExecutionUnitId.New();
             var capability = new CapabilityDefinition(CapabilityId.New(), "recovery", [], new OutputDefinition(), "contract");
-            Task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), time.GetUtcNow());
+            Task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), time.GetUtcNow());
             Attempt = Task.Assign(AttemptId.New(), UnitId, "handle", time.GetUtcNow());
             Task.Accept(Attempt.Id, Attempt.Handle, time.GetUtcNow());
             Assignments = new Assignments(UnitId, Task, Attempt);

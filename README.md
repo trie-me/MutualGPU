@@ -46,6 +46,16 @@ dotnet dev-certs https --trust
 dotnet run --project src/MutualGPU.Api --urls https://localhost:7043
 ```
 
+The repository-level `justfile` wraps the same local composition. Both commands configure the local provider identity, wait for API readiness, use the in-memory store, and stop the API when the Node process exits or you press `Ctrl-C`:
+
+```text
+just mutualgpu-dev-cert     # one-time HTTPS development certificate setup
+just mutualgpu-local-smoke  # API + real SDK Enroll/Connect handshake, then exit
+just mutualgpu-local-demo   # API + long-running simulated provider for requestor UI testing
+```
+
+`mutualgpu-local-demo` prints the local HTTPS URL. Open it once the simulated provider reports connected, choose **mutualgpu-local-demo**, and submit a task. The provider performs the real enrollment, gRPC session, result upload, and completion flow, but produces a synthetic ZIP rather than GPU work. Run the full API, frontend, and SDK test set with `just mutualgpu-test`.
+
 For a TLS-terminating platform such as Vercel, keep public traffic at HTTPS and set `MutualGPU__TrustForwardedProto=true` only when the app is reachable exclusively through that trusted ingress. The host then honors the ingress `X-Forwarded-Proto` value before applying its HTTPS policy. Do not enable it for a directly exposed process.
 
 Native providers authenticate gRPC calls through `Authorization`; Chrome providers send the same value in the first Protobuf `ConnectRequest` frame. Browser SDK configuration must use `https://` for its API base URL and `wss://` for its provider session URL. The shared schema is [provider.proto](src/MutualGPU.Protocol/provider.proto).

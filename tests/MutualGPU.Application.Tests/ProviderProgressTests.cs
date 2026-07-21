@@ -10,8 +10,8 @@ public sealed class ProviderProgressTests
     public void Progress_requires_owned_accepted_attempt_and_is_bounded_by_sequence_and_time()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var unit = new ExecutionUnit(ExecutionUnitId.New(), new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceProfile.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var unit = new ExecutionUnit(ExecutionUnitId.New(), new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, new MachineSpecifications(ResourceTier.Medium, 16)), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
         var attempt = task.Assign(AttemptId.New(), unit.Id, "opaque", DateTimeOffset.UtcNow);
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
         var registry = new ProviderConnectionRegistry();

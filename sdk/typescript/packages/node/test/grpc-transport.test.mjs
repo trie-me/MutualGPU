@@ -13,6 +13,50 @@ const frame = body => {
 
 const unframe = body => new Uint8Array(body).slice(5);
 
+test("node transport derives all SDK operations from one API base URL", () => {
+  const transport = new NodeGrpcTransport("https://mutualgpu.example/", "provider-key");
+  assert.equal(String(transport.apiBaseUrl), "https://mutualgpu.example/");
+});
+
+test("node transport reuses the enrollment HTTP/2 session for the provider stream", async () => {
+  let connections = 0;
+  let closes = 0;
+  const paths = [];
+  class Stream extends EventEmitter {
+    constructor(path) { super(); this.path = path; this.destroyed = false; this.closed = false; }
+    end() {
+      queueMicrotask(() => {
+        this.emit("data", frame(MutualGpuProtocol.encodeEnrollResponse({ executionUnitId: "unit" })));
+        this.emit("trailers", { "grpc-status": "0" });
+        this.emit("end");
+      });
+    }
+    write(body) {
+      const message = MutualGpuProtocol.decodeProvider(unframe(body));
+      if (message.connect) queueMicrotask(() => this.emit("data", frame(MutualGpuProtocol.encodeServer({ connected: { executionUnitId: "unit" } }))));
+    }
+  }
+  const session = Object.assign(new EventEmitter(), {
+    destroyed: false,
+    closed: false,
+    close() { closes += 1; this.closed = true; },
+    request(headers) { paths.push(headers[":path"]); return new Stream(headers[":path"]); }
+  });
+  const transport = new NodeGrpcTransport(
+    "https://mutualgpu.example", "provider-key", "https://mutualgpu.example/", globalThis.fetch,
+    MutualGpuProtocol, { connect() { connections += 1; return session; } });
+
+  await transport.enroll({ machine: {}, capabilities: [] });
+  await transport.connect(async () => {});
+
+  assert.equal(connections, 1);
+  assert.equal(closes, 0);
+  assert.deepEqual(paths, [
+    "/mutualgpu.v1.ProviderControl/Enroll",
+    "/mutualgpu.v1.ProviderControl/Connect"
+  ]);
+});
+
 test("node transport opens a native HTTPS HTTP/2 gRPC session with canonical envelopes", async () => {
   const requests = [];
   class Stream extends EventEmitter {

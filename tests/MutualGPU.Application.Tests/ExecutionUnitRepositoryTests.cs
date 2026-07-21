@@ -28,8 +28,8 @@ public sealed class ExecutionUnitRepositoryTests
             "ignored-by-canonicalization");
 
         var results = await Task.WhenAll(
-            application.Enroll(new EnrollCommand(firstId, new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [definition])).RunAsync(),
-            application.Enroll(new EnrollCommand(secondId, new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [definition with { Id = CapabilityId.New() }])).RunAsync());
+            application.Enroll(new EnrollCommand(firstId, Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [definition])).RunAsync(),
+            application.Enroll(new EnrollCommand(secondId, Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [definition with { Id = CapabilityId.New() }])).RunAsync());
 
         var enrolled = results.Select(Assert.IsType<EnrollResult.Enrolled>).ToArray();
         Assert.Equal(enrolled[0].Unit.CurrentEnrollment.Capabilities.Single().Id, enrolled[1].Unit.CurrentEnrollment.Capabilities.Single().Id);
@@ -46,11 +46,11 @@ public sealed class ExecutionUnitRepositoryTests
         var resolver = new ConfiguredPresharedKeyRegistry(new Dictionary<ExecutionUnitId, string> { [id] = presharedKey });
         var repository = new ObjectStoreExecutionUnitRepository(store, keys, resolver, new RepositoryLockRegistry());
         var first = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "first");
-        var unit = new ExecutionUnit(id, new EnrollmentDefinition(new MachineProfile(ResourceTier.Small, ResourceTier.Small), [first]));
+        var unit = new ExecutionUnit(id, new EnrollmentDefinition(Machine(ResourceTier.Small, ResourceTier.Small, 8), [first]));
 
         await repository.SaveAsync(unit, CancellationToken.None);
         unit.ReplaceEnrollment(new EnrollmentDefinition(
-            new MachineProfile(ResourceTier.Large, ResourceTier.Medium),
+            Machine(ResourceTier.Large, ResourceTier.Large, 32),
             [new CapabilityDefinition(CapabilityId.New(), "splats-v2", [], new OutputDefinition(), "second")]));
         await repository.SaveAsync(unit, CancellationToken.None);
 
@@ -63,7 +63,8 @@ public sealed class ExecutionUnitRepositoryTests
         Assert.EndsWith("0000000002", Path.GetFileNameWithoutExtension(events[1].Key.Value).Split('-')[0], StringComparison.Ordinal);
         Assert.NotNull(hydrated);
         Assert.Equal(new EnrollmentVersion(2), hydrated!.Version);
-        Assert.Equal(ResourceTier.Large, hydrated.CurrentEnrollment.Machine.Compute);
+        Assert.Equal(ResourceTier.Large, hydrated.CurrentEnrollment.Machine.Tier);
+        Assert.Equal(32, hydrated.CurrentEnrollment.Machine.Specifications.MemoryGiB);
         Assert.Equal("splats-v2", Assert.Single(hydrated.CurrentEnrollment.Capabilities).Name);
     }
 
@@ -76,9 +77,9 @@ public sealed class ExecutionUnitRepositoryTests
         const string presharedKey = "provider-key";
         var resolver = new ConfiguredPresharedKeyRegistry(new Dictionary<ExecutionUnitId, string> { [id] = presharedKey });
         var repository = new ObjectStoreExecutionUnitRepository(store, keys, resolver, new RepositoryLockRegistry());
-        var unit = new ExecutionUnit(id, new EnrollmentDefinition(new MachineProfile(ResourceTier.Small, ResourceTier.Small), [new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "first")]));
+        var unit = new ExecutionUnit(id, new EnrollmentDefinition(Machine(ResourceTier.Small, ResourceTier.Small, 8), [new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "first")]));
         await repository.SaveAsync(unit, CancellationToken.None);
-        unit.ReplaceEnrollment(new EnrollmentDefinition(new MachineProfile(ResourceTier.Large, ResourceTier.Medium), [new CapabilityDefinition(CapabilityId.New(), "splats-v2", [], new OutputDefinition(), "second")]));
+        unit.ReplaceEnrollment(new EnrollmentDefinition(Machine(ResourceTier.Large, ResourceTier.Large, 32), [new CapabilityDefinition(CapabilityId.New(), "splats-v2", [], new OutputDefinition(), "second")]));
         await repository.SaveAsync(unit, CancellationToken.None);
         await store.DeleteAsync(keys.NodeIdentity(presharedKey), CancellationToken.None);
 
@@ -96,7 +97,7 @@ public sealed class ExecutionUnitRepositoryTests
     {
         var registry = new ProviderConnectionRegistry();
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var unit = new ExecutionUnit(ExecutionUnitId.New(), new EnrollmentDefinition(new MachineProfile(ResourceTier.Medium, ResourceTier.Medium), [capability]));
+        var unit = new ExecutionUnit(ExecutionUnitId.New(), new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
 
         var first = registry.Connect(unit);
         var second = registry.Connect(unit);
@@ -127,4 +128,7 @@ public sealed class ExecutionUnitRepositoryTests
     {
         public void TriggerScheduler() { }
     }
+
+    private static MachineProfile Machine(ResourceTier tier, ResourceTier computeTier, int memoryGiB) =>
+        new(tier, new MachineSpecifications(computeTier, memoryGiB));
 }

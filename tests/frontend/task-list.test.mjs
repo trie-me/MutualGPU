@@ -10,10 +10,12 @@ class Element {
     this.children = [];
     this.textContent = '';
     this.href = '';
+    this.attributes = new Map();
   }
 
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this.children = children; this.textContent = ''; }
+  setAttribute(name, value) { this.attributes.set(name, value); }
 }
 
 class Document {
@@ -37,10 +39,11 @@ test('polled tasks render status, reevaluation, and result download behavior in 
 
   assert.equal(container.children.length, 2);
   assert.equal(container.children[0].children[0].textContent, 'Styliser: Running');
-  const reevaluate = container.children[0].children[3];
+  assert.equal(container.children[0].children[1].hidden, false);
+  const reevaluate = container.children[0].children[2].children[0];
   assert.equal(reevaluate.textContent, 'Reevaluate');
   await reevaluate.onclick();
-  const result = container.children[1].children[3];
+  const result = container.children[1].children[2].children[0];
   assert.equal(result.textContent, 'Result');
   let prevented = false;
   await result.onclick({ preventDefault: () => { prevented = true; } });
