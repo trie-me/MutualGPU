@@ -2,9 +2,9 @@
 
 MutualGPU is the third NetCats example: a distributed WebGPU work exchange.
 
-It includes the pure domain, canonical capability catalogue, cold enrollment/submission workflows, an S3-compatible Backblaze adapter, gRPC and binary-WebSocket provider connection adapters, a process-local triggered scheduler, static requestor APIs, optional result artifacts, the additional capacity matrix, and TypeScript/Swift provider lifecycle packages.
+It includes the pure domain, canonical capability catalogue, cold enrollment/submission workflows, an S3-compatible Backblaze adapter, gRPC and binary-WebSocket provider connection adapters, a process-local triggered scheduler, static requestor APIs, optional result artifacts, the additional capacity matrix, and Node.js/Chrome provider SDK packages.
 
-The Development in-memory object store is for local demonstration and in-process tests only. Backblaze is the configured production adapter. The TypeScript SDK contains a shared provider lifecycle, canonical Protobuf codec, native Node HTTPS/HTTP2 gRPC transport, and Chrome WSS transport; its fixture suite verifies the wire format against the .NET-generated contracts. Swift source is present, but its release and conformance work are explicitly deferred from the demo. The target behaviour is defined in [the specification](../../docs/08-mutualgpu-example-implementation.md).
+The Development in-memory object store is for local demonstration and in-process tests only. Backblaze is the configured production adapter. The provider SDK supports Node.js and Chrome through a shared lifecycle and canonical Protobuf codec, with a native Node HTTPS/HTTP2 gRPC transport and Chrome WSS transport. Its fixture suite verifies the wire format against the .NET-generated contracts. Consumer setup and API behaviour are documented in the [provider SDK documentation](../../docs/sdk/README.md), and the target exchange behaviour is defined in [the specification](../../docs/08-mutualgpu-example-implementation.md).
 
 ## Demo MVP scope
 

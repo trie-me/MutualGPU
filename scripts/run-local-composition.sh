@@ -33,7 +33,11 @@ if ! dotnet dev-certs https --check >/dev/null 2>&1; then
   exit 1
 fi
 
-if curl --silent --output /dev/null --connect-timeout 1 "$api_url/health/ready"; then
+# The readiness probes only need a small unary HTTP response. Keep them on
+# HTTP/1.1: the provider uses HTTP/2 for gRPC, while some local curl builds can
+# reset a completed HTTP/2 stream during shutdown and make Kestrel log a noisy
+# TLS-flush exception after an otherwise successful 200 response.
+if curl --http1.1 --silent --output /dev/null --connect-timeout 1 "$api_url/health/ready"; then
   echo "A server is already running at $api_url." >&2
   echo "Stop the existing MutualGPU demo before starting another composition." >&2
   exit 1
@@ -89,7 +93,7 @@ for attempt in $(seq 1 60); do
     exit 1
   fi
 
-  if curl --fail --silent "$api_url/health/ready" >/dev/null 2>&1; then
+  if curl --http1.1 --fail --silent "$api_url/health/ready" >/dev/null 2>&1; then
     # Ensure readiness belongs to the process started above rather than a host
     # that won a port race between the preflight and Kestrel binding.
     sleep 0.1
