@@ -14,13 +14,23 @@ Parameters:
   DeploymentSecretArn:
     Type: String
     Description: ARN of the Secrets Manager JSON secret named mutualgpu/deployment.
-  ProviderCorsOrigin:
+  ProviderCorsOrigin0:
     Type: String
-    Default: ''
-    Description: Optional exact Chrome-provider origin. Leave blank for a Node-only demo.
+    Default: 'https://huggingface.co'
+    Description: Exact Chrome-provider origin. No wildcard matching is enabled.
+  ProviderCorsOrigin1:
+    Type: String
+    Default: 'https://vercel.com'
+    Description: Exact Chrome-provider origin. No wildcard matching is enabled.
+  ProviderCorsOrigin2:
+    Type: String
+    Default: 'https://yosun-triposplat-webgpu-demo.static.hf.space'
+    Description: Exact Chrome-provider origin. No wildcard matching is enabled.
 
 Conditions:
-  HasProviderCorsOrigin: !Not [!Equals [!Ref ProviderCorsOrigin, '']]
+  HasProviderCorsOrigin0: !Not [!Equals [!Ref ProviderCorsOrigin0, '']]
+  HasProviderCorsOrigin1: !Not [!Equals [!Ref ProviderCorsOrigin1, '']]
+  HasProviderCorsOrigin2: !Not [!Equals [!Ref ProviderCorsOrigin2, '']]
 
 Resources:
   LoadBalancer:
@@ -167,9 +177,19 @@ Resources:
             - Name: MutualGPU__S3__Region
               Value: us-east-1
             - !If
-              - HasProviderCorsOrigin
+              - HasProviderCorsOrigin0
               - Name: MutualGPU__ProviderCorsOrigins__0
-                Value: !Ref ProviderCorsOrigin
+                Value: !Ref ProviderCorsOrigin0
+              - !Ref AWS::NoValue
+            - !If
+              - HasProviderCorsOrigin1
+              - Name: MutualGPU__ProviderCorsOrigins__1
+                Value: !Ref ProviderCorsOrigin1
+              - !Ref AWS::NoValue
+            - !If
+              - HasProviderCorsOrigin2
+              - Name: MutualGPU__ProviderCorsOrigins__2
+                Value: !Ref ProviderCorsOrigin2
               - !Ref AWS::NoValue
           LogConfiguration:
             LogDriver: awslogs

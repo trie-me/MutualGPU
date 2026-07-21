@@ -168,6 +168,20 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
+    public async Task Configured_browser_provider_origin_can_make_a_credentialed_capability_request()
+    {
+        using var client = CreateHttpsClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/capabilities/");
+        request.Headers.Add("Origin", "https://provider.example");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+        Assert.Equal("true", response.Headers.GetValues("Access-Control-Allow-Credentials").Single());
+    }
+
+    [Fact]
     public async Task Webgpu_enrollment_issues_a_fresh_registry_key()
     {
         using var client = CreateHttpsClient();

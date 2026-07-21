@@ -12,6 +12,9 @@ foundation_stack="${MUTUALGPU_FOUNDATION_STACK:-mutualgpu-foundation}"
 service_stack="${MUTUALGPU_SERVICE_STACK:-mutualgpu-service}"
 domain="${MUTUALGPU_DOMAIN:-mutualgpu.com}"
 secret_name="${MUTUALGPU_DEPLOYMENT_SECRET_NAME:-mutualgpu/deployment}"
+provider_cors_origin_0="${MUTUALGPU_PROVIDER_CORS_ORIGIN_0:-https://huggingface.co}"
+provider_cors_origin_1="${MUTUALGPU_PROVIDER_CORS_ORIGIN_1:-https://vercel.com}"
+provider_cors_origin_2="${MUTUALGPU_PROVIDER_CORS_ORIGIN_2:-https://yosun-triposplat-webgpu-demo.static.hf.space}"
 profile_args=()
 if [[ -n "${AWS_PROFILE:-}" ]]; then profile_args=(--profile "$AWS_PROFILE"); fi
 aws_cli() { aws "${profile_args[@]}" --region "$region" "$@"; }
@@ -56,6 +59,9 @@ aws_cli cloudformation deploy \
     "ImageUri=${repository_uri}@${image_digest}" \
     "CertificateArn=${certificate_arn}" \
     "DeploymentSecretArn=${secret_arn}" \
+    "ProviderCorsOrigin0=${provider_cors_origin_0}" \
+    "ProviderCorsOrigin1=${provider_cors_origin_1}" \
+    "ProviderCorsOrigin2=${provider_cors_origin_2}" \
   --no-fail-on-empty-changeset
 
 https_url="$(aws_cli cloudformation describe-stacks --stack-name "$service_stack" --query "Stacks[0].Outputs[?OutputKey=='HttpsUrl'].OutputValue | [0]" --output text)"

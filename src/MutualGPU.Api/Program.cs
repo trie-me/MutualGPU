@@ -36,7 +36,8 @@ builder.Services.AddCors(options => options.AddPolicy("mutualgpu-provider", poli
     {
         policy.WithOrigins(providerCorsOrigins)
             .WithMethods("POST")
-            .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256");
+            .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256")
+            .AllowCredentials();
     }
 }));
 
