@@ -1,0 +1,245 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "MutualGPU demo foundation for us-east-1: network, image repository, ECS, logs, and roles."
+
+Resources:
+  MutualGpuVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-vpc
+        - Key: Project
+          Value: MutualGPU
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-igw
+        - Key: Project
+          Value: MutualGPU
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref MutualGpuVpc
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.42.0.0/20
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref MutualGpuVpc
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-public-a
+        - Key: Project
+          Value: MutualGPU
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.42.16.0/20
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref MutualGpuVpc
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-public-b
+        - Key: Project
+          Value: MutualGPU
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MutualGpuVpc
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-public
+        - Key: Project
+          Value: MutualGPU
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MutualGPU public HTTPS ingress
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - Description: Redirect HTTP to HTTPS at the load balancer
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - Description: Public HTTPS API and requestor UI
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref MutualGpuVpc
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-alb
+        - Key: Project
+          Value: MutualGPU
+
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: MutualGPU API ports accepted only from the ALB
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+      SecurityGroupIngress:
+        - Description: HTTP/1.1 web, REST, WebSocket, and SSE traffic
+          IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+        - Description: Native gRPC traffic
+          IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+      VpcId: !Ref MutualGpuVpc
+      Tags:
+        - Key: Name
+          Value: mutualgpu-demo-api
+        - Key: Project
+          Value: MutualGPU
+
+  ImageRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: mutualgpu-api
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: mutualgpu-demo
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/mutualgpu-api
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mutualgpu-ecs-task-execution
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadMutualGpuDeploymentSecrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mutualgpu/*'
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mutualgpu-ecs-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+Outputs:
+  VpcId:
+    Value: !Ref MutualGpuVpc
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'
+  PublicSubnetAId:
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnetAId'
+  PublicSubnetBId:
+    Value: !Ref PublicSubnetB
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnetBId'
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-AlbSecurityGroupId'
+  ApiSecurityGroupId:
+    Value: !Ref ApiSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiSecurityGroupId'
+  EcrRepositoryUri:
+    Value: !GetAtt ImageRepository.RepositoryUri
+    Export:
+      Name: !Sub '${AWS::StackName}-EcrRepositoryUri'
+  EcsClusterArn:
+    Value: !GetAtt Cluster.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-EcsClusterArn'
+  TaskExecutionRoleArn:
+    Value: !GetAtt TaskExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskExecutionRoleArn'
+  TaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-TaskRoleArn'

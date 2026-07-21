@@ -1,0 +1,228 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MutualGPU demo public ALB and single-task ECS service.
+
+Parameters:
+  FoundationStackName:
+    Type: String
+    Default: mutualgpu-foundation
+  ImageUri:
+    Type: String
+    Description: Immutable ECR image URI, preferably pinned by digest.
+  CertificateArn:
+    Type: String
+    Description: Issued ACM certificate ARN for the public HTTPS listener.
+  DeploymentSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager JSON secret named mutualgpu/deployment.
+  ProviderCorsOrigin:
+    Type: String
+    Default: ''
+    Description: Optional exact Chrome-provider origin. Leave blank for a Node-only demo.
+
+Conditions:
+  HasProviderCorsOrigin: !Not [!Equals [!Ref ProviderCorsOrigin, '']]
+
+Resources:
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: mutualgpu-demo
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      SecurityGroups:
+        - Fn::ImportValue: !Sub '${FoundationStackName}-AlbSecurityGroupId'
+      Subnets:
+        - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
+        - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBId'
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+  WebTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: mutualgpu-web
+      TargetType: ip
+      Protocol: HTTP
+      Port: 8080
+      VpcId:
+        Fn::ImportValue: !Sub '${FoundationStackName}-VpcId'
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /health/ready
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '15'
+
+  GrpcTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: mutualgpu-grpc
+      TargetType: ip
+      Protocol: HTTP
+      ProtocolVersion: GRPC
+      Port: 8081
+      VpcId:
+        Fn::ImportValue: !Sub '${FoundationStackName}-VpcId'
+      # Kestrel's native gRPC port is HTTP/2 only. ALB's standard gRPC health
+      # method is intentionally not implemented by the application, which
+      # produces the expected gRPC UNIMPLEMENTED status (12).
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /AWS.ALB/healthcheck
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        GrpcCode: '12'
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '15'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            StatusCode: HTTP_301
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+
+  GrpcRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - /mutualgpu.provider.v1.ProviderControl/*
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref GrpcTargetGroup
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: mutualgpu-api
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '1024'
+      Memory: '2048'
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub '${FoundationStackName}-TaskExecutionRoleArn'
+      TaskRoleArn:
+        Fn::ImportValue: !Sub '${FoundationStackName}-TaskRoleArn'
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+              AppProtocol: http
+            - ContainerPort: 8081
+              Protocol: tcp
+              AppProtocol: grpc
+          Environment:
+            - Name: ASPNETCORE_ENVIRONMENT
+              Value: Production
+            - Name: MutualGPU__TrustForwardedProto
+              Value: 'true'
+            - Name: NetCats__FiberDiagnostics__Enabled
+              Value: 'false'
+            - !If
+              - HasProviderCorsOrigin
+              - Name: MutualGPU__ProviderCorsOrigins__0
+                Value: !Ref ProviderCorsOrigin
+              - !Ref AWS::NoValue
+          Secrets:
+            - Name: MutualGPU__Backblaze__Endpoint
+              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeEndpoint::'
+            - Name: MutualGPU__Backblaze__BucketName
+              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeBucketName::'
+            - Name: MutualGPU__Backblaze__KeyId
+              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeKeyId::'
+            - Name: MutualGPU__Backblaze__ApplicationKey
+              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeApplicationKey::'
+            - Name: MutualGPU__ProviderKeyPepper
+              ValueFrom: !Sub '${DeploymentSecretArn}:ProviderKeyPepper::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/mutualgpu-api
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - HttpListener
+      - HttpsListener
+      - GrpcRule
+    Properties:
+      ServiceName: mutualgpu-api
+      Cluster:
+        Fn::ImportValue: !Sub '${FoundationStackName}-EcsClusterArn'
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      PlatformVersion: LATEST
+      HealthCheckGracePeriodSeconds: 120
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub '${FoundationStackName}-ApiSecurityGroupId'
+          Subnets:
+            - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
+            - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBId'
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8080
+          TargetGroupArn: !Ref WebTargetGroup
+        - ContainerName: api
+          ContainerPort: 8081
+          TargetGroupArn: !Ref GrpcTargetGroup
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+Outputs:
+  LoadBalancerDnsName:
+    Value: !GetAtt LoadBalancer.DNSName
+  HttpsUrl:
+    Value: !Sub 'https://${LoadBalancer.DNSName}'
+  ServiceName:
+    Value: !GetAtt Service.Name
