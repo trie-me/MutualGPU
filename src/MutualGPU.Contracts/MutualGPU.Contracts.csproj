@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../MutualGPU.Domain/MutualGPU.Domain.csproj" />
+  </ItemGroup>
+</Project>

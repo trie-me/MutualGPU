@@ -1,0 +1,12 @@
+<Solution>
+  <Project Path="src/MutualGPU.Domain/MutualGPU.Domain.csproj" />
+  <Project Path="src/MutualGPU.Contracts/MutualGPU.Contracts.csproj" />
+  <Project Path="src/MutualGPU.Application/MutualGPU.Application.csproj" />
+  <Project Path="src/MutualGPU.Infrastructure/MutualGPU.Infrastructure.csproj" />
+  <Project Path="src/MutualGPU.Protocol/MutualGPU.Protocol.csproj" />
+  <Project Path="src/MutualGPU.Api/MutualGPU.Api.csproj" />
+  <Project Path="tests/MutualGPU.Domain.Tests/MutualGPU.Domain.Tests.csproj" />
+  <Project Path="tests/MutualGPU.Application.Tests/MutualGPU.Application.Tests.csproj" />
+  <Project Path="tests/MutualGPU.Api.Tests/MutualGPU.Api.Tests.csproj" />
+  <Project Path="tests/MutualGPU.Protocol.Tests/MutualGPU.Protocol.Tests.csproj" />
+</Solution>

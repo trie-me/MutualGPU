@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package mutualgpu.v1;
+
+option csharp_namespace = "MutualGPU.Protocol";
+
+service ProviderControl {
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+  rpc Connect(stream ProviderMessage) returns (stream ServerMessage);
+}
+
+message EnrollRequest { bytes definition = 1; }
+message EnrollResponse { string execution_unit_id = 1; }
+message ConnectRequest {
+  uint32 protocol_version = 1;
+  string active_task_handle = 2;
+  // Used only by the browser WebSocket adapter. Native gRPC authenticates in metadata.
+  string authorization = 3;
+}
+message TaskAccepted { string task_id = 1; string attempt_id = 2; string task_handle = 3; }
+message TaskRejected { string task_id = 1; string attempt_id = 2; string task_handle = 3; string reason = 4; }
+message ProgressUpdate {
+  string task_id = 1;
+  string attempt_id = 2;
+  string task_handle = 3;
+  uint64 sequence_number = 4;
+  string phase = 5;
+  double percent = 6;
+  string message = 7;
+}
+message InputDownloadRequest { string task_handle = 1; string task_id = 2; string attempt_id = 3; }
+message ResultUploadRequest { string task_handle = 1; string task_id = 2; string attempt_id = 3; }
+message TaskCompleted { string task_id = 1; string attempt_id = 2; string task_handle = 3; string receipt = 4; }
+message TaskFailed { string task_id = 1; string attempt_id = 2; string task_handle = 3; string step = 4; string reason = 5; }
+message ProviderMessage {
+  oneof body {
+    ConnectRequest connect = 1;
+    TaskAccepted accepted = 2;
+    TaskRejected rejected = 3;
+    ProgressUpdate progress = 4;
+    InputDownloadRequest input_download = 5;
+    ResultUploadRequest result_upload = 6;
+    TaskCompleted completed = 7;
+    TaskFailed failed = 8;
+  }
+}
+message Connected { string execution_unit_id = 1; }
+message InputArtifactDescriptor {
+  string url = 1;
+  string content_type = 2;
+  uint64 length = 3;
+  string sha256 = 4;
+}
+message TaskAssignment {
+  string task_id = 1;
+  string attempt_id = 2;
+  string task_handle = 3;
+  map<string, string> scalars = 4;
+  InputArtifactDescriptor input = 5;
+}
+message InputDownloadAuthorization { string url = 1; }
+message ResultUploadAuthorization { string upload_token = 1; }
+message CompletionAccepted { string task_id = 1; }
+message ProtocolError { string code = 1; string message = 2; }
+message ServerMessage {
+  oneof body {
+    Connected connected = 1;
+    TaskAssignment assignment = 2;
+    InputDownloadAuthorization input_download = 3;
+    ResultUploadAuthorization result_upload = 4;
+    CompletionAccepted completion = 5;
+    ProtocolError error = 6;
+  }
+}

@@ -1,0 +1,23 @@
+.resource-capacity-matrix {
+  border-collapse: collapse;
+  margin-block: 1rem;
+  width: 100%;
+}
+
+.assist { color:#5a6371; }
+.task-card { margin-top:1rem; }
+#task-form label { display:block; font-weight:700; margin-top:.75rem; }
+#task-list article { border-top:1px solid #eadfca; padding:.8rem 0; }
+#task-list article:first-child { border-top:0; }
+#task-list a { color:var(--plum); font-weight:700; }
+.diagnostics-toggle { background:transparent; border:1px solid #ffffff80; padding:.4rem .6rem; }
+
+.resource-capacity-matrix th,
+.resource-capacity-matrix td {
+  border: 1px solid #c6ced8;
+  padding: .5rem;
+  text-align: center;
+}
+
+.resource-capacity-matrix__waiting { background: #fff3cd; }
+.resource-capacity-matrix__unavailable { color: #6c757d; }

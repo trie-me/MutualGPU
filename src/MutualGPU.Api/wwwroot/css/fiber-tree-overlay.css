@@ -1,0 +1,29 @@
+.fiber-overlay {
+  position: fixed;
+  z-index: 10;
+  right: 1rem;
+  bottom: 1rem;
+  width: min(34rem, calc(100vw - 2rem));
+  max-height: min(80vh, 46rem);
+  overflow: auto;
+  background: white;
+  border: 1px solid #eadfca;
+  border-radius: 1rem;
+  box-shadow: 0 12px 32px #111b3850;
+  padding: 1rem;
+}
+
+.fiber-overlay__header { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+.fiber-overlay__header button { padding: .4rem .6rem; }
+.fiber-overlay__connection, .fiber-overlay__summary { margin: .35rem 0; font-size: .9rem; }
+.fiber-overlay__connection[data-state="connected"] { color: #17643a; }
+.fiber-overlay__connection[data-state="connecting"],
+.fiber-overlay__connection[data-state="disconnected"] { color: #805000; }
+.fiber-scope { margin: .45rem 0; padding-left: .75rem; border-left: 2px solid #d4d9e1; }
+.fiber-scope > summary { cursor: pointer; font-weight: 700; }
+.fiber-node { margin: .35rem 0 .35rem .5rem; padding-left: .75rem; border-left: 2px solid #eadfca; font-size: .9rem; }
+.fiber-node--faulted, .fiber-node__error { color: #a32d2d; }
+.fiber-node--cancelled, .fiber-node--cancellationrequested { color: #805000; }
+.fiber-node--succeeded { color: #17643a; }
+.fiber-tree__truncated { padding: .5rem; background: #fff3cd; border-radius: .4rem; color: #684f00; }
+.fiber-tree__empty { color: #5a6371; }

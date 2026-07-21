@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <ItemGroup>
+    <ProjectReference Include="../MutualGPU.Application/MutualGPU.Application.csproj" />
+    <ProjectReference Include="../MutualGPU.Contracts/MutualGPU.Contracts.csproj" />
+    <ProjectReference Include="../MutualGPU.Infrastructure/MutualGPU.Infrastructure.csproj" />
+    <ProjectReference Include="../MutualGPU.Protocol/MutualGPU.Protocol.csproj" />
+    <ProjectReference Include="../../../../src/NetCats.Runtime/NetCats.Runtime.csproj" />
+    <ProjectReference Include="../../../../src/NetCats.AspNetCore/NetCats.AspNetCore.csproj" />
+    <PackageReference Include="Grpc.AspNetCore" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+  </ItemGroup>
+</Project>

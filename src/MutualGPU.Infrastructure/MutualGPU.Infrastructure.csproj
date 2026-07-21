@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../MutualGPU.Domain/MutualGPU.Domain.csproj" />
+    <ProjectReference Include="../MutualGPU.Application/MutualGPU.Application.csproj" />
+    <PackageReference Include="AWSSDK.S3" />
+  </ItemGroup>
+</Project>

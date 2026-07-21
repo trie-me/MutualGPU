@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Grpc.Tools does not currently bundle Apple Silicon generator binaries.
+       Homebrew supplies the same protoc/plugin pair when it is present; other
+       hosts keep using the Grpc.Tools packaged binaries. -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX')) and Exists('/opt/homebrew/bin/protoc') and Exists('/opt/homebrew/bin/grpc_csharp_plugin')">
+    <Protobuf_ProtocFullPath>/opt/homebrew/bin/protoc</Protobuf_ProtocFullPath>
+    <gRPC_PluginFullPath>/opt/homebrew/bin/grpc_csharp_plugin</gRPC_PluginFullPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../MutualGPU.Application/MutualGPU.Application.csproj" />
+    <PackageReference Include="Google.Protobuf" />
+    <PackageReference Include="Grpc.Core.Api" />
+    <PackageReference Include="Grpc.Tools" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <Protobuf Include="provider.proto" GrpcServices="Both" />
+    <None Update="provider.proto" Pack="true" PackagePath="proto/" />
+  </ItemGroup>
+</Project>
