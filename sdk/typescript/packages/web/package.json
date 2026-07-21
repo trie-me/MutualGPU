@@ -1,0 +1,7 @@
+{
+  "name": "@mutualgpu/provider-web",
+  "version": "0.1.0-preview.1",
+  "type": "module",
+  "dependencies": { "@mutualgpu/provider-core": "0.1.0-preview.1" },
+  "exports": "./src/websocket-transport.js"
+}

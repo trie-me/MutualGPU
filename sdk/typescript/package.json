@@ -1,0 +1,10 @@
+{
+  "name": "@mutualgpu/provider-sdk-workspace",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "node --test packages/core/test/*.test.mjs packages/node/test/*.test.mjs packages/web/test/*.test.mjs",
+    "smoke:node": "node samples/node-smoke-provider.mjs",
+    "demo:node": "node samples/node-demo-provider.mjs"
+  }
+}
