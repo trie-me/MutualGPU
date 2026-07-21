@@ -101,7 +101,7 @@ public sealed class BackblazeObjectStore(IAmazonS3 client, BackblazeObjectStoreO
                 Prefix = prefix.Value,
                 ContinuationToken = continuationToken,
             }, cancellationToken).ConfigureAwait(false);
-            foreach (var entry in response.S3Objects)
+            foreach (var entry in response.S3Objects ?? [])
             {
                 yield return new ObjectEntry(
                     new ObjectKey(entry.Key),

@@ -16,11 +16,11 @@ public static class ProviderResultEndpoints
     private const int MaximumLogBytes = 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    public static IResult IssueToken(Guid taskId, Guid attemptId, HttpContext context, IExecutionUnitAuthenticator authenticator, IProviderAssignments assignments, IResultUploadAuthorizations authorizations)
+    public static async Task<IResult> IssueToken(Guid taskId, Guid attemptId, HttpContext context, IExecutionUnitAuthenticator authenticator, IProviderAssignments assignments, IResultUploadAuthorizations authorizations)
     {
         var task = new TaskId(taskId);
         var attempt = new AttemptId(attemptId);
-        if (!TryAuthenticate(authenticator, context, out var unitId) || !TryHandle(context, out var handle) ||
+        if ((await AuthenticateAsync(authenticator, context).ConfigureAwait(false)) is not { } unitId || !TryHandle(context, out var handle) ||
             !assignments.TryGet(unitId, task, attempt, handle, out var request) || !IsAccepted(request, attempt)) return TypedResults.Unauthorized();
         var token = authorizations.Issue(unitId, task, attempt, handle, DateTimeOffset.UtcNow);
         return TypedResults.Ok(token);
@@ -31,7 +31,7 @@ public static class ProviderResultEndpoints
         using var activity = telemetry.Activities.StartActivity("mutualgpu.provider.result_upload");
         var taskKey = new TaskId(taskId);
         var attemptKey = new AttemptId(attemptId);
-        if (!TryAuthenticate(authenticator, context, out var unitId) || !TryHandle(context, out var handle) || !context.Request.Headers.TryGetValue("X-MutualGPU-Upload-Token", out var token) ||
+        if ((await AuthenticateAsync(authenticator, context).ConfigureAwait(false)) is not { } unitId || !TryHandle(context, out var handle) || !context.Request.Headers.TryGetValue("X-MutualGPU-Upload-Token", out var token) ||
             !assignments.TryGet(unitId, taskKey, attemptKey, handle, out var task) || !IsAccepted(task, attemptKey)) return TypedResults.Unauthorized();
         if (!authorizations.TryConsume(unitId, taskKey, attemptKey, handle, token!, DateTimeOffset.UtcNow)) return TypedResults.Conflict(new { code = "upload_token_invalid" });
         if (!context.Request.HasFormContentType) return await ResultValidationFailedAsync(session, unitId, taskKey, attemptKey, handle, "multipart_required", cancellationToken).ConfigureAwait(false);
@@ -187,11 +187,20 @@ public static class ProviderResultEndpoints
 
     public static async Task<IResult> Complete(Guid taskId, Guid attemptId, string receipt, HttpContext context, IExecutionUnitAuthenticator authenticator, ProviderSessionApplication session, CancellationToken cancellationToken)
     {
-        if (!TryAuthenticate(authenticator, context, out var unitId) || !TryHandle(context, out var handle)) return TypedResults.Unauthorized();
+        if ((await AuthenticateAsync(authenticator, context).ConfigureAwait(false)) is not { } unitId || !TryHandle(context, out var handle)) return TypedResults.Unauthorized();
         return await session.Complete(unitId, new TaskId(taskId), new AttemptId(attemptId), handle, receipt).RunAsync(cancellationToken).ConfigureAwait(false) ? TypedResults.Ok() : TypedResults.Conflict(new { code = "completion_invalid" });
     }
 
     private static bool TryHandle(HttpContext context, out string handle) => (handle = context.Request.Headers["X-MutualGPU-Task-Handle"].ToString()).Length > 0;
-    private static bool TryAuthenticate(IExecutionUnitAuthenticator auth, HttpContext context, out ExecutionUnitId unitId) { var value = context.Request.Headers.Authorization.ToString(); if (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) value = value[7..]; return auth.TryAuthenticate(value, out unitId); }
+    private static Task<ExecutionUnitId?> AuthenticateAsync(IExecutionUnitAuthenticator authenticator, HttpContext context)
+    {
+        var value = context.Request.Headers.Authorization.ToString();
+        if (value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+        {
+            value = value[7..];
+        }
+
+        return authenticator.AuthenticateAsync(value, context.RequestAborted);
+    }
     private static bool IsAccepted(TaskRequest task, AttemptId attemptId) => task.Attempts.SingleOrDefault(attempt => attempt.Id == attemptId)?.State is AttemptState.Accepted;
 }

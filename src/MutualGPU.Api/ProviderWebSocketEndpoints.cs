@@ -23,7 +23,7 @@ public static class ProviderWebSocketEndpoints
         EnrollmentApplication enrollment,
         CancellationToken cancellationToken)
     {
-        if (!TryAuthenticate(authenticator, context.Request.Headers.Authorization, out var unitId))
+        if ((await AuthenticateAsync(authenticator, context.Request.Headers.Authorization, cancellationToken).ConfigureAwait(false)) is not { } unitId)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             return;
@@ -95,7 +95,7 @@ public static class ProviderWebSocketEndpoints
         try { first = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false); }
         catch (InvalidDataException) { await socket.CloseAsync(WebSocketCloseStatus.InvalidPayloadData, "Invalid protobuf message.", cancellationToken).ConfigureAwait(false); return; }
         if (first.BodyCase is not ProviderMessage.BodyOneofCase.Connect || first.Connect.ProtocolVersion != 1 ||
-            !TryAuthenticate(authenticator, first.Connect.Authorization, out var unitId))
+            (await AuthenticateAsync(authenticator, first.Connect.Authorization, cancellationToken).ConfigureAwait(false)) is not { } unitId)
         {
             await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Authentication or protocol negotiation failed.", cancellationToken).ConfigureAwait(false);
             return;
@@ -268,10 +268,13 @@ public static class ProviderWebSocketEndpoints
         return parser.ParseFrom(content.ToArray());
     }
 
-    private static bool TryAuthenticate(IExecutionUnitAuthenticator authenticator, string? authorization, out ExecutionUnitId unitId)
+    private static Task<ExecutionUnitId?> AuthenticateAsync(
+        IExecutionUnitAuthenticator authenticator,
+        string? authorization,
+        CancellationToken cancellationToken)
     {
         var value = authorization?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) is true ? authorization[7..] : authorization;
-        return authenticator.TryAuthenticate(value, out unitId);
+        return authenticator.AuthenticateAsync(value, cancellationToken);
     }
 
     private static TaskId ParseTaskId(string value) => Guid.TryParse(value, out var id) ? new TaskId(id) : throw new InvalidDataException("Task ID is invalid.");

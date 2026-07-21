@@ -50,7 +50,7 @@ Resources:
         Fn::ImportValue: !Sub '${FoundationStackName}-VpcId'
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
-      HealthCheckPath: /health/ready
+      HealthCheckPath: /health/live
       HealthCheckIntervalSeconds: 15
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -121,7 +121,7 @@ Resources:
         - Field: path-pattern
           PathPatternConfig:
             Values:
-              - /mutualgpu.provider.v1.ProviderControl/*
+              - /mutualgpu.v1.ProviderControl/*
       Actions:
         - Type: forward
           TargetGroupArn: !Ref GrpcTargetGroup
@@ -155,23 +155,22 @@ Resources:
             - Name: MutualGPU__TrustForwardedProto
               Value: 'true'
             - Name: NetCats__FiberDiagnostics__Enabled
-              Value: 'false'
+              Value: 'true'
+            - Name: NetCats__FiberDiagnostics__EnableInProduction
+              Value: 'true'
+            - Name: MutualGPU__ProviderKeyS3__BucketName
+              Value: mutualgpu-preshared-keys
+            - Name: MutualGPU__ProviderKeyS3__Region
+              Value: us-east-1
+            - Name: MutualGPU__S3__BucketName
+              Value: mutualgpu-preshared-keys
+            - Name: MutualGPU__S3__Region
+              Value: us-east-1
             - !If
               - HasProviderCorsOrigin
               - Name: MutualGPU__ProviderCorsOrigins__0
                 Value: !Ref ProviderCorsOrigin
               - !Ref AWS::NoValue
-          Secrets:
-            - Name: MutualGPU__Backblaze__Endpoint
-              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeEndpoint::'
-            - Name: MutualGPU__Backblaze__BucketName
-              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeBucketName::'
-            - Name: MutualGPU__Backblaze__KeyId
-              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeKeyId::'
-            - Name: MutualGPU__Backblaze__ApplicationKey
-              ValueFrom: !Sub '${DeploymentSecretArn}:BackblazeApplicationKey::'
-            - Name: MutualGPU__ProviderKeyPepper
-              ValueFrom: !Sub '${DeploymentSecretArn}:ProviderKeyPepper::'
           LogConfiguration:
             LogDriver: awslogs
             Options:

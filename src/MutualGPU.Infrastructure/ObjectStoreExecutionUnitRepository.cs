@@ -7,15 +7,16 @@ namespace MutualGPU.Infrastructure;
 public sealed class ObjectStoreExecutionUnitRepository(
     IObjectStore store,
     MutualGpuObjectKeys keys,
-    IExecutionUnitKeyResolver keyResolver,
+    IExecutionUnitKeyResolver keyRegistry,
     RepositoryLockRegistry locks) : IExecutionUnitRepository, ICapabilityReader, IEnrollmentStartupRecovery
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<ExecutionUnit?> GetAsync(ExecutionUnitId id, CancellationToken cancellationToken)
     {
-        if (!keyResolver.TryGetPresharedKey(id, out var presharedKey)) return null;
-        var snapshot = await ReadAsync<ExecutionUnitSnapshot>(keys.NodeIdentity(presharedKey), cancellationToken).ConfigureAwait(false);
+        var providerDigest = await keyRegistry.GetProviderKeyDigestAsync(id, cancellationToken).ConfigureAwait(false);
+        if (providerDigest is null) return null;
+        var snapshot = await ReadAsync<ExecutionUnitSnapshot>(keys.NodeIdentityForProviderDigest(providerDigest), cancellationToken).ConfigureAwait(false);
         return snapshot is null ? null : ExecutionUnit.Hydrate(snapshot);
     }
 
@@ -37,7 +38,8 @@ public sealed class ObjectStoreExecutionUnitRepository(
     public async Task SaveAsync(ExecutionUnit executionUnit, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(executionUnit);
-        if (!keyResolver.TryGetPresharedKey(executionUnit.Id, out var presharedKey))
+        var providerDigest = await keyRegistry.GetProviderKeyDigestAsync(executionUnit.Id, cancellationToken).ConfigureAwait(false);
+        if (providerDigest is null)
             throw new InvalidOperationException("The execution unit is not provisioned.");
         await using var held = await locks.AcquireAsync(executionUnit.Id.Value, cancellationToken);
         foreach (var capability in executionUnit.CurrentEnrollment.Capabilities)
@@ -51,22 +53,23 @@ public sealed class ObjectStoreExecutionUnitRepository(
         // exists without a durable event from which it can be explained or rebuilt.
         var enrollmentEvent = new EnrollmentEvent(EnrollmentEventId.New(), DateTimeOffset.UtcNow, executionUnit.ToSnapshot());
         await WriteAsync(
-            keys.Enrollment(presharedKey, executionUnit.Version, enrollmentEvent.Id),
+            keys.EnrollmentForProviderDigest(providerDigest, executionUnit.Version, enrollmentEvent.Id),
             enrollmentEvent,
             ObjectWriteConditions.IfNotExists,
             cancellationToken);
-        await WriteAsync(keys.NodeIdentity(presharedKey), executionUnit.ToSnapshot(), ObjectWriteConditions.None, cancellationToken);
+        await WriteAsync(keys.NodeIdentityForProviderDigest(providerDigest), executionUnit.ToSnapshot(), ObjectWriteConditions.None, cancellationToken);
     }
 
     public async Task<int> RecoverAsync(CancellationToken cancellationToken)
     {
         var recovered = 0;
-        foreach (var executionUnitId in keyResolver.ExecutionUnitIds)
+        await foreach (var executionUnitId in keyRegistry.ListExecutionUnitIdsAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (!keyResolver.TryGetPresharedKey(executionUnitId, out var presharedKey)) continue;
+            var providerDigest = await keyRegistry.GetProviderKeyDigestAsync(executionUnitId, cancellationToken).ConfigureAwait(false);
+            if (providerDigest is null) continue;
             EnrollmentEvent? latest = null;
             ObjectKey? latestKey = null;
-            await foreach (var entry in store.ListAsync(keys.Enrollments(presharedKey), cancellationToken).ConfigureAwait(false))
+            await foreach (var entry in store.ListAsync(keys.EnrollmentsForProviderDigest(providerDigest), cancellationToken).ConfigureAwait(false))
             {
                 if (!entry.Key.Value.EndsWith(".json", StringComparison.Ordinal)) continue;
                 var candidate = await ReadAsync<EnrollmentEvent>(entry.Key, cancellationToken).ConfigureAwait(false);
@@ -80,9 +83,9 @@ public sealed class ObjectStoreExecutionUnitRepository(
             }
 
             if (latest is null) continue;
-            var identity = await ReadAsync<ExecutionUnitSnapshot>(keys.NodeIdentity(presharedKey), cancellationToken).ConfigureAwait(false);
+            var identity = await ReadAsync<ExecutionUnitSnapshot>(keys.NodeIdentityForProviderDigest(providerDigest), cancellationToken).ConfigureAwait(false);
             if (identity is not null && identity.Version.Value >= latest.Snapshot.Version.Value) continue;
-            await WriteAsync(keys.NodeIdentity(presharedKey), latest.Snapshot, ObjectWriteConditions.None, cancellationToken).ConfigureAwait(false);
+            await WriteAsync(keys.NodeIdentityForProviderDigest(providerDigest), latest.Snapshot, ObjectWriteConditions.None, cancellationToken).ConfigureAwait(false);
             recovered++;
         }
         return recovered;

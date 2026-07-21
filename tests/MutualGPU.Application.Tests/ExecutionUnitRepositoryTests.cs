@@ -9,16 +9,14 @@ public sealed class ExecutionUnitRepositoryTests
     public async Task Concurrent_identical_enrollments_share_one_capability_definition()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var firstId = ExecutionUnitId.New();
         var secondId = ExecutionUnitId.New();
-        var resolver = new ConfiguredPresharedKeyRegistry(new Dictionary<ExecutionUnitId, string>
-        {
-            [firstId] = "first-key",
-            [secondId] = "second-key",
-        });
+        var registry = new ObjectStoreProviderKeyRegistry(store, keys);
+        await registry.ProvisionAsync(firstId, "first-key", CancellationToken.None);
+        await registry.ProvisionAsync(secondId, "second-key", CancellationToken.None);
         var locks = new RepositoryLockRegistry();
-        var repository = new ObjectStoreExecutionUnitRepository(store, keys, resolver, locks);
+        var repository = new ObjectStoreExecutionUnitRepository(store, keys, registry, locks);
         var application = new EnrollmentApplication(repository, new Events(), locks);
         var definition = new CapabilityDefinition(
             CapabilityId.New(),
@@ -40,11 +38,12 @@ public sealed class ExecutionUnitRepositoryTests
     public async Task Enrollment_replacements_append_immutable_events_before_advancing_the_identity_projection()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var id = ExecutionUnitId.New();
         const string presharedKey = "provider-key";
-        var resolver = new ConfiguredPresharedKeyRegistry(new Dictionary<ExecutionUnitId, string> { [id] = presharedKey });
-        var repository = new ObjectStoreExecutionUnitRepository(store, keys, resolver, new RepositoryLockRegistry());
+        var registry = new ObjectStoreProviderKeyRegistry(store, keys);
+        await registry.ProvisionAsync(id, presharedKey, CancellationToken.None);
+        var repository = new ObjectStoreExecutionUnitRepository(store, keys, registry, new RepositoryLockRegistry());
         var first = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "first");
         var unit = new ExecutionUnit(id, new EnrollmentDefinition(Machine(ResourceTier.Small, ResourceTier.Small, 8), [first]));
 
@@ -72,11 +71,12 @@ public sealed class ExecutionUnitRepositoryTests
     public async Task Startup_recovery_rebuilds_a_missing_identity_projection_from_the_latest_enrollment_event()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var id = ExecutionUnitId.New();
         const string presharedKey = "provider-key";
-        var resolver = new ConfiguredPresharedKeyRegistry(new Dictionary<ExecutionUnitId, string> { [id] = presharedKey });
-        var repository = new ObjectStoreExecutionUnitRepository(store, keys, resolver, new RepositoryLockRegistry());
+        var registry = new ObjectStoreProviderKeyRegistry(store, keys);
+        await registry.ProvisionAsync(id, presharedKey, CancellationToken.None);
+        var repository = new ObjectStoreExecutionUnitRepository(store, keys, registry, new RepositoryLockRegistry());
         var unit = new ExecutionUnit(id, new EnrollmentDefinition(Machine(ResourceTier.Small, ResourceTier.Small, 8), [new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "first")]));
         await repository.SaveAsync(unit, CancellationToken.None);
         unit.ReplaceEnrollment(new EnrollmentDefinition(Machine(ResourceTier.Large, ResourceTier.Large, 32), [new CapabilityDefinition(CapabilityId.New(), "splats-v2", [], new OutputDefinition(), "second")]));

@@ -44,13 +44,21 @@ var providerCredentials = builder.Configuration.GetSection("MutualGPU:Providers"
 var providerKeys = providerCredentials
     .Where(static credential => Guid.TryParse(credential.ExecutionUnitId, out _) && !String.IsNullOrWhiteSpace(credential.PresharedKey))
     .ToDictionary(static credential => new ExecutionUnitId(Guid.Parse(credential.ExecutionUnitId)), static credential => credential.PresharedKey);
-builder.Services.AddSingleton<ConfiguredPresharedKeyRegistry>(_ => new ConfiguredPresharedKeyRegistry(providerKeys));
-builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
-builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
-builder.Services.AddSingleton(new MutualGpuObjectKeys(System.Text.Encoding.UTF8.GetBytes(builder.Configuration["MutualGPU:ProviderKeyPepper"] ?? "development-only-mutualgpu-pepper")));
+var objectKeys = new MutualGpuObjectKeys();
+var providerKeyS3 = builder.Configuration.GetSection("MutualGPU:ProviderKeyS3").Get<AwsS3ProviderKeyRegistryOptions>();
+var s3 = builder.Configuration.GetSection("MutualGPU:S3").Get<AwsS3ObjectStoreOptions>();
+builder.Services.AddSingleton(objectKeys);
 builder.Services.AddSingleton<RepositoryLockRegistry>();
 builder.Services.AddSingleton<IEnrollmentGate>(static services => services.GetRequiredService<RepositoryLockRegistry>());
-if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
+if (s3 is not null)
+{
+    s3.Validate();
+    builder.Services.AddSingleton(s3);
+    builder.Services.AddSingleton<AwsS3ObjectStore>();
+    builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<AwsS3ObjectStore>());
+    builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<AwsS3ObjectStore>());
+}
+else if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
 {
     var backblaze = builder.Configuration.GetRequiredSection("MutualGPU:Backblaze").Get<BackblazeS3Options>()
         ?? throw new InvalidOperationException("MutualGPU Backblaze configuration is invalid.");
@@ -61,6 +69,34 @@ else
     builder.Services.AddSingleton<InMemoryObjectStore>();
     builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<InMemoryObjectStore>());
     builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<InMemoryObjectStore>());
+}
+
+if (providerKeyS3 is not null)
+{
+    providerKeyS3.Validate();
+    builder.Services.AddSingleton(providerKeyS3);
+    builder.Services.AddSingleton<AwsS3ProviderKeyRegistry>();
+    builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services => services.GetRequiredService<AwsS3ProviderKeyRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<AwsS3ProviderKeyRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<AwsS3ProviderKeyRegistry>());
+}
+else if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
+{
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException("MutualGPU production requires MutualGPU:ProviderKeyS3 configuration.");
+    }
+
+    builder.Services.AddSingleton<ObjectStoreProviderKeyRegistry>();
+    builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services => services.GetRequiredService<ObjectStoreProviderKeyRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ObjectStoreProviderKeyRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ObjectStoreProviderKeyRegistry>());
+}
+else
+{
+    builder.Services.AddSingleton(_ => new ConfiguredPresharedKeyRegistry(providerKeys, objectKeys));
+    builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
 }
 builder.Services.AddSingleton<ObjectStoreExecutionUnitRepository>();
 builder.Services.AddSingleton<IExecutionUnitRepository>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
@@ -121,7 +157,10 @@ app.UseForwardedHeaders();
 app.UseHsts();
 app.Use(async (context, next) =>
 {
-    if (!context.Request.IsHttps)
+    // The task security group admits these plaintext Kestrel ports only from the ALB.
+    // Public callers terminate TLS at that ingress and arrive with X-Forwarded-Proto.
+    var isPrivateLoadBalancerHop = context.Connection.LocalPort is 8080 or 8081;
+    if (!context.Request.IsHttps && !isPrivateLoadBalancerHop)
     {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsync("HTTPS is required.", context.RequestAborted);

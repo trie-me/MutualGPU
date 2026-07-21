@@ -9,7 +9,7 @@ public sealed class TaskRepositoryFactsTests
     public async Task Saves_append_immutable_task_facts_and_hydration_reads_the_newest_fact()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
@@ -35,7 +35,7 @@ public sealed class TaskRepositoryFactsTests
     public async Task Attempt_state_changes_append_ordered_immutable_events()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
@@ -59,7 +59,7 @@ public sealed class TaskRepositoryFactsTests
     public async Task Startup_recovery_revokes_inflight_attempt_and_requeues_task()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
@@ -81,7 +81,7 @@ public sealed class TaskRepositoryFactsTests
     public async Task Startup_recovery_rebuilds_missing_queue_and_task_summary_projections()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
@@ -104,7 +104,7 @@ public sealed class TaskRepositoryFactsTests
     public async Task Startup_recovery_removes_stale_queue_markers_for_terminal_tasks()
     {
         var store = new InMemoryObjectStore();
-        var keys = new MutualGpuObjectKeys([1, 2, 3]);
+        var keys = new MutualGpuObjectKeys();
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
         var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);

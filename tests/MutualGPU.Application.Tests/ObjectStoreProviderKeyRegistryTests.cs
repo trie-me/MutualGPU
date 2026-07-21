@@ -6,10 +6,10 @@ namespace MutualGPU.Application.Tests;
 public sealed class ObjectStoreProviderKeyRegistryTests
 {
     [Fact]
-    public async Task Issued_key_is_authenticated_from_its_hmac_addressed_object_record()
+    public async Task Issued_key_is_authenticated_from_its_sha256_addressed_object_record()
     {
         var store = new InMemoryObjectStore();
-        var registry = new ObjectStoreProviderKeyRegistry(store, new MutualGpuObjectKeys([1, 2, 3]));
+        var registry = new ObjectStoreProviderKeyRegistry(store, new MutualGpuObjectKeys());
         var issued = Assert.Single(await new ProviderKeyIssuer(registry).IssueAsync(1, CancellationToken.None));
 
         var authenticated = await registry.AuthenticateAsync(issued.PresharedKey, CancellationToken.None);
@@ -29,7 +29,7 @@ public sealed class ObjectStoreProviderKeyRegistryTests
     public async Task Batch_callback_observes_each_key_after_its_record_is_durable()
     {
         var store = new InMemoryObjectStore();
-        var registry = new ObjectStoreProviderKeyRegistry(store, new MutualGpuObjectKeys([4, 5, 6]));
+        var registry = new ObjectStoreProviderKeyRegistry(store, new MutualGpuObjectKeys());
         var observed = new List<IssuedProviderKey>();
 
         await new ProviderKeyIssuer(registry).IssueAsync(2, async (issued, cancellationToken) =>

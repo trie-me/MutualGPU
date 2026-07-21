@@ -1,27 +1,37 @@
 using System.Security.Cryptography;
-using System.Text;
 using MutualGPU.Application;
 using MutualGPU.Domain;
 
 namespace MutualGPU.Infrastructure;
 
-/// <summary>Centralizes the versioned Backblaze layout and prevents raw provider keys reaching object names.</summary>
-public sealed class MutualGpuObjectKeys(byte[] providerKeyPepper)
+/// <summary>Centralizes the versioned object layout and prevents raw provider keys reaching object names.</summary>
+public sealed class MutualGpuObjectKeys
 {
     private const string Root = "mutualgpu/v3";
-    private readonly byte[] providerKeyPepper = providerKeyPepper?.ToArray() ?? throw new ArgumentNullException(nameof(providerKeyPepper));
 
     public ObjectKey CapabilityDefinition(CapabilityId capabilityId) => new($"{Root}/capabilities/{capabilityId.Value:N}/definition.json");
 
     public ObjectPrefix Capabilities() => new($"{Root}/capabilities");
 
-    public ObjectKey NodeIdentity(string presharedKey) => new($"{Root}/nodes/{ProviderDigest(presharedKey)}/identity.json");
+    public ObjectKey ProviderKey(string presharedKey) => new($"{Root}/provider-keys/{ProviderDigest(presharedKey)}.json");
 
-    public ObjectKey Enrollment( string presharedKey, EnrollmentVersion version, EnrollmentEventId eventId) =>
-        new($"{Root}/nodes/{ProviderDigest(presharedKey)}/enrollments/{version.Value:D10}-{eventId.Value:N}.json");
+    public ObjectPrefix ProviderKeys() => new($"{Root}/provider-keys");
 
-    public ObjectPrefix Enrollments(string presharedKey) =>
-        new($"{Root}/nodes/{ProviderDigest(presharedKey)}/enrollments");
+    public ObjectKey NodeIdentity(string presharedKey) => NodeIdentityForProviderDigest(ProviderDigest(presharedKey));
+
+    public ObjectKey NodeIdentityForProviderDigest(string providerDigest) =>
+        new($"{Root}/nodes/{ValidatedProviderDigest(providerDigest)}/identity.json");
+
+    public ObjectKey Enrollment(string presharedKey, EnrollmentVersion version, EnrollmentEventId eventId) =>
+        EnrollmentForProviderDigest(ProviderDigest(presharedKey), version, eventId);
+
+    public ObjectKey EnrollmentForProviderDigest(string providerDigest, EnrollmentVersion version, EnrollmentEventId eventId) =>
+        new($"{Root}/nodes/{ValidatedProviderDigest(providerDigest)}/enrollments/{version.Value:D10}-{eventId.Value:N}.json");
+
+    public ObjectPrefix Enrollments(string presharedKey) => EnrollmentsForProviderDigest(ProviderDigest(presharedKey));
+
+    public ObjectPrefix EnrollmentsForProviderDigest(string providerDigest) =>
+        new($"{Root}/nodes/{ValidatedProviderDigest(providerDigest)}/enrollments");
 
     public ObjectKey TaskManifest(RequestorId requestorId, TaskId taskId) =>
         new($"{Root}/requestors/{requestorId.Value:N}/tasks/{taskId.Value:N}/manifest.json");
@@ -74,14 +84,30 @@ public sealed class MutualGpuObjectKeys(byte[] providerKeyPepper)
 
     public ObjectPrefix QueuePrefix(CapabilityId capabilityId) => new($"{Root}/queue/{capabilityId.Value:N}");
 
-    private string ProviderDigest(string presharedKey)
+    public string ProviderDigest(string presharedKey)
     {
         if (String.IsNullOrWhiteSpace(presharedKey))
         {
             throw new ArgumentException("A preshared key is required.", nameof(presharedKey));
         }
 
-        return Convert.ToHexString(HMACSHA256.HashData(providerKeyPepper, Encoding.UTF8.GetBytes(presharedKey))).ToLowerInvariant();
+        return Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(presharedKey))).ToLowerInvariant();
+    }
+
+    private static string ValidatedProviderDigest(string providerDigest)
+    {
+        if (String.IsNullOrWhiteSpace(providerDigest) ||
+            providerDigest.Length != 64 ||
+            providerDigest.Any(static character =>
+                (character < '0' || character > '9') &&
+                (character < 'a' || character > 'f')))
+        {
+            throw new ArgumentException(
+                "A provider digest must be exactly 64 lowercase hexadecimal characters.",
+                nameof(providerDigest));
+        }
+
+        return providerDigest;
     }
 
     private static string SafeExtension(string extension) => SafeName(extension.TrimStart('.'));

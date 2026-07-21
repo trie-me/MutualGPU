@@ -5,6 +5,7 @@
   <Project Path="src/MutualGPU.Infrastructure/MutualGPU.Infrastructure.csproj" />
   <Project Path="src/MutualGPU.Protocol/MutualGPU.Protocol.csproj" />
   <Project Path="src/MutualGPU.Api/MutualGPU.Api.csproj" />
+  <Project Path="tools/MutualGPU.ProviderKeyProvisioner/MutualGPU.ProviderKeyProvisioner.csproj" />
   <Project Path="tests/MutualGPU.Domain.Tests/MutualGPU.Domain.Tests.csproj" />
   <Project Path="tests/MutualGPU.Application.Tests/MutualGPU.Application.Tests.csproj" />
   <Project Path="tests/MutualGPU.Api.Tests/MutualGPU.Api.Tests.csproj" />

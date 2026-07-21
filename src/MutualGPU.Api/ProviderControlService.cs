@@ -29,7 +29,7 @@ public sealed class ProviderControlService(
 
     public override async Task<EnrollResponse> Enroll(EnrollRequest request, ServerCallContext context)
     {
-        var executionUnitId = Authenticate(context.RequestHeaders.GetValue("authorization"));
+        var executionUnitId = await AuthenticateAsync(context.RequestHeaders.GetValue("authorization"), context.CancellationToken).ConfigureAwait(false);
         EnrollmentDefinition? definition;
         try
         {
@@ -76,7 +76,7 @@ public sealed class ProviderControlService(
 
     private async Task ConnectCoreAsync(IAsyncStreamReader<ProviderMessage> requestStream, IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context, FiberScope sessionScope)
     {
-        var executionUnitId = Authenticate(context.RequestHeaders.GetValue("authorization"));
+        var executionUnitId = await AuthenticateAsync(context.RequestHeaders.GetValue("authorization"), context.CancellationToken).ConfigureAwait(false);
         var unit = await units.GetAsync(executionUnitId, context.CancellationToken).ConfigureAwait(false)
             ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, "The execution unit must enroll before connecting."));
 
@@ -268,11 +268,10 @@ public sealed class ProviderControlService(
         _ => "process-provider-message",
     };
 
-    private ExecutionUnitId Authenticate(string? authorization)
+    private async Task<ExecutionUnitId> AuthenticateAsync(string? authorization, CancellationToken cancellationToken)
     {
         var value = authorization?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) is true ? authorization[7..] : authorization;
-        if (!authenticator.TryAuthenticate(value, out var executionUnitId))
-            throw new RpcException(new Status(StatusCode.Unauthenticated, "Provider authentication failed."));
-        return executionUnitId;
+        var executionUnitId = await authenticator.AuthenticateAsync(value, cancellationToken).ConfigureAwait(false);
+        return executionUnitId ?? throw new RpcException(new Status(StatusCode.Unauthenticated, "Provider authentication failed."));
     }
 }
