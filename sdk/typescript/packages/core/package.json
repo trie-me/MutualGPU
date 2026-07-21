@@ -1,6 +1,6 @@
 {
   "name": "@mutualgpu/provider-core",
-  "version": "0.1.0-preview.2",
+  "version": "0.1.0-preview.3",
   "type": "module",
   "exports": {
     ".": "./src/provider.js",

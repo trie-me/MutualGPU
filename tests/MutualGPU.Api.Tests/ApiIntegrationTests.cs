@@ -182,6 +182,55 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
+    public async Task Requestor_cookie_is_eligible_for_cross_site_credentialed_requests()
+    {
+        using var client = CreateHttpsClient(handleCookies: false);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.Add("Origin", "https://provider.example");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+        var cookie = Assert.Single(response.Headers.GetValues("Set-Cookie"),
+            value => value.StartsWith($"{RequestorIdentity.CookieName}=", StringComparison.Ordinal));
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("secure", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("samesite=none", cookie, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Cookie_authenticated_task_writes_reject_untrusted_browser_origins()
+    {
+        using var client = CreateHttpsClient(handleCookies: false);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        request.Headers.Add("Origin", "https://attacker.example");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Cookie_authenticated_task_writes_allow_the_configured_browser_origin()
+    {
+        using var client = CreateHttpsClient(handleCookies: false);
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        request.Headers.Add("Origin", "https://provider.example");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+    }
+
+    [Fact]
     public async Task Webgpu_enrollment_issues_a_fresh_registry_key()
     {
         using var client = CreateHttpsClient();

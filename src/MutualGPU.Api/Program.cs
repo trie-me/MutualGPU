@@ -172,6 +172,17 @@ app.Use(async (context, next) =>
     await next(context);
 });
 app.UseCors("mutualgpu-provider");
+app.Use(async (context, next) =>
+{
+    if (HttpMethods.IsPost(context.Request.Method) &&
+        context.Request.Path.StartsWithSegments("/api/tasks") &&
+        !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    await next(context);
+});
 app.UseWebSockets();
 app.Use(async (context, next) =>
 {
@@ -181,7 +192,7 @@ app.Use(async (context, next) =>
         {
             HttpOnly = true,
             Secure = true,
-            SameSite = SameSiteMode.Lax,
+            SameSite = SameSiteMode.None,
             Path = "/",
             Expires = DateTimeOffset.UtcNow.AddYears(1),
         });
@@ -224,6 +235,15 @@ if (demoForestSimulationsEnabled)
 }
 
 app.Run();
+
+static bool IsTrustedBrowserWriteOrigin(HttpContext context, IReadOnlyCollection<string> allowedOrigins)
+{
+    var origin = context.Request.Headers.Origin.ToString();
+    if (String.IsNullOrWhiteSpace(origin)) return true;
+    var requestOrigin = $"{context.Request.Scheme}://{context.Request.Host}";
+    return StringComparer.OrdinalIgnoreCase.Equals(origin, requestOrigin) ||
+        allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase);
+}
 
 public partial class Program;
 

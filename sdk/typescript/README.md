@@ -1,12 +1,42 @@
-# MutualGPU TypeScript provider SDK
+# MutualGPU TypeScript SDK
 
-The packages share one provider lifecycle and Protobuf codec:
+The workspace includes a cookie-backed browser requestor client and one shared provider lifecycle:
 
+- `@mutualgpu/requestor-web` exposes `RequestorClient` for capability discovery, task submission and polling, result descriptors, and browser-provider key issuance. Before its first API operation it performs one credentialed `GET /` to establish the requestor cookie. Every later request uses `credentials: "include"`, and one missing-identity response is retried defensively.
 - `@mutualgpu/provider-core` exposes `ProviderClient`, result upload, and the canonical `provider.proto` wire codec.
 - `@mutualgpu/provider-node` uses native Node HTTPS/HTTP2 for the bidirectional gRPC session.
 - `@mutualgpu/provider-web` uses one binary Protobuf message per Chrome WebSocket frame and the HTTP enrollment mapping.
 
 All endpoints are required to use TLS: Node/API URLs use `https://` and Chrome sessions use `wss://`. The SDK rejects cleartext URLs before it sends provider credentials.
+
+## Browser requestor
+
+```js
+import { RequestorClient } from "@mutualgpu/requestor-web";
+
+const requestor = new RequestorClient("https://api.example/");
+const capabilities = await requestor.listCapabilities();
+const capability = capabilities[0];
+const machine = capability.machineAvailability[0];
+
+const task = await requestor.submitTask({
+  capabilityId: capability.capabilityId,
+  contractHash: capability.contractHash,
+  scalars: { enable_safety_checker: "false" },
+  resources: {
+    computeTier: machine.computeTier,
+    memoryGiB: machine.memoryGiB
+  },
+  idempotencyKey: crypto.randomUUID()
+}, imageFile);
+
+const current = await requestor.getTask(task.taskId);
+const result = current.canRetrieveResult
+  ? await requestor.getTaskResult(task.taskId)
+  : null;
+```
+
+Cross-origin hosts must be present in `MutualGPU:ProviderCorsOrigins`. The API issues the requestor cookie as `HttpOnly; Secure; SameSite=None`; application code never reads or forwards the cookie itself.
 
 ## Node provider
 

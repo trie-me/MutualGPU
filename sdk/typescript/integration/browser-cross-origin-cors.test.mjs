@@ -37,3 +37,36 @@ test("credentialed browser fetch can read MutualGPU capabilities across origins"
     await browser.close();
   }
 }, { timeout: 30_000 });
+
+test("credentialed browser fetch retains one requestor identity across origins", async () => {
+  assert.ok(existsSync(browserExecutable),
+    `Chromium was not found at ${browserExecutable}. Set MUTUALGPU_BROWSER_EXECUTABLE to a Chromium or Chrome executable.`);
+
+  const browser = await chromium.launch({ executablePath: browserExecutable, headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(providerOrigin, { waitUntil: "domcontentloaded" });
+
+    const result = await page.evaluate(async apiUrl => {
+      const request = path => fetch(new URL(path, apiUrl), { credentials: "include" });
+      const bootstrap = await request("/");
+      const first = await request("/api/tasks/");
+      const second = await request("/api/tasks/");
+      return {
+        bootstrapStatus: bootstrap.status,
+        first: { status: first.status, body: await first.text() },
+        second: { status: second.status, body: await second.text() }
+      };
+    }, apiBaseUrl);
+
+    assert.equal(result.bootstrapStatus, 200);
+    assert.equal(result.first.status, 200, result.first.body);
+    assert.equal(result.second.status, 200, result.second.body);
+    assert.deepEqual(JSON.parse(result.first.body), JSON.parse(result.second.body));
+  }
+  finally {
+    await context.close();
+    await browser.close();
+  }
+}, { timeout: 30_000 });
