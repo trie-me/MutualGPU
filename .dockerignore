@@ -1,0 +1,46 @@
+# Source control, editor state, and local operating-system files.
+.git/
+.DS_Store
+.vs/
+.idea/
+.vscode/
+
+# Never send local credentials, environment files, or certificates as build context.
+.aws/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Rebuild these inside the container.
+**/[Bb]in/
+**/[Oo]bj/
+# The Dockerfile consumes this one host-published, framework-dependent artifact.
+artifacts/*
+!artifacts/mutualgpu-api/
+!artifacts/mutualgpu-api/**
+TestResults/
+BenchmarkDotNet.Artifacts/
+coverage/
+coverage.*
+*.trx
+*.binlog
+
+# JavaScript dependency trees and temporary files are not needed for the API image.
+**/node_modules/
+.build/
+.dotnet/
+*.tmp
+*.bak
+*.swp
+*~
+
+# The image consumes only the host-published MutualGPU API artifact.
+docs/
+tests/
+sdk/
+scripts/
+vendor/

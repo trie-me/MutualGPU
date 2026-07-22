@@ -125,7 +125,7 @@ MUTUALGPU_BROWSER_EXECUTABLE="/Applications/Google Chrome.app/Contents/MacOS/Goo
 npm run test:browser-integration
 ```
 
-For the protected demo key file, run this repeatable wrapper from `examples/MutualGPU`:
+For the protected demo key file, run this repeatable wrapper from the repository root:
 
 ```text
 just browser-sdk-integration-file /private/tmp/mutualgpu-provider-keys.v2DiHW 1

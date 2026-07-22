@@ -50,10 +50,10 @@ if aws_cli cloudformation describe-stacks --stack-name "$service_stack" >/dev/nu
   fi
 fi
 
-aws_cli cloudformation validate-template --template-body file://examples/MutualGPU/deploy/aws/service.yaml >/dev/null
+aws_cli cloudformation validate-template --template-body file://deploy/aws/service.yaml >/dev/null
 aws_cli cloudformation deploy \
   --stack-name "$service_stack" \
-  --template-file examples/MutualGPU/deploy/aws/service.yaml \
+  --template-file deploy/aws/service.yaml \
   --parameter-overrides \
     "FoundationStackName=${foundation_stack}" \
     "ImageUri=${repository_uri}@${image_digest}" \

@@ -1,5 +1,19 @@
 set shell := ["zsh", "-cu"]
 
+mutualgpu-test:
+    dotnet test NetCats.Examples.MutualGPU.slnx --disable-build-servers --verbosity minimal -m:1
+    node --test tests/frontend/*.test.mjs
+    npm test --prefix sdk/typescript
+
+mutualgpu-dev-cert:
+    dotnet dev-certs https --trust
+
+mutualgpu-local-smoke:
+    ./scripts/run-local-composition.sh smoke
+
+mutualgpu-local-demo:
+    ./scripts/run-local-composition.sh demo
+
 # Bind the synthetic local Node provider to the public demo API.
 # Export MUTUALGPU_EXECUTION_UNIT_ID and MUTUALGPU_PROVIDER_KEY first.
 remote-demo-provider:
