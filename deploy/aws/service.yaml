@@ -14,6 +14,14 @@ Parameters:
   DeploymentSecretArn:
     Type: String
     Description: ARN of the Secrets Manager JSON secret named mutualgpu/deployment.
+  ApplicationDataBucketName:
+    Type: String
+    Default: mutualgpu-data
+    Description: Dedicated S3 bucket for MutualGPU task state, inputs, and result artifacts.
+  ProviderKeyBucketName:
+    Type: String
+    Default: mutualgpu-preshared-keys
+    Description: Dedicated S3 bucket for provider-key bindings only.
   ProviderCorsOrigin0:
     Type: String
     Default: 'https://huggingface.co'
@@ -169,11 +177,11 @@ Resources:
             - Name: NetCats__FiberDiagnostics__EnableInProduction
               Value: 'true'
             - Name: MutualGPU__ProviderKeyS3__BucketName
-              Value: mutualgpu-preshared-keys
+              Value: !Ref ProviderKeyBucketName
             - Name: MutualGPU__ProviderKeyS3__Region
               Value: us-east-1
             - Name: MutualGPU__S3__BucketName
-              Value: mutualgpu-preshared-keys
+              Value: !Ref ApplicationDataBucketName
             - Name: MutualGPU__S3__Region
               Value: us-east-1
             - !If

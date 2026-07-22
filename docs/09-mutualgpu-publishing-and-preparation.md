@@ -2,13 +2,13 @@
 
 ## Purpose
 
-This document defines how the MutualGPU API becomes a deployable release artifact and how its Backblaze B2 persistence is proven before publication. It stops at an immutable container image and a release-ready configuration contract.
+This document defines how the MutualGPU API becomes a deployable release artifact and how its durable AWS S3 persistence is proven before publication. It stops at an immutable container image and a release-ready configuration contract.
 
 AWS resource creation and deployment of that image are covered separately in [MutualGPU AWS infrastructure provisioning](10-mutualgpu-aws-infrastructure-provisioning.md).
 
 The current demo deployment region is `us-east-1`.
 
-MutualGPU is a demo MVP, not a production-ready multi-tenant service. The release nevertheless must preserve its core guarantees: public transport is TLS-only, provider credentials remain secret, durable data uses Backblaze rather than process memory, and only one API process operates on the store.
+MutualGPU is a demo MVP, not a production-ready multi-tenant service. The release nevertheless must preserve its core guarantees: public transport is TLS-only, provider credentials remain secret, durable data uses S3 rather than process memory, and only one API process operates on the store.
 
 ## 1. API build and packaging
 
@@ -119,18 +119,15 @@ The published image receives configuration through ASP.NET Core environment-vari
 ```text
 ASPNETCORE_ENVIRONMENT=Production
 MutualGPU__TrustForwardedProto=true
-MutualGPU__Backblaze__Endpoint=https://s3.<b2-region>.backblazeb2.com
-MutualGPU__Backblaze__BucketName=<private-bucket-name>
+MutualGPU__S3__BucketName=mutualgpu-data
+MutualGPU__S3__Region=us-east-1
+MutualGPU__ProviderKeyS3__BucketName=mutualgpu-preshared-keys
+MutualGPU__ProviderKeyS3__Region=us-east-1
 MutualGPU__ProviderCorsOrigins__0=https://<chrome-provider-origin>
 NetCats__FiberDiagnostics__Enabled=false
 ```
 
-The following are secrets and must be injected at deployment time rather than stored in source, image metadata, or a task definition:
-
-```text
-MutualGPU__Backblaze__KeyId
-MutualGPU__Backblaze__ApplicationKey
-```
+The ECS task role supplies the AWS credentials. Do not store AWS credentials in source, image metadata, or a task definition. Keep provider keys separate from application data: `mutualgpu-preshared-keys` stores only `mutualgpu/v3/provider-keys/`, while `mutualgpu-data` stores the remaining `mutualgpu/v3/` task, input, and result paths.
 
 Provider shared keys are not task-definition secrets. They are durable, SHA-256-addressed records in the dedicated AWS S3 bucket `mutualgpu-preshared-keys`, under `mutualgpu/v3/provider-keys/`; their existence is the authentication binding. Keys are generated with 256 bits of randomness, and the raw key never appears in an object name or record body.
 

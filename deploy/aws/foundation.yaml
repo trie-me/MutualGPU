@@ -1,6 +1,16 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: "MutualGPU demo foundation for us-east-1: network, image repository, ECS, logs, and roles."
 
+Parameters:
+  ApplicationDataBucketName:
+    Type: String
+    Default: mutualgpu-data
+    Description: Dedicated S3 bucket for MutualGPU task state, inputs, and result artifacts.
+  ProviderKeyBucketName:
+    Type: String
+    Default: mutualgpu-preshared-keys
+    Description: Dedicated S3 bucket for provider-key bindings only.
+
 Resources:
   MutualGpuVpc:
     Type: AWS::EC2::VPC
@@ -203,19 +213,27 @@ Resources:
               Service: ecs-tasks.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: AccessMutualGpuProviderKeys
+        - PolicyName: AccessMutualGpuStorage
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action: s3:ListBucket
-                Resource: !Sub 'arn:${AWS::Partition}:s3:::mutualgpu-preshared-keys'
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ProviderKeyBucketName}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}'
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
-                Resource: !Sub 'arn:${AWS::Partition}:s3:::mutualgpu-preshared-keys/mutualgpu/v3/*'
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ProviderKeyBucketName}/mutualgpu/v3/provider-keys/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}/mutualgpu/v3/*'
       Tags:
         - Key: Project
           Value: MutualGPU

@@ -4,7 +4,7 @@ using MutualGPU.Application;
 
 namespace MutualGPU.Infrastructure;
 
-/// <summary>AWS S3 configuration for MutualGPU's durable task, artifact, and provider-key store.</summary>
+/// <summary>AWS S3 configuration for MutualGPU's durable task and artifact store.</summary>
 public sealed record AwsS3ObjectStoreOptions(string BucketName, string Region)
 {
     public void Validate()
