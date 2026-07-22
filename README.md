@@ -6,26 +6,11 @@ It includes the pure domain, canonical capability catalogue, cold enrollment/sub
 
 The Development in-memory object store is for local demonstration and in-process tests only. Backblaze is the configured production adapter. The provider SDK supports Node.js and Chrome through a shared lifecycle and canonical Protobuf codec, with a native Node HTTPS/HTTP2 gRPC transport and Chrome WSS transport. Its fixture suite verifies the wire format against the .NET-generated contracts. Consumer setup and API behaviour are documented in the [provider SDK documentation](docs/sdk/README.md), and the target exchange behaviour is defined in [the specification](docs/08-mutualgpu-example-implementation.md).
 
-## Built through rapid GPT-5.6 iteration
+## How Codex accelerated MutualGPU
 
-GPT-5.6 was used as an engineering partner throughout the platform's development. The useful pattern was not one large code-generation prompt; it was a tight, evidence-driven loop:
+Codex with GPT-5.6 helped turn the original social-compute concept into an executable MVP through short design, implementation, and test loops. The work focused on MutualGPU's product and distributed-system decisions: defining requestor and provider roles, identifying which operations needed streaming, retaining native gRPC while supporting browsers through WebSockets and Protobuf, and bringing both transports behind one internal ProviderSession abstraction.
 
-1. define one observable invariant from the specification;
-2. implement the smallest vertical slice across domain, transport, API, SDK, or UI;
-3. run the narrowest relevant test immediately;
-4. inspect the failure, runtime behavior, or wire payload with GPT-5.6;
-5. correct the implementation and add the failure as a regression test;
-6. run the full verification matrix before accepting the slice.
-
-That loop accelerated work across boundaries that are normally expensive to coordinate: .NET domain and scheduler behavior, Protobuf compatibility, Node and browser transports, authenticated upload flows, disconnect recovery, the requestor UI, fiber diagnostics, and AWS deployment configuration. GPT-5.6 helped keep the specification, code, and tests moving together while the executable tests remained the source of truth.
-
-The checked-in suite shows the approach. Fast domain tests protect state-machine rules; API integration tests exercise real HTTP, gRPC, WebSocket, CORS, persistence, and result flows; Node tests verify each SDK package; browser-facing modules have focused tests; and the Swift package retains a cross-language protocol check. A typical iteration ends with:
-
-```text
-dotnet test NetCats.Examples.MutualGPU.slnx
-node --test tests/frontend/*.test.mjs
-npm test --prefix sdk/typescript
-```
+Codex also helped shape the safety and scheduling model: assignment-scoped authority, separate control traffic and large object transfers, and a scheduler limited to one active task per provider. Each decision moved quickly from discussion to working code and focused regression tests, which let us validate the architecture slice by slice and reduce delivery time. This is the MutualGPU Codex story; NetCats has a separate framework-development story, even where individual sessions overlapped.
 
 ## Demo MVP scope
 
