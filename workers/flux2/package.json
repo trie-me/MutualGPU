@@ -1,0 +1,17 @@
+{
+  "name": "@mutualgpu/flux2-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check:python": "python3 -c \"compile(open('src/inference.py', encoding='utf-8').read(), 'src/inference.py', 'exec')\"",
+    "check": "npm test && npm run check:python"
+  },
+  "dependencies": {
+    "@mutualgpu/provider-core": "file:../../sdk/typescript/packages/core",
+    "@mutualgpu/provider-node": "file:../../sdk/typescript/packages/node"
+  }
+}

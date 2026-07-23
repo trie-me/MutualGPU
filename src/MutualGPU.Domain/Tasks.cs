@@ -172,6 +172,13 @@ public sealed class TaskRequest
         Status = attempts.Count >= MaximumAssignments ? TaskStatus.Failed : TaskStatus.Queued;
     }
 
+    public void Fail(AttemptId attemptId, string handle, string? failureStep = null, string? failureReason = null)
+    {
+        var attempt = GetOwnedAttempt(attemptId, handle, AttemptState.Assigned, AttemptState.Accepted, AttemptState.Disconnected);
+        ReplaceAttempt(attempt with { State = AttemptState.Failed, FailureStep = failureStep, FailureReason = failureReason });
+        Status = TaskStatus.Failed;
+    }
+
     public void Disconnect(AttemptId attemptId, string handle, DateTimeOffset disconnectedAt)
     {
         var attempt = GetOwnedAttempt(attemptId, handle, AttemptState.Accepted);

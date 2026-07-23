@@ -48,6 +48,13 @@ public interface IQueuedTaskReader
     Task<IReadOnlyList<TaskRequest>> GetQueuedAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>Read-only operations projection across requestors. This is exposed only
+/// through the separately authenticated administrator surface.</summary>
+public interface IAdminTaskReader
+{
+    Task<IReadOnlyList<TaskRequest>> GetAllAsync(CancellationToken cancellationToken);
+}
+
 public interface IStartupRecovery
 {
     Task<int> RecoverAsync(CancellationToken cancellationToken);
@@ -60,12 +67,21 @@ public interface IEnrollmentStartupRecovery
 
 public interface IProviderPresence
 {
+    IReadOnlyList<ConnectedProviderCapability> GetConnectedCapabilities() => [];
+
     IReadOnlyList<ProviderCandidate> GetConnectedCandidates(CapabilityId capabilityId);
 }
 
 public sealed record ProviderCandidate(
     ExecutionUnitId ExecutionUnitId,
     CapabilityId CapabilityId,
+    ResourceTier Tier,
+    MachineSpecifications Specifications,
+    bool IsIdle);
+
+public sealed record ConnectedProviderCapability(
+    ExecutionUnitId ExecutionUnitId,
+    CapabilityDefinition Capability,
     ResourceTier Tier,
     MachineSpecifications Specifications,
     bool IsIdle);

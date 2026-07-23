@@ -74,6 +74,20 @@ just mutualgpu-local-demo   # API + long-running simulated provider for requesto
 
 `mutualgpu-local-demo` prints the local HTTPS URL. Open it once the simulated provider reports connected, choose **mutualgpu-local-demo**, and submit a task. The provider performs the real enrollment, gRPC session, result upload, and completion flow, but produces a synthetic ZIP rather than GPU work. Run the full API, frontend, and SDK test set with `just mutualgpu-test`.
 
+### Administrator operations console
+
+The read-only operations console is available at `/admin`. It shows provider sessions and their event timelines, durable task transactions, and assignment attempts. Task handles, provider credentials, upload tokens, and signed object URLs are deliberately omitted.
+
+Admin access is disabled unless the host receives a master password through server configuration. Use a generated password of at least 24 bytes and keep it outside source control:
+
+```text
+export MUTUALGPU_ADMIN_PASSWORD="$(openssl rand -base64 32)"
+MutualGPU__Admin__MasterPassword="$MUTUALGPU_ADMIN_PASSWORD" \
+  dotnet run --project src/MutualGPU.Api --urls https://localhost:7043
+```
+
+Open `https://localhost:7043/admin` and enter the value held in `MUTUALGPU_ADMIN_PASSWORD`. The password is verified only on the server; the browser receives an opaque, eight-hour `HttpOnly`, `Secure`, `SameSite=Strict` session cookie. Failed logins are limited per client, responses are marked `no-store`, and restarting the API invalidates every admin session. Task transactions and attempts are read from durable storage, while the detailed provider connection timeline is a bounded process-local diagnostic journal and therefore begins again after a restart.
+
 For a TLS-terminating platform such as Vercel, keep public traffic at HTTPS and set `MutualGPU__TrustForwardedProto=true` only when the app is reachable exclusively through that trusted ingress. The host then honors the ingress `X-Forwarded-Proto` value before applying its HTTPS policy. Do not enable it for a directly exposed process.
 
 Native providers authenticate gRPC calls through `Authorization`; Chrome providers send the same value in the first Protobuf `ConnectRequest` frame. Browser SDK configuration must use `https://` for its API base URL and `wss://` for its provider session URL. The shared schema is [provider.proto](src/MutualGPU.Protocol/provider.proto).

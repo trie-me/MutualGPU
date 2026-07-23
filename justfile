@@ -14,6 +14,14 @@ mutualgpu-local-smoke:
 mutualgpu-local-demo:
     ./scripts/run-local-composition.sh demo
 
+# Interactively configure and run the real FLUX.2 provider.
+flux2-worker:
+    @workers/flux2/run-worker.sh
+
+# Run FLUX.2 with an exact static credential from a protected '<uuid> <key>' file.
+flux2-worker-file key_file line="4":
+    @workers/flux2/run-worker.sh "{{key_file}}" "{{line}}"
+
 # Bind the synthetic local Node provider to the public demo API.
 # Export MUTUALGPU_EXECUTION_UNIT_ID and MUTUALGPU_PROVIDER_KEY first.
 remote-demo-provider:
@@ -28,22 +36,22 @@ remote-demo-provider-file key_file line="1":
     @test "{{line}}" -gt 0 2>/dev/null || { echo "line must be a positive integer." >&2; exit 2; }
     @provider_line=$(sed -n '{{line}}p' "{{key_file}}"); test -n "$provider_line" || { echo "No key exists on line {{line}}." >&2; exit 2; }; execution_unit_id=${provider_line%% *}; provider_key=${provider_line#* }; test "$execution_unit_id" != "$provider_key" || { echo "The selected key line is malformed." >&2; exit 2; }; MUTUALGPU_EXECUTION_UNIT_ID="$execution_unit_id" MUTUALGPU_PROVIDER_KEY="$provider_key" MUTUALGPU_API_URL="${MUTUALGPU_API_URL:-https://mutualgpu.com}" npm run demo:node --prefix sdk/typescript
 
-# Start the three intentional live demo producers: exasplat (32 GiB),
-# stable-diffs (64 GiB), and chatterboxer (128 GiB). Each runs one unit.
-remote-dummy-producers key_file:
-    @bash scripts/run-live-dummy-producers.sh "{{key_file}}"
+# Start one configurable synthetic provider in a detached screen session.
+# Invoke this repeatedly with different key lines and capabilities to build a test matrix.
+remote-dummy-provider key_file capability line="1" machine_tier="Large" compute_tier="Large" memory_gib="32":
+    @bash scripts/run-live-dummy-provider.sh "{{key_file}}" "{{line}}" "{{capability}}" "{{machine_tier}}" "{{compute_tier}}" "{{memory_gib}}"
 
-# Inspect the three detached demo-producer sessions.
-remote-dummy-producers-status:
+# Inspect detached provider sessions.
+remote-dummy-providers-status:
     @screen -ls || true
 
-# Tail one producer's log. Capability: exasplat, stable-diffs, or chatterboxer.
-remote-dummy-producers-logs capability:
-    @case "{{capability}}" in exasplat|stable-diffs|chatterboxer) ;; *) echo "Unknown capability: {{capability}}" >&2; exit 2;; esac; tail -n 80 "${TMPDIR:-/tmp}/mutualgpu-live-dummy-producers/{{capability}}.log"
+# Tail one configurable provider's log.
+remote-dummy-provider-logs capability:
+    @case "{{capability}}" in ''|*[!A-Za-z0-9_-]*) echo "Capability must contain only letters, digits, hyphens, or underscores." >&2; exit 2;; esac; tail -n 80 "${MUTUALGPU_DUMMY_PROVIDER_STATE_DIR:-${TMPDIR:-/tmp}/mutualgpu-live-dummy-producers}/{{capability}}.log"
 
-# Stop only the three intentional local demo-producer sessions.
-remote-dummy-producers-stop:
-    @for session in mutualgpu-exasplat mutualgpu-stable-diffs mutualgpu-chatterboxer; do screen -S "$session" -X quit >/dev/null 2>&1 || true; done; echo "Stopped MutualGPU demo producers."
+# Stop one configurable provider without affecting other test providers.
+remote-dummy-provider-stop capability:
+    @case "{{capability}}" in ''|*[!A-Za-z0-9_-]*) echo "Capability must contain only letters, digits, hyphens, or underscores." >&2; exit 2;; esac; screen -S "mutualgpu-{{capability}}" -X quit >/dev/null 2>&1 || true; echo "Stopped MutualGPU dummy provider {{capability}}."
 
 # Real Chromium integration: executes the BrowserWebSocketTransport in a browser,
 # performs direct SDK enrollment, then completes the WSS Connected handshake.

@@ -76,7 +76,8 @@ public sealed class ProviderControlService(
 
     private async Task ConnectCoreAsync(IAsyncStreamReader<ProviderMessage> requestStream, IServerStreamWriter<ServerMessage> responseStream, ServerCallContext context, FiberScope sessionScope)
     {
-        var executionUnitId = await AuthenticateAsync(context.RequestHeaders.GetValue("authorization"), context.CancellationToken).ConfigureAwait(false);
+        var providerKey = ProviderKey(context.RequestHeaders.GetValue("authorization"));
+        var executionUnitId = await AuthenticateAsync(providerKey, context.CancellationToken).ConfigureAwait(false);
         var unit = await units.GetAsync(executionUnitId, context.CancellationToken).ConfigureAwait(false)
             ?? throw new RpcException(new Status(StatusCode.FailedPrecondition, "The execution unit must enroll before connecting."));
 
@@ -85,12 +86,16 @@ public sealed class ProviderControlService(
         if (requestStream.Current.Connect.ProtocolVersion != 1)
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Unsupported provider protocol version."));
 
-        var lease = connections.Connect(unit);
+        var hasActiveTask = !String.IsNullOrWhiteSpace(requestStream.Current.Connect.ActiveTaskHandle);
+        // Do not advertise a reconnecting execution unit as idle while the
+        // accepted attempt is being rebound to this replacement stream.
+        var sourceIp = context.GetHttpContext().Connection.RemoteIpAddress?.ToString();
+        var lease = connections.Connect(unit, "grpc", isIdle: !hasActiveTask, sourceIp: sourceIp, providerName: ProviderDisplayNames.Create(providerKey));
         using var responseGate = new SemaphoreSlim(1, 1);
         Task? sendAssignments = null;
         try
         {
-            if (!String.IsNullOrWhiteSpace(requestStream.Current.Connect.ActiveTaskHandle) &&
+            if (hasActiveTask &&
                 !await session.Rebind(executionUnitId, requestStream.Current.Connect.ActiveTaskHandle).RunAsync(context.CancellationToken).ConfigureAwait(false))
                 throw new RpcException(new Status(StatusCode.FailedPrecondition, "The reconnect task handle is not eligible for rebinding."));
             await WriteAsync(responseStream, responseGate, new ServerMessage { Connected = new Connected { ExecutionUnitId = executionUnitId.Value.ToString("D") } }, context.CancellationToken).ConfigureAwait(false);
@@ -270,8 +275,10 @@ public sealed class ProviderControlService(
 
     private async Task<ExecutionUnitId> AuthenticateAsync(string? authorization, CancellationToken cancellationToken)
     {
-        var value = authorization?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) is true ? authorization[7..] : authorization;
-        var executionUnitId = await authenticator.AuthenticateAsync(value, cancellationToken).ConfigureAwait(false);
+        var executionUnitId = await authenticator.AuthenticateAsync(ProviderKey(authorization), cancellationToken).ConfigureAwait(false);
         return executionUnitId ?? throw new RpcException(new Status(StatusCode.Unauthenticated, "Provider authentication failed."));
     }
+
+    private static string ProviderKey(string? authorization) =>
+        authorization?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) is true ? authorization[7..] : authorization ?? String.Empty;
 }

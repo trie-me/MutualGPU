@@ -4,7 +4,7 @@ import { NodeGrpcTransport } from "@mutualgpu/provider-node";
 const apiBaseUrl = required("MUTUALGPU_API_URL");
 const presharedKey = required("MUTUALGPU_PROVIDER_KEY");
 const executionUnitId = required("MUTUALGPU_EXECUTION_UNIT_ID");
-const capabilityName = process.env.MUTUALGPU_DEMO_CAPABILITY ?? "exasplat";
+const capabilityName = process.env.MUTUALGPU_DEMO_CAPABILITY ?? "demo-capability";
 const machineTier = process.env.MUTUALGPU_DEMO_MACHINE_TIER ?? "Large";
 const computeTier = process.env.MUTUALGPU_DEMO_COMPUTE_TIER ?? "Large";
 const memoryGiB = positiveInteger(process.env.MUTUALGPU_DEMO_MEMORY_GIB ?? "32", "MUTUALGPU_DEMO_MEMORY_GIB");

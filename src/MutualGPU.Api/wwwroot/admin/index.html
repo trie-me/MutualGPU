@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'">
+  <title>MutualGPU Operations</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+  <link rel="stylesheet" href="/admin/state.css">
+</head>
+<body>
+  <main class="shell">
+    <section id="login-view" class="login-view" aria-labelledby="login-title">
+      <div class="brand"><span class="brand-mark">M</span><span>MutualGPU</span></div>
+      <form id="login-form" class="login-card">
+        <p class="eyebrow">Restricted operations</p>
+        <h1 id="login-title">Administrator access</h1>
+        <p class="muted">The master password is verified by the server and is never stored in this browser.</p>
+        <label for="password">Master password</label>
+        <input id="password" name="password" type="password" minlength="24" autocomplete="current-password" required autofocus>
+        <button type="submit">Open operations console</button>
+        <p id="login-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section id="console-view" hidden>
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">M</span><span>MutualGPU</span><span class="admin-chip">ADMIN</span></div>
+        <div class="top-actions"><span id="updated-at" class="muted"></span><button id="refresh" class="quiet">Refresh</button><button id="logout" class="quiet">Sign out</button></div>
+      </header>
+
+      <div class="hero">
+        <div><p class="eyebrow">Operations console</p><h1>Network activity</h1><p class="muted">Sessions, task transactions, and provider assignments in one read-only view.</p></div>
+        <span id="live-state" class="live-state"><i></i> Live</span>
+      </div>
+
+      <section id="metrics" class="metrics" aria-label="Summary"></section>
+
+      <nav class="tabs" aria-label="Data views">
+        <button class="tab active" data-view="sessions">Sessions</button>
+        <button class="tab" data-view="transactions">Transactions</button>
+        <button class="tab" data-view="assignments">Assignments</button>
+        <label class="search"><span>Search</span><input id="search" type="search" placeholder="Name, ID, IP, capability…"></label>
+      </nav>
+
+      <section id="sessions-view" class="view-grid">
+        <div><div class="section-head"><h2>Providers</h2><span id="session-count" class="count"></span></div><div id="session-list" class="session-list"></div></div>
+        <aside id="session-detail" class="detail-panel"><p class="empty">Select a session to inspect its summary and event timeline.</p></aside>
+      </section>
+      <section id="transactions-view" hidden><div class="section-head"><h2>Task transactions</h2><span id="transaction-count" class="count"></span></div><div class="table-wrap"><table><thead><tr><th>Task</th><th>Capability</th><th>Status</th><th>Resources</th><th>Attempts</th><th>Result</th><th>Created</th></tr></thead><tbody id="transactions-body"></tbody></table></div></section>
+      <section id="assignments-view" hidden><div class="section-head"><h2>Provider assignments</h2><span id="assignment-count" class="count"></span></div><div class="table-wrap"><table><thead><tr><th>Attempt</th><th>Task / capability</th><th>Provider</th><th>Session</th><th>State</th><th>Assigned</th><th>Last transition</th><th>Outcome detail</th></tr></thead><tbody id="assignments-body"></tbody></table></div></section>
+    </section>
+  </main>
+  <script type="module" src="/admin/admin.js"></script>
+</body>
+</html>

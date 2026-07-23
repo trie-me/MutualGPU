@@ -43,9 +43,13 @@ export async function uploadProviderResult({ apiBaseUrl, presharedKey, task, tok
   });
   const body = await response.text();
   if (!response.ok) throw new ProviderUploadError(response.status, body);
-  const receipt = JSON.parse(body).receipt;
+  const published = JSON.parse(body);
+  const receipt = published.receipt;
   if (typeof receipt !== "string" || receipt.length === 0) throw new ProviderUploadError(response.status, "The upload response did not contain a receipt.");
-  return { receipt, sha256 };
+  const ignoredParts = Array.isArray(published.ignoredParts)
+    ? published.ignoredParts.filter(part => part && typeof part.name === "string" && typeof part.reason === "string")
+    : [];
+  return { receipt, sha256, ignoredParts };
 }
 
 function appendFile(form, name, value, defaultType, defaultName, metadata = false) {

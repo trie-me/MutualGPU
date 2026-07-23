@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MutualGPU — Shared Compute</title>
-  <link rel="stylesheet" href="/css/site.css?v=20260721-sharedcompute1">
+  <link rel="stylesheet" href="/css/site.css?v=20260723-browser-contribute1">
   <link rel="stylesheet" href="/css/mutualgpu.css?v=20260721-sharedcompute1">
   <link rel="stylesheet" href="/css/fiber-tree-overlay.css?v=20260721-sharedcompute3">
 </head>
@@ -48,6 +48,16 @@
         <p><span aria-hidden="true">03</span> See every handoff to the result.</p>
       </div>
 
+      <section class="browser-contribution" aria-labelledby="browser-contribution-title">
+        <div class="browser-contribution__signal" aria-hidden="true"><span></span></div>
+        <div>
+          <p class="eyebrow">A simple way to contribute</p>
+          <h2 id="browser-contribution-title">Offer one useful unit, straight from Chrome.</h2>
+          <p>Want to contribute but not sure where to begin? Enroll with Triposplat WebGPU using only a Chrome browser. You choose when to connect and when to stop.</p>
+        </div>
+        <a class="browser-contribution__link" href="https://yosun-triposplat-webgpu-demo.static.hf.space/e2e-web#provider-panel" target="_blank" rel="noopener noreferrer">Open Triposplat WebGPU <span aria-hidden="true">↗</span><span class="visually-hidden"> (opens in a new tab)</span></a>
+      </section>
+
       <div class="layout">
         <section class="card request-builder" aria-labelledby="task-title">
           <div class="section-heading">
@@ -61,7 +71,12 @@
               <p class="wizard-step">Step 1 / Task type</p>
               <h3 id="task-step-title">Choose what you want to make</h3>
               <p class="assist">Choose a supported task. Each declares what it needs, what it returns, and the useful unit it asks a provider to run.</p>
-              <label for="capability-select">Task type <select id="capability-select" aria-label="Choose a task type"></select></label>
+              <div class="capability-picker__header">
+                <label for="capability-select">Task type</label>
+                <button id="refresh-capabilities" type="button">Refresh task types</button>
+              </div>
+              <select id="capability-select" aria-label="Choose a task type" aria-describedby="capability-refresh-status"></select>
+              <p class="capability-picker__status" id="capability-refresh-status" role="status"></p>
             </section>
 
             <section class="wizard-section" data-wizard-step="2" aria-labelledby="input-step-title">
@@ -148,6 +163,6 @@
     <div class="fiber-legend" aria-label="System activity legend"><span><i class="fiber-legend__scope"></i>Operational scope</span><span><i class="fiber-legend__running"></i>Active work</span><span><i class="fiber-legend__completed"></i>Completed work</span><span><i class="fiber-legend__cancelled"></i>Cancelled work</span><span><i class="fiber-legend__faulted"></i>Faulted work</span></div>
     <p class="fiber-overlay__connection" id="fiber-status" role="status">Closed</p><p class="fiber-overlay__summary" id="fiber-summary"></p><div class="fiber-history" id="fiber-history" aria-label="Observed snapshot history"></div><section class="fiber-simulations" id="fiber-simulations" hidden aria-label="Simulated registrations"></section><canvas id="fiber-tree" class="fiber-forest" aria-label="Live logical runtime forest"></canvas><p id="fiber-selection" class="fiber-overlay__selection" aria-live="polite"></p><section class="fiber-tree-detail" id="fiber-tree-detail" hidden aria-label="Logical runtime tree detail"><div><strong>Logical runtime tree</strong><button id="fiber-tree-detail-close" type="button">Close tree</button></div><div id="fiber-tree-detail-body"></div></section>
   </aside>
-  <script type="module" src="/js/mutualgpu.js?v=20260721-sharedcompute1"></script>
+  <script type="module" src="/js/mutualgpu.js?v=20260723-manual-catalogue1"></script>
 </body>
 </html>

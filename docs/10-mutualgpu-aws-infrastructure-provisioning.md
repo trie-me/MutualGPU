@@ -168,12 +168,15 @@ Leave `MutualGPU:ProviderCorsOrigins` empty if the deployed demo has no browser 
 Inject individual JSON values from the one deployment secret as:
 
 ```text
+MutualGPU__Admin__MasterPassword
 MutualGPU__Backblaze__Endpoint
 MutualGPU__Backblaze__BucketName
 MutualGPU__Backblaze__KeyId
 MutualGPU__Backblaze__ApplicationKey
 MutualGPU__ProviderKeyPepper
 ```
+
+The included ECS service template maps the `adminMasterPassword` JSON key to `MutualGPU__Admin__MasterPassword`. Generate a unique value with at least 24 bytes of entropy (for example, `openssl rand -base64 32`) and put it in the deployment secret; do not place it in the template, a parameter value, a checked-in settings file, or deployment logs. The `/admin` console remains present but its login API fails closed with `503` if the key is absent. A secret rotation requires a new stop-before-start ECS deployment and invalidates the old password and all in-memory admin sessions.
 
 Provider PSKs are issued as Backblaze object records, not task-definition secret entries. The task execution role needs permission to read only the referenced secrets and pull the selected ECR image. The application task role needs no AWS data-store permission because Backblaze uses its own scoped credentials.
 

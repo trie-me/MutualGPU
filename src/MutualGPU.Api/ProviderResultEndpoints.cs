@@ -26,7 +26,7 @@ public static class ProviderResultEndpoints
         return TypedResults.Ok(token);
     }
 
-    public static async Task<IResult> Upload(Guid taskId, Guid attemptId, HttpContext context, IExecutionUnitAuthenticator authenticator, IProviderAssignments assignments, IResultUploadAuthorizations authorizations, IStagedResults staged, IObjectStore store, MutualGpuObjectKeys keys, ProviderSessionApplication session, MutualGpuTelemetry telemetry, CancellationToken cancellationToken)
+    public static async Task<IResult> Upload(Guid taskId, Guid attemptId, HttpContext context, IExecutionUnitAuthenticator authenticator, IProviderAssignments assignments, IResultUploadAuthorizations authorizations, IStagedResults staged, IObjectStore store, MutualGpuObjectKeys keys, ProviderSessionApplication session, ProviderConnectionRegistry diagnostics, MutualGpuTelemetry telemetry, CancellationToken cancellationToken)
     {
         using var activity = telemetry.Activities.StartActivity("mutualgpu.provider.result_upload");
         var taskKey = new TaskId(taskId);
@@ -43,11 +43,9 @@ public static class ProviderResultEndpoints
         if (!TryGetMetadata(form, parts, out var metadataFile, out var metadataValue)) return await ResultValidationFailedAsync(session, unitId, taskKey, attemptKey, handle, "metadata_parts_invalid", cancellationToken).ConfigureAwait(false);
 
         var output = task.Capability.Output;
-        if (parts.ContainsKey("thumbnail") && !output.HasThumbnail ||
-            parts.ContainsKey("preview") && !output.HasPreview ||
-            parts.ContainsKey("logs") && !output.HasLogs ||
-            (metadataFile is not null || metadataValue is not null) && !output.HasMetadata)
-            return await ResultValidationFailedAsync(session, unitId, taskKey, attemptKey, handle, "result_part_undeclared", cancellationToken).ConfigureAwait(false);
+        var ignoredParts = GetUndeclaredParts(parts, metadataFile, metadataValue, output)
+            .Select(static name => new IgnoredResultPart(name, "undeclared"))
+            .ToList();
 
         byte[] resultBytes;
         try { resultBytes = await ReadBytesAsync(result, MaximumResultBytes, cancellationToken).ConfigureAwait(false); }
@@ -56,27 +54,25 @@ public static class ProviderResultEndpoints
         var digest = Sha256(resultBytes);
         if (!context.Request.Headers.TryGetValue("X-MutualGPU-Sha256", out var supplied) || !StringComparer.OrdinalIgnoreCase.Equals(digest, supplied!)) return await ResultValidationFailedAsync(session, unitId, taskKey, attemptKey, handle, "result_checksum_invalid", cancellationToken).ConfigureAwait(false);
 
-        ResultArtifact? thumbnail;
-        ResultArtifact? preview;
-        ResultArtifact? logs;
-        ResultArtifact? metadata;
-        try
-        {
-            thumbnail = await StoreImageAsync(parts.GetValueOrDefault("thumbnail"), store, keys.ResultThumbnail, task.RequestorId, task.Id, new AttemptId(attemptId), cancellationToken).ConfigureAwait(false);
-            preview = await StorePreviewAsync(parts.GetValueOrDefault("preview"), output, store, keys, task.RequestorId, task.Id, new AttemptId(attemptId), cancellationToken).ConfigureAwait(false);
-            logs = await StoreLogsAsync(parts.GetValueOrDefault("logs"), store, keys, task.RequestorId, task.Id, new AttemptId(attemptId), cancellationToken).ConfigureAwait(false);
-            metadata = await StoreMetadataAsync(metadataFile, metadataValue, store, keys, task.RequestorId, task.Id, new AttemptId(attemptId), cancellationToken).ConfigureAwait(false);
-        }
-        catch (InvalidDataException exception)
-        {
-            return await ResultValidationFailedAsync(session, unitId, taskKey, attemptKey, handle, exception.Message, cancellationToken).ConfigureAwait(false);
-        }
+        var thumbnail = output.HasThumbnail
+            ? await StoreOptionalAsync("thumbnail", () => StoreImageAsync(parts.GetValueOrDefault("thumbnail"), store, keys.ResultThumbnail, task.RequestorId, task.Id, attemptKey, cancellationToken), ignoredParts).ConfigureAwait(false)
+            : null;
+        var preview = output.HasPreview
+            ? await StoreOptionalAsync("preview", () => StorePreviewAsync(parts.GetValueOrDefault("preview"), output, store, keys, task.RequestorId, task.Id, attemptKey, cancellationToken), ignoredParts).ConfigureAwait(false)
+            : null;
+        var logs = output.HasLogs
+            ? await StoreOptionalAsync("logs", () => StoreLogsAsync(parts.GetValueOrDefault("logs"), store, keys, task.RequestorId, task.Id, attemptKey, cancellationToken), ignoredParts).ConfigureAwait(false)
+            : null;
+        var metadata = output.HasMetadata
+            ? await StoreOptionalAsync("metadata", () => StoreMetadataAsync(metadataFile, metadataValue, store, keys, task.RequestorId, task.Id, attemptKey, cancellationToken), ignoredParts).ConfigureAwait(false)
+            : null;
 
-        var zip = await StoreAsync(resultBytes, "application/zip", keys.ResultZip(task.RequestorId, task.Id, new AttemptId(attemptId)), store, cancellationToken).ConfigureAwait(false);
+        var zip = await StoreAsync(resultBytes, "application/zip", keys.ResultZip(task.RequestorId, task.Id, attemptKey), store, cancellationToken).ConfigureAwait(false);
         var receipt = Guid.CreateVersion7().ToString("N");
-        staged.Stage(unitId, task.Id, new AttemptId(attemptId), handle, new StagedResult(receipt, new TaskResult(zip, thumbnail, preview, logs, metadata)));
+        staged.Stage(unitId, task.Id, attemptKey, handle, new StagedResult(receipt, new TaskResult(zip, thumbnail, preview, logs, metadata)));
+        diagnostics.RecordIgnoredResultParts(unitId, task.Id, attemptKey, ignoredParts.Select(static part => $"{part.Name} ({part.Reason})").ToArray());
         telemetry.UploadCompleted(zip.Length + (thumbnail?.Length ?? 0) + (preview?.Length ?? 0) + (logs?.Length ?? 0) + (metadata?.Length ?? 0));
-        return TypedResults.Ok(new { receipt, sha256 = digest });
+        return TypedResults.Ok(new { receipt, sha256 = digest, ignoredParts });
     }
 
     /// <summary>
@@ -90,9 +86,33 @@ public static class ProviderResultEndpoints
         return TypedResults.BadRequest(new { code });
     }
 
+    private static async Task<ResultArtifact?> StoreOptionalAsync(string name, Func<Task<ResultArtifact?>> store, ICollection<IgnoredResultPart> ignoredParts)
+    {
+        try
+        {
+            return await store().ConfigureAwait(false);
+        }
+        catch (InvalidDataException exception)
+        {
+            ignoredParts.Add(new IgnoredResultPart(name, exception.Message));
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<string> GetUndeclaredParts(IReadOnlyDictionary<string, IFormFile> parts, IFormFile? metadataFile, string? metadataValue, OutputDefinition output)
+    {
+        var undeclared = new List<string>(4);
+        if (parts.ContainsKey("thumbnail") && !output.HasThumbnail) undeclared.Add("thumbnail");
+        if (parts.ContainsKey("preview") && !output.HasPreview) undeclared.Add("preview");
+        if (parts.ContainsKey("logs") && !output.HasLogs) undeclared.Add("logs");
+        if ((metadataFile is not null || metadataValue is not null) && !output.HasMetadata) undeclared.Add("metadata");
+        return undeclared;
+    }
+
     private static bool TryGetParts(IFormCollection form, out Dictionary<string, IFormFile> parts)
     {
         parts = [];
+        if (form.Keys.Any(static key => key is not "metadata")) return false;
         foreach (var group in form.Files.GroupBy(static file => file.Name, StringComparer.Ordinal))
         {
             if (group.Key is not ("result" or "metadata" or "thumbnail" or "preview" or "logs") || group.Count() != 1) return false;
@@ -100,6 +120,8 @@ public static class ProviderResultEndpoints
         }
         return true;
     }
+
+    private sealed record IgnoredResultPart(string Name, string Reason);
 
     private static bool TryGetMetadata(IFormCollection form, IReadOnlyDictionary<string, IFormFile> parts, out IFormFile? file, out string? value)
     {

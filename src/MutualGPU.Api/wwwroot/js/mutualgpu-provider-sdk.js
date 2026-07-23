@@ -16,9 +16,32 @@ var ProviderClient = class {
   #progressSequence = 0;
   #lastProgressAt = 0;
   #reconnectDelay;
-  constructor(transport, { reconnectDelay = (attempt) => Math.min(1e3 * 2 ** (attempt - 1), 3e4) } = {}) {
+  #connectionOpenedAt = 0;
+  #lifecycleTimer = null;
+  #recycleWhenIdle = false;
+  #idleRecycleAfterMs = 0;
+  #maximumConnectionAgeMs = 0;
+  #now;
+  #scheduleTimeout;
+  #cancelTimeout;
+  constructor(transport, options = {}) {
+    const {
+      reconnectDelay = (attempt) => Math.min(1e3 * 2 ** (attempt - 1), 3e4),
+      connectionLifecycle = transport.connectionLifecycle,
+      now = Date.now,
+      scheduleTimeout = globalThis.setTimeout,
+      cancelTimeout = globalThis.clearTimeout
+    } = options;
     this.#transport = transport;
     this.#reconnectDelay = reconnectDelay;
+    this.#idleRecycleAfterMs = positiveDuration(connectionLifecycle?.idleRecycleAfterMs);
+    this.#maximumConnectionAgeMs = positiveDuration(connectionLifecycle?.maximumConnectionAgeMs);
+    if (this.#idleRecycleAfterMs && this.#maximumConnectionAgeMs && this.#idleRecycleAfterMs >= this.#maximumConnectionAgeMs) {
+      throw new TypeError("maximumConnectionAgeMs must be greater than idleRecycleAfterMs");
+    }
+    this.#now = now;
+    this.#scheduleTimeout = scheduleTimeout;
+    this.#cancelTimeout = cancelTimeout;
   }
   async enroll(definition) {
     return this.#transport.enroll(normalizeEnrollment(definition));
@@ -37,6 +60,8 @@ var ProviderClient = class {
   }
   close() {
     this.#closed = true;
+    this.#cancelLifecycleCheck();
+    this.#connectionOpenedAt = 0;
     this.#transport.close?.();
   }
   async #openConnection() {
@@ -50,12 +75,18 @@ var ProviderClient = class {
     this.#connection = opening;
     try {
       await opening;
+      this.#connectionOpenedAt = this.#now();
+      this.#recycleWhenIdle = false;
+      this.#scheduleLifecycleCheck();
     } finally {
       if (this.#connection === opening) this.#connection = null;
     }
   }
   #disconnected() {
     if (this.#closed || this.#reconnecting) return;
+    this.#cancelLifecycleCheck();
+    this.#connectionOpenedAt = 0;
+    this.#recycleWhenIdle = false;
     this.#reconnecting = this.#reconnectLoop().finally(() => {
       this.#reconnecting = null;
     });
@@ -74,7 +105,14 @@ var ProviderClient = class {
   }
   async #receive(assignment) {
     if (this.#active) {
-      await this.#transport.reject(assignment, "provider already owns an active task");
+      const reason = this.#recycleWhenIdle ? "provider connection is draining for recycling" : "provider already owns an active task";
+      await this.#transport.reject(assignment, reason);
+      return;
+    }
+    if (this.#recycleWhenIdle || this.#maximumConnectionAgeExpired()) {
+      this.#recycleWhenIdle = true;
+      await this.#transport.reject(assignment, "provider connection is recycling");
+      this.#transport.close?.();
       return;
     }
     if (assignment.input?.url) {
@@ -102,8 +140,45 @@ var ProviderClient = class {
       if (active.state === "pending") await this.#reject(active, reason);
       else if (active.state === "accepted") await this.#fail(active, "execution", reason);
     } finally {
-      if (this.#active === active) this.#active = null;
+      if (this.#active === active) {
+        this.#active = null;
+        if (this.#recycleWhenIdle) this.#transport.close?.();
+        else this.#scheduleLifecycleCheck();
+      }
     }
+  }
+  #scheduleLifecycleCheck() {
+    this.#cancelLifecycleCheck();
+    if (this.#closed || !this.#connectionOpenedAt || !this.#maximumConnectionAgeMs) return;
+    const age = Math.max(0, this.#now() - this.#connectionOpenedAt);
+    const threshold = this.#active ? this.#maximumConnectionAgeMs : this.#idleRecycleAfterMs;
+    const delay = Math.max(0, threshold - age);
+    this.#lifecycleTimer = this.#scheduleTimeout(() => this.#checkConnectionLifecycle(), delay);
+    this.#lifecycleTimer?.unref?.();
+  }
+  #cancelLifecycleCheck() {
+    if (this.#lifecycleTimer === null) return;
+    this.#cancelTimeout(this.#lifecycleTimer);
+    this.#lifecycleTimer = null;
+  }
+  #checkConnectionLifecycle() {
+    this.#lifecycleTimer = null;
+    if (this.#closed || !this.#connectionOpenedAt) return;
+    const age = Math.max(0, this.#now() - this.#connectionOpenedAt);
+    const maximumExpired = age >= this.#maximumConnectionAgeMs;
+    const idleExpired = !this.#active && age >= this.#idleRecycleAfterMs;
+    if (maximumExpired && this.#active) {
+      this.#recycleWhenIdle = true;
+      return;
+    }
+    if (maximumExpired || idleExpired) {
+      this.#transport.close?.();
+      return;
+    }
+    this.#scheduleLifecycleCheck();
+  }
+  #maximumConnectionAgeExpired() {
+    return this.#connectionOpenedAt && this.#maximumConnectionAgeMs && this.#now() - this.#connectionOpenedAt >= this.#maximumConnectionAgeMs;
   }
   #taskFacade(active) {
     const { assignment } = active;
@@ -166,6 +241,7 @@ var ProviderClient = class {
     }
   }
 };
+var positiveDuration = (value) => Number.isFinite(value) && value > 0 ? Number(value) : 0;
 var normalizeEnrollment = (definition) => {
   if (!definition || typeof definition !== "object" || !definition.machine || !Array.isArray(definition.capabilities)) {
     throw new TypeError("An enrollment requires a machine profile and capabilities array.");
@@ -225,9 +301,11 @@ async function uploadProviderResult({ apiBaseUrl, presharedKey, task, token, res
   });
   const body = await response.text();
   if (!response.ok) throw new ProviderUploadError(response.status, body);
-  const receipt = JSON.parse(body).receipt;
+  const published = JSON.parse(body);
+  const receipt = published.receipt;
   if (typeof receipt !== "string" || receipt.length === 0) throw new ProviderUploadError(response.status, "The upload response did not contain a receipt.");
-  return { receipt, sha256 };
+  const ignoredParts = Array.isArray(published.ignoredParts) ? published.ignoredParts.filter((part) => part && typeof part.name === "string" && typeof part.reason === "string") : [];
+  return { receipt, sha256, ignoredParts };
 }
 function appendFile(form, name, value, defaultType, defaultName, metadata = false) {
   if (value == null) return;
@@ -500,6 +578,10 @@ var BrowserWebSocketTransport = class {
       throw new TypeError("MutualGPU browser providers require an https API base URL.");
     }
     this.fetchImpl = fetchImpl;
+    this.connectionLifecycle = Object.freeze({
+      idleRecycleAfterMs: 24 * 60 * 60 * 1e3,
+      maximumConnectionAgeMs: 6 * 24 * 60 * 60 * 1e3
+    });
   }
   async enroll(definition) {
     if (!this.apiBaseUrl || typeof this.fetchImpl !== "function") throw new TypeError("apiBaseUrl and fetch are required to enroll a browser provider");
@@ -509,7 +591,7 @@ var BrowserWebSocketTransport = class {
       headers: { Authorization: `Bearer ${this.presharedKey}`, "Content-Type": "application/x-protobuf" },
       body
     });
-    if (!response.ok) throw new Error(`MutualGPU provider enrollment failed (${response.status}): ${await response.text()}`);
+    if (!response.ok) throw new Error(await enrollmentError(response));
     return this.codec.decodeEnrollResponse(new Uint8Array(await response.arrayBuffer()));
   }
   async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {
@@ -640,6 +722,18 @@ var BrowserWebSocketTransport = class {
   }
 };
 var wire = (task) => ({ taskId: task.taskId, attemptId: task.attemptId, taskHandle: task.taskHandle });
+async function enrollmentError(response) {
+  const body = await response.text();
+  try {
+    const problem = JSON.parse(body);
+    const conflicts = problem?.conflicts?.map((conflict) => `${conflict.capabilityName}: ${conflict.paths?.join(", ") || "contract differs"}`).join("; ");
+    if (problem?.code) {
+      return `MutualGPU provider enrollment failed (${response.status}): ${problem.code}${conflicts ? ` (${conflicts})` : ""}.`;
+    }
+  } catch {
+  }
+  return `MutualGPU provider enrollment failed (${response.status})${body ? `: ${body}` : "."}`;
+}
 
 // packages/requestor-web/src/requestor-client.js
 var RequestorApiError = class extends Error {

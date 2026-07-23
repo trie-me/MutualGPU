@@ -54,6 +54,28 @@ public sealed class DisconnectRecoveryTests
         await fixture.DisposeAsync();
     }
 
+    [Fact]
+    public async Task Content_safety_failure_is_terminal_on_the_first_attempt()
+    {
+        var fixture = new Fixture(new ManualTimeProvider(DateTimeOffset.UnixEpoch));
+
+        var accepted = await fixture.Session.Fail(
+            fixture.UnitId,
+            fixture.Task.Id,
+            fixture.Attempt.Id,
+            fixture.Attempt.Handle,
+            "content_safety",
+            "The generated image was blocked as inappropriate content.").RunAsync(CancellationToken.None);
+
+        Assert.True(accepted);
+        Assert.Equal(MutualGPU.Domain.TaskStatus.Failed, fixture.Task.Status);
+        var attempt = Assert.Single(fixture.Task.Attempts);
+        Assert.Equal(AttemptState.Failed, attempt.State);
+        Assert.Equal("content_safety", attempt.FailureStep);
+        Assert.Equal("The generated image was blocked as inappropriate content.", attempt.FailureReason);
+        await fixture.DisposeAsync();
+    }
+
     private static async Task DrainAsync()
     {
         for (var count = 0; count < 12; count++) await Task.Yield();

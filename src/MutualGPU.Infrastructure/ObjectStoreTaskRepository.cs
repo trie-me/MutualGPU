@@ -40,7 +40,7 @@ public sealed class ObjectStoreTaskRepository(
     IObjectStore store,
     MutualGpuObjectKeys keys,
     RepositoryLockRegistry locks,
-    TaskRepositoryOptions? options = null) : ITaskRepository, ITaskSummaryReader, IQueuedTaskReader, IStartupRecovery
+    TaskRepositoryOptions? options = null) : ITaskRepository, ITaskSummaryReader, IQueuedTaskReader, IAdminTaskReader, IStartupRecovery
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly TaskRepositoryOptions options = options ?? TaskRepositoryOptions.Default;
@@ -103,6 +103,36 @@ public sealed class ObjectStoreTaskRepository(
             if (task?.Status is MutualGPU.Domain.TaskStatus.Queued) queued.Add(task);
         }
         return queued;
+    }
+
+    public async Task<IReadOnlyList<TaskRequest>> GetAllAsync(CancellationToken cancellationToken)
+    {
+        var requestors = new HashSet<RequestorId>();
+        await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v3/requestors"), cancellationToken).ConfigureAwait(false))
+        {
+            var segments = entry.Key.Value.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var requestorIndex = Array.FindIndex(segments, static segment => StringComparer.Ordinal.Equals(segment, "requestors"));
+            if (requestorIndex >= 0 && requestorIndex + 1 < segments.Length &&
+                Guid.TryParseExact(segments[requestorIndex + 1], "N", out var requestor))
+            {
+                requestors.Add(new RequestorId(requestor));
+            }
+        }
+
+        var tasks = new ConcurrentBag<TaskRequest>();
+        await Parallel.ForEachAsync(
+            requestors,
+            new ParallelOptions
+            {
+                CancellationToken = cancellationToken,
+                MaxDegreeOfParallelism = options.MaximumHydrationConcurrency,
+            },
+            async (requestorId, token) =>
+            {
+                foreach (var task in await GetByRequestorAsync(requestorId, token).ConfigureAwait(false)) tasks.Add(task);
+            }).ConfigureAwait(false);
+
+        return tasks.OrderByDescending(static task => task.CreatedAt).ToArray();
     }
 
     public async Task<int> RecoverAsync(CancellationToken cancellationToken)

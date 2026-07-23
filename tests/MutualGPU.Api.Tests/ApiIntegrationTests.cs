@@ -61,8 +61,70 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("fiber-overlay", page, StringComparison.Ordinal);
         Assert.Contains("webgpu-enrollment-toggle", page, StringComparison.Ordinal);
         Assert.Contains("webgpu-enrollment-key", page, StringComparison.Ordinal);
+        Assert.Contains("Offer one useful unit, straight from Chrome.", page, StringComparison.Ordinal);
+        Assert.Contains("https://yosun-triposplat-webgpu-demo.static.hf.space/e2e-web#provider-panel", page, StringComparison.Ordinal);
         Assert.True(snapshot.IsSuccessStatusCode);
         Assert.Contains("roots", await snapshot.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Admin_console_requires_the_server_side_password_and_exposes_no_assignment_handles()
+    {
+        const string adminPassword = "integration-admin-password-32-bytes";
+        using var adminFactory = factory.WithWebHostBuilder(builder =>
+            builder.UseSetting("MutualGPU:Admin:MasterPassword", adminPassword));
+        using var client = adminFactory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = true,
+        });
+
+        var page = await client.GetStringAsync("/admin/index.html");
+        using var unauthorized = await client.GetAsync("/admin/api/overview");
+        using var denied = await client.PostAsJsonAsync("/admin/api/login", new { password = "incorrect-admin-password-value" });
+        using var login = await client.PostAsJsonAsync("/admin/api/login", new { password = adminPassword });
+
+        Assert.Contains("Administrator access", page, StringComparison.Ordinal);
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.Equal(System.Net.HttpStatusCode.Unauthorized, denied.StatusCode);
+        Assert.True(login.IsSuccessStatusCode);
+        var cookie = Assert.Single(login.Headers.GetValues("Set-Cookie"), value => value.StartsWith($"{AdminAccessService.CookieName}=", StringComparison.Ordinal));
+        Assert.Contains("httponly", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("secure", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("samesite=strict", cookie, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(adminPassword, cookie, StringComparison.Ordinal);
+
+        var capability = new CapabilityDefinition(CapabilityId.New(), "admin-diagnostics", [], new OutputDefinition(), "contract");
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var attempt = task.Assign(AttemptId.New(), unit.Id, "must-not-be-returned", DateTimeOffset.UtcNow);
+        await adminFactory.Services.GetRequiredService<ITaskRepository>().SaveAsync(task, CancellationToken.None);
+        var connections = adminFactory.Services.GetRequiredService<ProviderConnectionRegistry>();
+        connections.Connect(unit, "test", sourceIp: "203.0.113.42", providerName: "Copper Badger · ABCD");
+        connections.Track(unit.Id, task, attempt);
+
+        using var overview = await client.GetAsync("/admin/api/overview");
+        var body = await overview.Content.ReadAsStringAsync();
+
+        Assert.True(overview.IsSuccessStatusCode);
+        Assert.Contains(task.Id.Value.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(unit.Id.Value.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Copper Badger · ABCD", body, StringComparison.Ordinal);
+        Assert.Contains("203.0.113.42", body, StringComparison.Ordinal);
+        Assert.Contains("assignment_created", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("must-not-be-returned", body, StringComparison.Ordinal);
+        Assert.DoesNotContain(adminPassword, body, StringComparison.Ordinal);
+        Assert.Equal("no-store, private", overview.Headers.CacheControl?.ToString());
+    }
+
+    [Fact]
+    public async Task Admin_login_is_disabled_when_no_master_password_is_configured()
+    {
+        using var client = CreateHttpsClient();
+
+        using var response = await client.PostAsJsonAsync("/admin/api/login", new { password = "any-password-that-is-long-enough" });
+
+        Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
     [Fact]
@@ -88,12 +150,14 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         var module = Path.Combine(root, "js", "resource-grid.js");
         var overlay = Path.Combine(root, "js", "fiber-tree-overlay.js");
         var form = Path.Combine(root, "js", "capability-form.js");
+        var catalogue = Path.Combine(root, "js", "capability-catalogue.js");
         var tasks = Path.Combine(root, "js", "task-list.js");
         var browserSdk = Path.Combine(root, "js", "mutualgpu-provider-sdk.js");
 
         Assert.True(File.Exists(module));
         Assert.True(File.Exists(overlay));
         Assert.True(File.Exists(form));
+        Assert.True(File.Exists(catalogue));
         Assert.True(File.Exists(tasks));
         Assert.True(File.Exists(browserSdk));
         var source = File.ReadAllText(module);
@@ -101,6 +165,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("resource-tile", source, StringComparison.Ordinal);
         Assert.Contains("createFiberDiagnosticsOverlay", File.ReadAllText(overlay), StringComparison.Ordinal);
         Assert.Contains("createScalarPayload", File.ReadAllText(form), StringComparison.Ordinal);
+        Assert.Contains("reconcileCatalogueSelection", File.ReadAllText(catalogue), StringComparison.Ordinal);
         Assert.Contains("renderTaskList", File.ReadAllText(tasks), StringComparison.Ordinal);
         Assert.Contains("BrowserWebSocketTransport", File.ReadAllText(browserSdk), StringComparison.Ordinal);
     }
@@ -181,6 +246,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.True(response.IsSuccessStatusCode);
         Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
         Assert.Equal("true", response.Headers.GetValues("Access-Control-Allow-Credentials").Single());
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
     }
 
     [Fact]
@@ -366,6 +432,10 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         await call.RequestStream.WriteAsync(new ProviderMessage { Connect = new ConnectRequest { ProtocolVersion = 1 } });
         Assert.True(await call.ResponseStream.MoveNext(CancellationToken.None));
         Assert.Equal(ProviderId.Value.ToString("D"), call.ResponseStream.Current.Connected.ExecutionUnitId);
+        var grpcSession = factory.Services.GetRequiredService<ProviderConnectionRegistry>().Snapshot().Sessions
+            .First(session => session.Status == "connected" && session.ExecutionUnitId == ProviderId.Value);
+        Assert.Equal("grpc", grpcSession.Transport);
+        Assert.EndsWith(" · api-", grpcSession.ProviderName, StringComparison.Ordinal);
         using (var diagnostics = CreateHttpsClient())
         {
             Assert.Contains("provider-session", await diagnostics.GetStringAsync("/_netcats/fibers/snapshot"), StringComparison.Ordinal);
@@ -403,6 +473,10 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         await SendAsync(socket, new ProviderMessage { Connect = new ConnectRequest { ProtocolVersion = 1, Authorization = ProviderKey } });
         var connected = await ReceiveAsync(socket);
         Assert.Equal(ProviderId.Value.ToString("D"), connected.Connected.ExecutionUnitId);
+        var websocketSession = factory.Services.GetRequiredService<ProviderConnectionRegistry>().Snapshot().Sessions
+            .First(session => session.Status == "connected" && session.ExecutionUnitId == ProviderId.Value);
+        Assert.Equal("wss", websocketSession.Transport);
+        Assert.EndsWith(" · api-", websocketSession.ProviderName, StringComparison.Ordinal);
         using (var diagnostics = CreateHttpsClient())
         {
             Assert.Contains("provider-websocket-session", await diagnostics.GetStringAsync("/_netcats/fibers/snapshot"), StringComparison.Ordinal);
@@ -421,6 +495,32 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal(MutualGPU.Domain.TaskStatus.Running, running!.Status);
 
         await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Websocket_provider_disconnect_removes_its_capability_from_the_requestor_catalogue()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "disconnect-catalogue-test", [], new OutputDefinition(), "disconnect-catalogue-contract");
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        await factory.Services.GetRequiredService<IExecutionUnitRepository>().SaveAsync(unit, CancellationToken.None);
+        using var client = CreateHttpsClient();
+        using var socket = await factory.Server.CreateWebSocketClient().ConnectAsync(new Uri("wss://localhost/provider/connect"), CancellationToken.None);
+        await SendAsync(socket, new ProviderMessage { Connect = new ConnectRequest { ProtocolVersion = 1, Authorization = ProviderKey } });
+        _ = await ReceiveAsync(socket);
+
+        var connectedCatalogue = await client.GetFromJsonAsync<CapabilityAvailabilityDto[]>("/api/capabilities/");
+        Assert.Contains(connectedCatalogue!, item => item.CapabilityId == capability.Id.Value);
+
+        await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+
+        CapabilityAvailabilityDto[]? disconnectedCatalogue = null;
+        for (var retries = 0; retries < 50; retries++)
+        {
+            disconnectedCatalogue = await client.GetFromJsonAsync<CapabilityAvailabilityDto[]>("/api/capabilities/");
+            if (!disconnectedCatalogue!.Any(item => item.CapabilityId == capability.Id.Value)) break;
+            await Task.Delay(10);
+        }
+        Assert.DoesNotContain(disconnectedCatalogue!, item => item.CapabilityId == capability.Id.Value);
     }
 
     [Fact]
@@ -528,6 +628,103 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         var artifacts = resultDocument.RootElement.GetProperty("artifacts").EnumerateArray().ToArray();
         Assert.Equal(["result", "metadata", "thumbnail", "preview", "logs"], artifacts.Select(static artifact => artifact.GetProperty("name").GetString()));
         Assert.All(artifacts, static artifact => Assert.True(artifact.GetProperty("length").GetInt64() > 0));
+    }
+
+    [Fact]
+    public async Task Provider_result_upload_ignores_undeclared_optional_parts()
+    {
+        using var client = CreateHttpsClient();
+        var capability = new CapabilityDefinition(
+            CapabilityId.New(), "undeclared-result-parts-test", [],
+            new OutputDefinition(HasMetadata: true),
+            "undeclared-result-parts-contract");
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var attempt = task.Assign(AttemptId.New(), unit.Id, "undeclared-result-parts-handle", DateTimeOffset.UtcNow);
+        task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
+        var tasks = factory.Services.GetRequiredService<ITaskRepository>();
+        var connections = factory.Services.GetRequiredService<ProviderConnectionRegistry>();
+        await tasks.SaveAsync(task, CancellationToken.None);
+        connections.Connect(unit);
+        connections.Track(unit.Id, task, attempt);
+
+        using var tokenRequest = ProviderRequest(HttpMethod.Post, $"/provider/tasks/{task.Id.Value:D}/attempts/{attempt.Id.Value:D}/upload-token", attempt.Handle);
+        using var tokenResponse = await client.SendAsync(tokenRequest, CancellationToken.None);
+        using var tokenDocument = JsonDocument.Parse(await tokenResponse.Content.ReadAsStringAsync(CancellationToken.None));
+        var token = tokenDocument.RootElement.GetProperty("token").GetString();
+        var zip = ValidZip();
+        using var upload = new MultipartFormDataContent();
+        upload.Add(FilePart(zip, "application/zip"), "result", "result.zip");
+        upload.Add(new StringContent("{\"frames\":12}", Encoding.UTF8, "application/json"), "metadata");
+        upload.Add(FilePart(OnePixelPng(), "image/png"), "thumbnail", "thumbnail.png");
+        upload.Add(FilePart(Encoding.UTF8.GetBytes("provider log"), "text/plain"), "logs", "logs.txt");
+        using var request = ProviderRequest(HttpMethod.Post, $"/provider/tasks/{task.Id.Value:D}/attempts/{attempt.Id.Value:D}/result", attempt.Handle);
+        request.Content = upload;
+        request.Headers.Add("X-MutualGPU-Upload-Token", token);
+        request.Headers.Add("X-MutualGPU-Sha256", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(zip)).ToLowerInvariant());
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
+
+        Assert.True(response.IsSuccessStatusCode);
+        var ignored = body.RootElement.GetProperty("ignoredParts").EnumerateArray()
+            .ToDictionary(static part => part.GetProperty("name").GetString()!, static part => part.GetProperty("reason").GetString());
+        Assert.Equal("undeclared", ignored["thumbnail"]);
+        Assert.Equal("undeclared", ignored["logs"]);
+        var receipt = body.RootElement.GetProperty("receipt").GetString();
+        using var completeRequest = ProviderRequest(HttpMethod.Post, $"/provider/tasks/{task.Id.Value:D}/attempts/{attempt.Id.Value:D}/complete/{receipt}", attempt.Handle);
+        using var completeResponse = await client.SendAsync(completeRequest, CancellationToken.None);
+        Assert.True(completeResponse.IsSuccessStatusCode);
+
+        var reloaded = await tasks.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
+        var completedAttempt = Assert.Single(reloaded!.Attempts, candidate => candidate.Id == attempt.Id);
+        Assert.Equal(AttemptState.Completed, completedAttempt.State);
+        Assert.NotNull(reloaded.Result);
+        Assert.NotNull(reloaded.Result.Metadata);
+        Assert.Null(reloaded.Result.Thumbnail);
+        Assert.Null(reloaded.Result.Logs);
+        Assert.Contains(connections.Snapshot().Sessions.SelectMany(static session => session.Events), static item => item.Type == "result_parts_ignored");
+    }
+
+    [Fact]
+    public async Task Provider_result_upload_ignores_an_invalid_declared_optional_part()
+    {
+        using var client = CreateHttpsClient();
+        var capability = new CapabilityDefinition(
+            CapabilityId.New(), "invalid-optional-result-part-test", [],
+            new OutputDefinition(HasThumbnail: true),
+            "invalid-optional-result-part-contract");
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var attempt = task.Assign(AttemptId.New(), unit.Id, "invalid-optional-result-part-handle", DateTimeOffset.UtcNow);
+        task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
+        var tasks = factory.Services.GetRequiredService<ITaskRepository>();
+        var connections = factory.Services.GetRequiredService<ProviderConnectionRegistry>();
+        await tasks.SaveAsync(task, CancellationToken.None);
+        connections.Connect(unit);
+        connections.Track(unit.Id, task, attempt);
+
+        using var tokenRequest = ProviderRequest(HttpMethod.Post, $"/provider/tasks/{task.Id.Value:D}/attempts/{attempt.Id.Value:D}/upload-token", attempt.Handle);
+        using var tokenResponse = await client.SendAsync(tokenRequest, CancellationToken.None);
+        using var tokenDocument = JsonDocument.Parse(await tokenResponse.Content.ReadAsStringAsync(CancellationToken.None));
+        var token = tokenDocument.RootElement.GetProperty("token").GetString();
+        var zip = ValidZip();
+        using var upload = new MultipartFormDataContent();
+        upload.Add(FilePart(zip, "application/zip"), "result", "result.zip");
+        upload.Add(FilePart(Encoding.UTF8.GetBytes("not an image"), "image/png"), "thumbnail", "thumbnail.png");
+        using var request = ProviderRequest(HttpMethod.Post, $"/provider/tasks/{task.Id.Value:D}/attempts/{attempt.Id.Value:D}/result", attempt.Handle);
+        request.Content = upload;
+        request.Headers.Add("X-MutualGPU-Upload-Token", token);
+        request.Headers.Add("X-MutualGPU-Sha256", Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(zip)).ToLowerInvariant());
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
+
+        Assert.True(response.IsSuccessStatusCode);
+        var ignored = Assert.Single(body.RootElement.GetProperty("ignoredParts").EnumerateArray());
+        Assert.Equal("thumbnail", ignored.GetProperty("name").GetString());
+        Assert.Equal("result_image_invalid", ignored.GetProperty("reason").GetString());
+        Assert.False(String.IsNullOrWhiteSpace(body.RootElement.GetProperty("receipt").GetString()));
     }
 
     [Fact]

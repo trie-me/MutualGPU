@@ -20,6 +20,23 @@ public sealed class TaskAttemptStateTests
     }
 
     [Fact]
+    public void Non_retryable_failure_ends_the_task_on_its_first_attempt()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "flux2-klein-4b", [], new OutputDefinition(), "hash");
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UnixEpoch);
+        var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), "valid-handle", DateTimeOffset.UnixEpoch);
+        task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UnixEpoch.AddSeconds(1));
+
+        task.Fail(attempt.Id, attempt.Handle, "content_safety", "The generated image was blocked as inappropriate content.");
+
+        var failed = Assert.Single(task.Attempts);
+        Assert.Equal(TaskStatus.Failed, task.Status);
+        Assert.Equal(AttemptState.Failed, failed.State);
+        Assert.Equal("content_safety", failed.FailureStep);
+        Assert.Equal("The generated image was blocked as inappropriate content.", failed.FailureReason);
+    }
+
+    [Fact]
     public void Disconnected_attempt_can_only_be_rebound_by_its_current_handle()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");

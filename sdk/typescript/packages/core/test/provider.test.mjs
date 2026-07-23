@@ -139,6 +139,7 @@ test("provider automatically reconnects a dropped session with its active task h
   let receive;
   let disconnect;
   let resume;
+  let handlerCalls = 0;
   const transport = {
     connect: async (callback, activeTaskHandle, onDisconnect) => { receive = callback; disconnect = onDisconnect; handles.push(activeTaskHandle); },
     accept: async () => {}, reject: async () => {}, progress: async () => {}, fail: async () => {},
@@ -146,6 +147,7 @@ test("provider automatically reconnects a dropped session with its active task h
   };
   const client = new ProviderClient(transport, { reconnectDelay: () => 0 });
   await client.connect(async assigned => {
+    handlerCalls += 1;
     await assigned.accept();
     await new Promise(resolve => { resume = resolve; });
     await assigned.complete("receipt");
@@ -156,9 +158,92 @@ test("provider automatically reconnects a dropped session with its active task h
   disconnect(new Error("network lost"));
   for (let turn = 0; handles.length < 2 && turn < 10; turn += 1) await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(handles, ["", "handle"]);
+  assert.equal(handlerCalls, 1, "rebind must not restart the computation handler");
 
   resume();
   await handling;
+  client.close();
+});
+
+test("browser provider recycles a one-day-old connection as soon as it is idle", async () => {
+  const clock = createLifecycleClock();
+  const handles = [];
+  let disconnect;
+  let closes = 0;
+  const transport = {
+    connectionLifecycle: { idleRecycleAfterMs: 100, maximumConnectionAgeMs: 600 },
+    connect: async (_, activeTaskHandle, onDisconnect) => { handles.push(activeTaskHandle); disconnect = onDisconnect; },
+    close: () => { closes += 1; disconnect(new Error("connection recycled")); }
+  };
+  const client = new ProviderClient(transport, {
+    reconnectDelay: () => 0,
+    now: clock.now,
+    scheduleTimeout: clock.scheduleTimeout,
+    cancelTimeout: clock.cancelTimeout
+  });
+
+  await client.connect(async () => {});
+  assert.equal(clock.nextDelay(), 100);
+  clock.advance(100);
+  clock.fire();
+  for (let turn = 0; handles.length < 2 && turn < 10; turn += 1) await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(closes, 1);
+  assert.deepEqual(handles, ["", ""]);
+  client.close();
+});
+
+test("six-day connection recycling drains a saturated provider before reconnecting", async () => {
+  const clock = createLifecycleClock();
+  const handles = [];
+  const rejections = [];
+  let disconnect;
+  let receive;
+  let finish;
+  let closes = 0;
+  const transport = {
+    connectionLifecycle: { idleRecycleAfterMs: 100, maximumConnectionAgeMs: 600 },
+    connect: async (callback, activeTaskHandle, onDisconnect) => {
+      receive = callback;
+      disconnect = onDisconnect;
+      handles.push(activeTaskHandle);
+    },
+    accept: async () => {},
+    reject: async (assignment, reason) => rejections.push([assignment.taskHandle, reason]),
+    progress: async () => {}, fail: async () => {}, refreshInputDownload: async () => "url",
+    requestResultUpload: async () => "token", complete: async () => {},
+    close: () => { closes += 1; disconnect(new Error("connection recycled")); }
+  };
+  const client = new ProviderClient(transport, {
+    reconnectDelay: () => 0,
+    now: clock.now,
+    scheduleTimeout: clock.scheduleTimeout,
+    cancelTimeout: clock.cancelTimeout
+  });
+  await client.connect(async task => {
+    await task.accept();
+    await new Promise(resolve => { finish = resolve; });
+    await task.complete("receipt");
+  });
+
+  const handling = receive({ taskId: "task", attemptId: "attempt", taskHandle: "active-handle" });
+  await new Promise(resolve => setImmediate(resolve));
+  clock.advance(100);
+  clock.fire();
+  assert.equal(clock.nextDelay(), 500);
+  clock.advance(500);
+  clock.fire();
+  assert.equal(closes, 0, "an active computation must not be interrupted");
+
+  await receive({ taskId: "duplicate", attemptId: "duplicate-attempt", taskHandle: "duplicate-handle" });
+  assert.deepEqual(rejections, [["duplicate-handle", "provider connection is draining for recycling"]]);
+  assert.equal(closes, 0);
+
+  finish();
+  await handling;
+  for (let turn = 0; handles.length < 2 && turn < 10; turn += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(closes, 1);
+  assert.deepEqual(handles, ["", ""]);
   client.close();
 });
 
@@ -207,18 +292,41 @@ test("shared result uploader sends scoped multipart parts and returns a receipt"
     },
     fetchImpl: async (url, init) => {
       seen = { url, init };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ receipt: "receipt-1" }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ receipt: "receipt-1", ignoredParts: [{ name: "logs", reason: "undeclared" }] }) };
     }
   });
 
   assert.equal(uploaded.receipt, "receipt-1");
   assert.match(uploaded.sha256, /^[0-9a-f]{64}$/);
+  assert.deepEqual(uploaded.ignoredParts, [{ name: "logs", reason: "undeclared" }]);
   assert.equal(seen.url.pathname, "/provider/tasks/task/attempts/attempt/result");
   assert.equal(seen.init.headers.Authorization, "Bearer provider-key");
   assert.equal(seen.init.headers["X-MutualGPU-Task-Handle"], "handle");
   assert.equal(await seen.init.body.get("metadata").text(), "{\"frames\":12}");
   assert.equal(await seen.init.body.get("logs").text(), "handler log");
 });
+
+function createLifecycleClock() {
+  let current = 1;
+  let timer = null;
+  let sequence = 0;
+  return {
+    now: () => current,
+    scheduleTimeout: (callback, delay) => {
+      timer = { id: ++sequence, callback, delay };
+      return timer.id;
+    },
+    cancelTimeout: id => { if (timer?.id === id) timer = null; },
+    advance: milliseconds => { current += milliseconds; },
+    nextDelay: () => timer?.delay,
+    fire: () => {
+      assert.ok(timer, "expected a scheduled lifecycle check");
+      const pending = timer;
+      timer = null;
+      pending.callback();
+    }
+  };
+}
 
 test("shared result uploader rejects a cleartext API base URL before sending credentials", async () => {
   await assert.rejects(

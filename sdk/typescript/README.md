@@ -91,6 +91,8 @@ await provider.connect(async task => {
 
 `ProviderClient` permits one active task only. A handler must call `accept()` or `reject(reason)` before returning. After acceptance, progress is coalesced to one update per second, and `complete(receipt)` waits for the server's completion confirmation. An unexpected transport close starts bounded reconnect attempts and sends the active task handle in the next `ConnectRequest`; it can rebind only while the host's grace period remains valid. `close()` stops that recovery loop.
 
+Browser connections recycle after one day once no task is active. At six days a busy connection enters draining mode, finishes its current computation, rejects any racing assignment, and reconnects before accepting more work. Recycling never re-invokes an active task handler or creates a replacement attempt.
+
 Run the conformance and adapter tests with:
 
 ```text

@@ -138,6 +138,20 @@ public sealed class ExecutionUnitRepositoryTests
     }
 
     [Fact]
+    public void Reconnecting_connection_with_an_active_handle_is_never_an_idle_scheduler_candidate()
+    {
+        var registry = new ProviderConnectionRegistry();
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var unit = new ExecutionUnit(ExecutionUnitId.New(), new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+
+        var lease = registry.Connect(unit, "websocket", isIdle: false);
+
+        var candidate = Assert.Single(registry.GetConnectedCandidates(capability.Id));
+        Assert.False(candidate.IsIdle);
+        Assert.True(registry.Disconnect(lease));
+    }
+
+    [Fact]
     public void Result_upload_tokens_are_single_use_and_expire_after_fifteen_minutes()
     {
         var authorizations = new ResultUploadAuthorizations();

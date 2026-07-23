@@ -22,10 +22,33 @@ export class ProviderClient {
   #progressSequence = 0;
   #lastProgressAt = 0;
   #reconnectDelay;
+  #connectionOpenedAt = 0;
+  #lifecycleTimer = null;
+  #recycleWhenIdle = false;
+  #idleRecycleAfterMs = 0;
+  #maximumConnectionAgeMs = 0;
+  #now;
+  #scheduleTimeout;
+  #cancelTimeout;
 
-  constructor(transport, { reconnectDelay = attempt => Math.min(1_000 * 2 ** (attempt - 1), 30_000) } = {}) {
+  constructor(transport, options = {}) {
+    const {
+      reconnectDelay = attempt => Math.min(1_000 * 2 ** (attempt - 1), 30_000),
+      connectionLifecycle = transport.connectionLifecycle,
+      now = Date.now,
+      scheduleTimeout = globalThis.setTimeout,
+      cancelTimeout = globalThis.clearTimeout
+    } = options;
     this.#transport = transport;
     this.#reconnectDelay = reconnectDelay;
+    this.#idleRecycleAfterMs = positiveDuration(connectionLifecycle?.idleRecycleAfterMs);
+    this.#maximumConnectionAgeMs = positiveDuration(connectionLifecycle?.maximumConnectionAgeMs);
+    if (this.#idleRecycleAfterMs && this.#maximumConnectionAgeMs && this.#idleRecycleAfterMs >= this.#maximumConnectionAgeMs) {
+      throw new TypeError("maximumConnectionAgeMs must be greater than idleRecycleAfterMs");
+    }
+    this.#now = now;
+    this.#scheduleTimeout = scheduleTimeout;
+    this.#cancelTimeout = cancelTimeout;
   }
 
   async enroll(definition) { return this.#transport.enroll(normalizeEnrollment(definition)); }
@@ -46,6 +69,8 @@ export class ProviderClient {
 
   close() {
     this.#closed = true;
+    this.#cancelLifecycleCheck();
+    this.#connectionOpenedAt = 0;
     this.#transport.close?.();
   }
 
@@ -59,6 +84,9 @@ export class ProviderClient {
     this.#connection = opening;
     try {
       await opening;
+      this.#connectionOpenedAt = this.#now();
+      this.#recycleWhenIdle = false;
+      this.#scheduleLifecycleCheck();
     } finally {
       if (this.#connection === opening) this.#connection = null;
     }
@@ -66,6 +94,9 @@ export class ProviderClient {
 
   #disconnected() {
     if (this.#closed || this.#reconnecting) return;
+    this.#cancelLifecycleCheck();
+    this.#connectionOpenedAt = 0;
+    this.#recycleWhenIdle = false;
     this.#reconnecting = this.#reconnectLoop().finally(() => { this.#reconnecting = null; });
   }
 
@@ -86,7 +117,16 @@ export class ProviderClient {
 
   async #receive(assignment) {
     if (this.#active) {
-      await this.#transport.reject(assignment, "provider already owns an active task");
+      const reason = this.#recycleWhenIdle
+        ? "provider connection is draining for recycling"
+        : "provider already owns an active task";
+      await this.#transport.reject(assignment, reason);
+      return;
+    }
+    if (this.#recycleWhenIdle || this.#maximumConnectionAgeExpired()) {
+      this.#recycleWhenIdle = true;
+      await this.#transport.reject(assignment, "provider connection is recycling");
+      this.#transport.close?.();
       return;
     }
     if (assignment.input?.url) {
@@ -116,8 +156,51 @@ export class ProviderClient {
       if (active.state === "pending") await this.#reject(active, reason);
       else if (active.state === "accepted") await this.#fail(active, "execution", reason);
     } finally {
-      if (this.#active === active) this.#active = null;
+      if (this.#active === active) {
+        this.#active = null;
+        if (this.#recycleWhenIdle) this.#transport.close?.();
+        else this.#scheduleLifecycleCheck();
+      }
     }
+  }
+
+  #scheduleLifecycleCheck() {
+    this.#cancelLifecycleCheck();
+    if (this.#closed || !this.#connectionOpenedAt || !this.#maximumConnectionAgeMs) return;
+    const age = Math.max(0, this.#now() - this.#connectionOpenedAt);
+    const threshold = this.#active ? this.#maximumConnectionAgeMs : this.#idleRecycleAfterMs;
+    const delay = Math.max(0, threshold - age);
+    this.#lifecycleTimer = this.#scheduleTimeout(() => this.#checkConnectionLifecycle(), delay);
+    this.#lifecycleTimer?.unref?.();
+  }
+
+  #cancelLifecycleCheck() {
+    if (this.#lifecycleTimer === null) return;
+    this.#cancelTimeout(this.#lifecycleTimer);
+    this.#lifecycleTimer = null;
+  }
+
+  #checkConnectionLifecycle() {
+    this.#lifecycleTimer = null;
+    if (this.#closed || !this.#connectionOpenedAt) return;
+    const age = Math.max(0, this.#now() - this.#connectionOpenedAt);
+    const maximumExpired = age >= this.#maximumConnectionAgeMs;
+    const idleExpired = !this.#active && age >= this.#idleRecycleAfterMs;
+    if (maximumExpired && this.#active) {
+      this.#recycleWhenIdle = true;
+      return;
+    }
+    if (maximumExpired || idleExpired) {
+      this.#transport.close?.();
+      return;
+    }
+    this.#scheduleLifecycleCheck();
+  }
+
+  #maximumConnectionAgeExpired() {
+    return this.#connectionOpenedAt &&
+      this.#maximumConnectionAgeMs &&
+      this.#now() - this.#connectionOpenedAt >= this.#maximumConnectionAgeMs;
   }
 
   #taskFacade(active) {
@@ -179,6 +262,8 @@ export class ProviderClient {
     }
   }
 }
+
+const positiveDuration = value => Number.isFinite(value) && value > 0 ? Number(value) : 0;
 
 // Capability identity and continuity fields belong to the server protocol. Keep
 // their placeholders inside the SDK so consumers only describe capabilities.

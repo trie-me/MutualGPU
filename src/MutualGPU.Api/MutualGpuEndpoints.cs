@@ -8,8 +8,9 @@ namespace MutualGPU.Api;
 
 public static class MutualGpuEndpoints
 {
-    public static async Task<IResult> ListCapabilities(CapabilityCatalogueApplication catalogue, CancellationToken cancellationToken)
+    public static async Task<IResult> ListCapabilities(HttpContext context, CapabilityCatalogueApplication catalogue, CancellationToken cancellationToken)
     {
+        context.Response.Headers.CacheControl = "no-store";
         var available = await catalogue.List().RunAsync(cancellationToken).ConfigureAwait(false);
         return TypedResults.Ok(available.Select(item => new CapabilityAvailabilityDto(
             item.Capability.Id.Value,

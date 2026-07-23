@@ -53,6 +53,11 @@ Resources:
       Subnets:
         - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
         - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBId'
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '600'
+        - Key: client_keep_alive.seconds
+          Value: '604800'
       Tags:
         - Key: Project
           Value: MutualGPU
@@ -199,6 +204,9 @@ Resources:
               - Name: MutualGPU__ProviderCorsOrigins__2
                 Value: !Ref ProviderCorsOrigin2
               - !Ref AWS::NoValue
+          Secrets:
+            - Name: MutualGPU__Admin__MasterPassword
+              ValueFrom: !Sub '${DeploymentSecretArn}:adminMasterPassword::'
           LogConfiguration:
             LogDriver: awslogs
             Options:

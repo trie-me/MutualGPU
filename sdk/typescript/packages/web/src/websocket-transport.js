@@ -30,6 +30,10 @@ export class BrowserWebSocketTransport {
       throw new TypeError("MutualGPU browser providers require an https API base URL.");
     }
     this.fetchImpl = fetchImpl;
+    this.connectionLifecycle = Object.freeze({
+      idleRecycleAfterMs: 24 * 60 * 60 * 1000,
+      maximumConnectionAgeMs: 6 * 24 * 60 * 60 * 1000
+    });
   }
 
   async enroll(definition) {

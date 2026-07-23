@@ -6,6 +6,8 @@ namespace MutualGPU.Application;
 /// <summary>Shared provider-message state transitions used by every transport adapter.</summary>
 public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderAssignments assignments, IStagedResults stagedResults, IProviderProgress progress, IApplicationEventSink events, TimeProvider timeProvider)
 {
+    private static readonly HashSet<string> TerminalFailureSteps = new(StringComparer.OrdinalIgnoreCase) { "content_safety" };
+
     public Latent<bool> Accept(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, DateTimeOffset acceptedAt) =>
         Transition(unitId, taskId, attemptId, handle, task => task.Accept(attemptId, handle, acceptedAt), remove: false);
 
@@ -13,7 +15,11 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
         Transition(unitId, taskId, attemptId, handle, task => task.Requeue(attemptId, handle, AttemptState.Rejected, "provider_rejected", reason), remove: true);
 
     public Latent<bool> Fail(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string? step, string? reason) =>
-        Transition(unitId, taskId, attemptId, handle, task => task.Requeue(attemptId, handle, AttemptState.Failed, step, reason), remove: true);
+        Transition(unitId, taskId, attemptId, handle, task =>
+        {
+            if (step is not null && TerminalFailureSteps.Contains(step)) task.Fail(attemptId, handle, step, reason);
+            else task.Requeue(attemptId, handle, AttemptState.Failed, step, reason);
+        }, remove: true);
 
     public Latent<bool> Complete(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt) => Latent<bool>.DelayAsync(async cancellationToken =>
     {

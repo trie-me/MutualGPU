@@ -90,7 +90,7 @@ If the handler returns while pending, the SDK rejects the assignment. If it retu
 | `await reject(reason)` | pending | Rejects the attempt and makes it terminal |
 | `await reportProgress(update)` | accepted | `true` when sent; `false` when dropped by the one-update-per-second client limit |
 | `await refreshInputDownload()` | accepted | A replacement short-lived HTTPS URL |
-| `await uploadResult(result)` | accepted | `{ receipt, sha256 }` after authorization and successful multipart publication |
+| `await uploadResult(result)` | accepted | `{ receipt, sha256, ignoredParts }` after authorization and successful multipart publication |
 | `await complete(receipt)` | accepted | Waits for server completion confirmation and makes the task terminal |
 | `await fail(step, reason)` | accepted | Reports failure and makes the task terminal |
 
@@ -120,6 +120,8 @@ await task.uploadResult({
 | `preview` | 5 MiB | Image MIME type declared by the capability |
 | `logs` | 1 MiB | Strict UTF-8 `text/plain` |
 | Complete request | 64 MiB | Includes multipart overhead and all parts |
+
+The required ZIP remains strict. Known optional parts that are not declared by the capability, or that fail their bounded validation, are discarded without failing the result. `ignoredParts` reports each omission as `{ name, reason }`; discarded parts are never stored or returned to requestors.
 
 ## Errors and recovery
 

@@ -90,6 +90,7 @@ public static class ProviderWebSocketEndpoints
         CancellationToken cancellationToken)
     {
         if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
+        var sourceIp = context.Connection.RemoteIpAddress?.ToString();
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         var scope = fibers.ProviderSessions.CreateChild(new FiberScopeOptions("provider-websocket-session"));
         using var cancellation = cancellationToken.Register(static state => _ = ((FiberScope)state!).CloseAsync(), scope);
@@ -98,7 +99,7 @@ public static class ProviderWebSocketEndpoints
         {
             var fiber = scope.Start(Latent<int>.DelayAsync(async fiberCancellationToken =>
             {
-                await ConnectCoreAsync(socket, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, fiberCancellationToken).ConfigureAwait(false);
+                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, fiberCancellationToken).ConfigureAwait(false);
                 return 0;
             }), new FiberDescriptor("provider-websocket-session"));
             outcome = await fiber.JoinAsync().ConfigureAwait(false);
@@ -112,6 +113,7 @@ public static class ProviderWebSocketEndpoints
 
     private static async Task ConnectCoreAsync(
         WebSocket socket,
+        string? sourceIp,
         IExecutionUnitAuthenticator authenticator,
         IExecutionUnitRepository units,
         ProviderConnectionRegistry connections,
@@ -135,12 +137,16 @@ public static class ProviderWebSocketEndpoints
         }
         var unit = await units.GetAsync(unitId, cancellationToken).ConfigureAwait(false);
         if (unit is null) { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Enrollment is required.", cancellationToken).ConfigureAwait(false); return; }
-        var lease = connections.Connect(unit);
+        var hasActiveTask = !String.IsNullOrWhiteSpace(first.Connect.ActiveTaskHandle);
+        // A reconnecting execution unit still owns its previous computation. It
+        // must never become a scheduler candidate in the gap before rebind.
+        var providerKey = ProviderKey(first.Connect.Authorization);
+        var lease = connections.Connect(unit, "wss", isIdle: !hasActiveTask, sourceIp: sourceIp, providerName: ProviderDisplayNames.Create(providerKey));
         Task? writes = null;
         using var sendGate = new SemaphoreSlim(1, 1);
         try
         {
-            if (!String.IsNullOrWhiteSpace(first.Connect.ActiveTaskHandle) &&
+            if (hasActiveTask &&
                 !await sessions.Rebind(unitId, first.Connect.ActiveTaskHandle).RunAsync(cancellationToken).ConfigureAwait(false))
             {
                 await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "The reconnect task handle is not eligible for rebinding.", cancellationToken).ConfigureAwait(false);
@@ -306,9 +312,11 @@ public static class ProviderWebSocketEndpoints
         string? authorization,
         CancellationToken cancellationToken)
     {
-        var value = authorization?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) is true ? authorization[7..] : authorization;
-        return authenticator.AuthenticateAsync(value, cancellationToken);
+        return authenticator.AuthenticateAsync(ProviderKey(authorization), cancellationToken);
     }
+
+    private static string ProviderKey(string? authorization) =>
+        authorization?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) is true ? authorization[7..] : authorization ?? String.Empty;
 
     private static TaskId ParseTaskId(string value) => Guid.TryParse(value, out var id) ? new TaskId(id) : throw new InvalidDataException("Task ID is invalid.");
 

@@ -7,10 +7,18 @@ namespace MutualGPU.Infrastructure;
 /// <summary>Process-local connection/presence projection; durable enrollment remains in the execution-unit repository.</summary>
 public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAssignments, IProviderProgress
 {
+    private const int MaximumRetainedSessions = 250;
+    private const int MaximumEventsPerSession = 500;
     private readonly object gate = new();
     private readonly Dictionary<ExecutionUnitId, Connection> connections = [];
+    private readonly Dictionary<Guid, MutableSession> sessions = [];
+    private readonly Dictionary<AttemptId, Guid> assignmentSessions = [];
+    private readonly TimeProvider timeProvider;
 
-    public ProviderSessionLease Connect(ExecutionUnit unit)
+    public ProviderConnectionRegistry(TimeProvider? timeProvider = null) =>
+        this.timeProvider = timeProvider ?? TimeProvider.System;
+
+    public ProviderSessionLease Connect(ExecutionUnit unit, string transport = "unknown", bool isIdle = true, string? sourceIp = null, string? providerName = null)
     {
         ArgumentNullException.ThrowIfNull(unit);
         lock (gate)
@@ -22,8 +30,23 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
                 SingleWriter = false,
             });
             var sessionId = Guid.CreateVersion7();
-            if (connections.TryGetValue(unit.Id, out var previous)) previous.Outbound.Writer.TryComplete();
-            connections[unit.Id] = new Connection(sessionId, unit.CurrentEnrollment.Machine, unit.CurrentEnrollment.Capabilities.Select(static capability => capability.Id).ToHashSet(), true, channel);
+            if (connections.TryGetValue(unit.Id, out var previous))
+            {
+                previous.Outbound.Writer.TryComplete();
+                CloseSession(previous.SessionId, "replaced");
+            }
+            connections[unit.Id] = new Connection(sessionId, unit.CurrentEnrollment.Machine, unit.CurrentEnrollment.Capabilities.ToArray(), isIdle, channel);
+            var now = timeProvider.GetUtcNow();
+            var session = new MutableSession(
+                sessionId,
+                unit.Id,
+                String.IsNullOrWhiteSpace(transport) ? "unknown" : transport,
+                String.IsNullOrWhiteSpace(sourceIp) ? null : sourceIp.Trim(),
+                String.IsNullOrWhiteSpace(providerName) ? null : providerName.Trim(),
+                now);
+            sessions[sessionId] = session;
+            AddEvent(session, "connected", $"Provider connected over {session.Transport}.", now);
+            TrimSessions();
             return new ProviderSessionLease(unit.Id, sessionId, channel.Reader);
         }
     }
@@ -32,7 +55,12 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     {
         lock (gate)
         {
-            if (connections.Remove(executionUnitId, out var connection)) connection.Outbound.Writer.TryComplete();
+            if (connections.Remove(executionUnitId, out var connection))
+            {
+                CaptureActiveStates(executionUnitId);
+                connection.Outbound.Writer.TryComplete();
+                CloseSession(connection.SessionId, "transport_closed");
+            }
         }
     }
 
@@ -43,8 +71,10 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         lock (gate)
         {
             if (!connections.TryGetValue(lease.ExecutionUnitId, out var connection) || connection.SessionId != lease.SessionId) return false;
+            CaptureActiveStates(lease.ExecutionUnitId);
             connections.Remove(lease.ExecutionUnitId);
             connection.Outbound.Writer.TryComplete();
+            CloseSession(connection.SessionId, "transport_closed");
             return true;
         }
     }
@@ -62,11 +92,25 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         }
     }
 
+    public IReadOnlyList<ConnectedProviderCapability> GetConnectedCapabilities()
+    {
+        lock (gate)
+        {
+            return connections.SelectMany(pair => pair.Value.Capabilities.Select(capability =>
+                new ConnectedProviderCapability(
+                    pair.Key,
+                    capability,
+                    pair.Value.Machine.Tier,
+                    pair.Value.Machine.Specifications,
+                    pair.Value.IsIdle))).ToArray();
+        }
+    }
+
     public IReadOnlyList<ProviderCandidate> GetConnectedCandidates(CapabilityId capabilityId)
     {
         lock (gate)
         {
-            return connections.Where(pair => pair.Value.Capabilities.Contains(capabilityId))
+            return connections.Where(pair => pair.Value.Capabilities.Any(capability => capability.Id == capabilityId))
                 .Select(pair => new ProviderCandidate(pair.Key, capabilityId, pair.Value.Machine.Tier, pair.Value.Machine.Specifications, pair.Value.IsIdle)).ToArray();
         }
     }
@@ -78,13 +122,24 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
             if (!connections.TryGetValue(executionUnitId, out var connection) || !connection.IsIdle) return false;
             if (!connection.Outbound.Writer.TryWrite(assignment)) return false;
             connections[executionUnitId] = connection with { IsIdle = false };
+            if (sessions.TryGetValue(connection.SessionId, out var session))
+                AddEvent(session, "assignment_delivered", "Assignment delivered to provider.", timeProvider.GetUtcNow(), assignment.TaskId, assignment.AttemptId);
             return true;
         }
     }
 
     public void Track(ExecutionUnitId executionUnitId, TaskRequest task, TaskAttempt attempt)
     {
-        lock (gate) active[(executionUnitId, task.Id, attempt.Id)] = new ActiveProviderAssignment(executionUnitId, task, attempt);
+        lock (gate)
+        {
+            active[(executionUnitId, task.Id, attempt.Id)] = new ActiveProviderAssignment(executionUnitId, task, attempt);
+            if (connections.TryGetValue(executionUnitId, out var connection) && sessions.TryGetValue(connection.SessionId, out var session))
+            {
+                assignmentSessions[attempt.Id] = session.SessionId;
+                session.RecordedStates.Add((attempt.Id, AttemptState.Assigned));
+                AddEvent(session, "assignment_created", "Task assigned to provider.", attempt.AssignedAt, task.Id, attempt.Id);
+            }
+        }
     }
 
     public bool TryGet(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle, out TaskRequest task)
@@ -105,6 +160,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     {
         lock (gate)
         {
+            CaptureAttemptState(executionUnitId, taskId, attemptId);
             active.Remove((executionUnitId, taskId, attemptId));
             if (connections.TryGetValue(executionUnitId, out var connection)) connections[executionUnitId] = connection with { IsIdle = true };
         }
@@ -144,7 +200,23 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
                 assignment.Task.Attempts.SingleOrDefault(attempt => attempt.Id == attemptId)?.State is not AttemptState.Accepted) return false;
             if (progresses.TryGetValue(taskId, out var previous) && (progress.SequenceNumber <= previous.SequenceNumber || progress.ObservedAt - previous.ObservedAt < TimeSpan.FromSeconds(1))) return false;
             progresses[taskId] = progress;
+            CaptureAttemptState(unitId, taskId, attemptId);
+            if (assignmentSessions.TryGetValue(attemptId, out var sessionId) && sessions.TryGetValue(sessionId, out var session))
+            {
+                var percent = progress.Percent is { } value ? $" {value:0.#}%" : String.Empty;
+                AddEvent(session, "progress", $"{progress.Phase ?? "Provider work"}{percent}", progress.ObservedAt, taskId, attemptId);
+            }
             return true;
+        }
+    }
+
+    public void RecordIgnoredResultParts(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, IReadOnlyList<string> parts)
+    {
+        if (parts.Count == 0) return;
+        lock (gate)
+        {
+            if (connections.TryGetValue(unitId, out var connection) && sessions.TryGetValue(connection.SessionId, out var session))
+                AddEvent(session, "result_parts_ignored", $"Ignored optional result parts: {String.Join(", ", parts)}.", timeProvider.GetUtcNow(), taskId, attemptId);
         }
     }
 
@@ -158,10 +230,162 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         lock (gate) progresses.Remove(taskId);
     }
 
+    public AdminDiagnosticsSnapshot Snapshot()
+    {
+        lock (gate)
+        {
+            foreach (var assignment in active.Keys.ToArray()) CaptureAttemptState(assignment.UnitId, assignment.TaskId, assignment.AttemptId);
+            var current = connections.Values.Select(static connection => connection.SessionId).ToHashSet();
+            return new AdminDiagnosticsSnapshot(
+                sessions.Values
+                    .OrderByDescending(static session => session.ConnectedAt)
+                    .Select(session => ToSnapshot(session, current.Contains(session.SessionId)))
+                    .ToArray(),
+                assignmentSessions.ToDictionary(static pair => pair.Key.Value, static pair => pair.Value));
+        }
+    }
+
+    private void CaptureActiveStates(ExecutionUnitId executionUnitId)
+    {
+        foreach (var key in active.Keys.Where(key => key.UnitId == executionUnitId).ToArray()) CaptureAttemptState(key.UnitId, key.TaskId, key.AttemptId);
+    }
+
+    private void CaptureAttemptState(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId)
+    {
+        if (!active.TryGetValue((executionUnitId, taskId, attemptId), out var assignment) ||
+            !assignmentSessions.TryGetValue(attemptId, out var sessionId) ||
+            !sessions.TryGetValue(sessionId, out var session)) return;
+        var attempt = assignment.Task.Attempts.SingleOrDefault(item => item.Id == attemptId);
+        if (attempt is null || !session.RecordedStates.Add((attemptId, attempt.State))) return;
+        var occurredAt = attempt.State switch
+        {
+            AttemptState.Assigned => attempt.AssignedAt,
+            AttemptState.Accepted => attempt.AcceptedAt ?? timeProvider.GetUtcNow(),
+            AttemptState.Disconnected => attempt.DisconnectedAt ?? timeProvider.GetUtcNow(),
+            _ => timeProvider.GetUtcNow(),
+        };
+        var detail = attempt.State switch
+        {
+            AttemptState.Rejected => SafeDetail(attempt.FailureReason, "Provider rejected the assignment."),
+            AttemptState.Failed => SafeDetail(attempt.FailureReason, "Provider reported an assignment failure."),
+            AttemptState.Revoked => SafeDetail(attempt.FailureReason, "Assignment was revoked."),
+            AttemptState.Completed => "Assignment completed.",
+            AttemptState.Disconnected => "Provider disconnected while the assignment was active.",
+            AttemptState.Accepted => "Provider accepted the assignment.",
+            _ => "Task assigned to provider.",
+        };
+        AddEvent(session, attempt.State.ToString().ToLowerInvariant(), detail, occurredAt, taskId, attemptId);
+    }
+
+    private void CloseSession(Guid sessionId, string reason)
+    {
+        if (!sessions.TryGetValue(sessionId, out var session) || session.ClosedAt is not null) return;
+        session.ClosedAt = timeProvider.GetUtcNow();
+        session.CloseReason = reason;
+        AddEvent(session, "disconnected", reason == "replaced" ? "Session replaced by a newer connection." : "Provider transport disconnected.", session.ClosedAt.Value);
+    }
+
+    private static string SafeDetail(string? value, string fallback)
+    {
+        if (String.IsNullOrWhiteSpace(value)) return fallback;
+        var normalized = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        return normalized.Length <= 500 ? normalized : normalized[..500];
+    }
+
+    private static void AddEvent(MutableSession session, string type, string summary, DateTimeOffset occurredAt, TaskId? taskId = null, AttemptId? attemptId = null)
+    {
+        session.Events.Add(new AdminSessionEvent(Guid.CreateVersion7(), occurredAt, type, summary, taskId?.Value, attemptId?.Value));
+        if (session.Events.Count > MaximumEventsPerSession) session.Events.RemoveRange(0, session.Events.Count - MaximumEventsPerSession);
+    }
+
+    private void TrimSessions()
+    {
+        if (sessions.Count <= MaximumRetainedSessions) return;
+        foreach (var sessionId in sessions.Values.Where(static session => session.ClosedAt is not null).OrderBy(static session => session.ConnectedAt).Select(static session => session.SessionId).Take(sessions.Count - MaximumRetainedSessions).ToArray())
+        {
+            sessions.Remove(sessionId);
+            foreach (var attemptId in assignmentSessions.Where(pair => pair.Value == sessionId).Select(static pair => pair.Key).ToArray()) assignmentSessions.Remove(attemptId);
+        }
+    }
+
+    private static AdminSessionSnapshot ToSnapshot(MutableSession session, bool isCurrent)
+    {
+        var events = session.Events.OrderBy(static item => item.OccurredAt).ToArray();
+        return new AdminSessionSnapshot(
+            session.SessionId,
+            session.ExecutionUnitId.Value,
+            session.ProviderName,
+            session.Transport,
+            session.SourceIp,
+            session.ConnectedAt,
+            session.ClosedAt,
+            isCurrent ? "connected" : "disconnected",
+            session.CloseReason,
+            events.Select(static item => item.AttemptId).Where(static id => id is not null).Distinct().Count(),
+            new AdminSessionSummary(
+                events.Length,
+                events.Count(static item => item.Type == "assignment_created"),
+                events.Count(static item => item.Type == "accepted"),
+                events.Count(static item => item.Type == "rejected"),
+                events.Count(static item => item.Type == "failed"),
+                events.Count(static item => item.Type == "completed"),
+                events.Count(static item => item.Type == "progress")),
+            events);
+    }
+
     private readonly Dictionary<(ExecutionUnitId UnitId, TaskId TaskId, AttemptId AttemptId), ActiveProviderAssignment> active = [];
     private readonly Dictionary<TaskId, TaskProgress> progresses = [];
 
-    private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlySet<CapabilityId> Capabilities, bool IsIdle, Channel<ProviderAssignment> Outbound);
+    private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlyList<CapabilityDefinition> Capabilities, bool IsIdle, Channel<ProviderAssignment> Outbound);
+
+    private sealed class MutableSession(Guid sessionId, ExecutionUnitId executionUnitId, string transport, string? sourceIp, string? providerName, DateTimeOffset connectedAt)
+    {
+        public Guid SessionId { get; } = sessionId;
+        public ExecutionUnitId ExecutionUnitId { get; } = executionUnitId;
+        public string? ProviderName { get; } = providerName;
+        public string Transport { get; } = transport;
+        public string? SourceIp { get; } = sourceIp;
+        public DateTimeOffset ConnectedAt { get; } = connectedAt;
+        public DateTimeOffset? ClosedAt { get; set; }
+        public string? CloseReason { get; set; }
+        public List<AdminSessionEvent> Events { get; } = [];
+        public HashSet<(AttemptId AttemptId, AttemptState State)> RecordedStates { get; } = [];
+    }
 }
 
 public sealed record ProviderSessionLease(ExecutionUnitId ExecutionUnitId, Guid SessionId, ChannelReader<ProviderAssignment> Assignments);
+
+public sealed record AdminDiagnosticsSnapshot(
+    IReadOnlyList<AdminSessionSnapshot> Sessions,
+    IReadOnlyDictionary<Guid, Guid> AssignmentSessions);
+
+public sealed record AdminSessionSnapshot(
+    Guid SessionId,
+    Guid ExecutionUnitId,
+    string? ProviderName,
+    string Transport,
+    string? SourceIp,
+    DateTimeOffset ConnectedAt,
+    DateTimeOffset? ClosedAt,
+    string Status,
+    string? CloseReason,
+    int AssignmentCount,
+    AdminSessionSummary Summary,
+    IReadOnlyList<AdminSessionEvent> Events);
+
+public sealed record AdminSessionSummary(
+    int EventCount,
+    int Assigned,
+    int Accepted,
+    int Rejected,
+    int Failed,
+    int Completed,
+    int ProgressUpdates);
+
+public sealed record AdminSessionEvent(
+    Guid EventId,
+    DateTimeOffset OccurredAt,
+    string Type,
+    string Summary,
+    Guid? TaskId,
+    Guid? AttemptId);

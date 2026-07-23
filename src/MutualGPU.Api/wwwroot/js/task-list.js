@@ -6,8 +6,11 @@ const statusCopy = Object.freeze({
   Failed: { label: 'Needs attention', description: 'This task needs a human to look at the details.' },
 });
 
-function presentationFor(status) {
-  return statusCopy[status] || { label: status || 'Working', description: 'MutualGPU is keeping track of this task.' };
+function presentationFor(task) {
+  if (task.status === 'Failed' && task.failureStep === 'content_safety') {
+    return { label: 'Inappropriate content', description: 'This image was blocked by the content-safety check.' };
+  }
+  return statusCopy[task.status] || { label: task.status || 'Working', description: 'MutualGPU is keeping track of this task.' };
 }
 
 function statusClass(status) {
@@ -44,7 +47,7 @@ export function renderTaskList(container, tasks, {
   }
 
   for (const task of tasks) {
-    const presentation = presentationFor(task.status);
+    const presentation = presentationFor(task);
     const article = document.createElement('article'); article.className = 'task-list__item';
     const title = document.createElement('button'); title.type = 'button'; title.className = 'task-list__title';
     const titleCopy = document.createElement('span'); titleCopy.className = 'task-list__title-copy';

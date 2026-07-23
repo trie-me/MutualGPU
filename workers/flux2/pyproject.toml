@@ -1,0 +1,15 @@
+[project]
+name = "mutualgpu-flux2-worker"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "accelerate>=1.0,<2",
+    "diffusers>=0.39,<1",
+    "Pillow>=10,<13",
+    "safetensors>=0.4,<1",
+    "torch>=2.4,<3",
+    "transformers>=4.44,<5",
+]
+
+[tool.uv]
+package = false

@@ -109,6 +109,7 @@ builder.Services.AddSingleton<ObjectStoreTaskRepository>();
 builder.Services.AddSingleton<ITaskRepository>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
 builder.Services.AddSingleton<ITaskSummaryReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
 builder.Services.AddSingleton<IQueuedTaskReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
+builder.Services.AddSingleton<IAdminTaskReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
 builder.Services.AddSingleton<IStartupRecovery>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
 builder.Services.AddSingleton<ProviderConnectionRegistry>();
 builder.Services.AddSingleton<IProviderPresence>(static services => services.GetRequiredService<ProviderConnectionRegistry>());
@@ -121,6 +122,9 @@ builder.Services.AddSingleton<SchedulerSignal>();
 builder.Services.AddSingleton<IApplicationEventSink>(static services => services.GetRequiredService<SchedulerSignal>());
 builder.Services.AddSingleton<MutualGpuTelemetry>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton(services => new AdminAccessService(
+    builder.Configuration["MutualGPU:Admin:MasterPassword"],
+    services.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<EnrollmentApplication>();
 builder.Services.AddSingleton<CapabilityCatalogueApplication>();
 builder.Services.AddSingleton<TaskSubmissionApplication>();
@@ -174,6 +178,20 @@ app.Use(async (context, next) =>
 app.UseCors("mutualgpu-provider");
 app.Use(async (context, next) =>
 {
+    if (context.Request.Path.StartsWithSegments("/admin"))
+    {
+        context.Response.Headers.CacheControl = "no-store, private";
+        context.Response.Headers.Pragma = "no-cache";
+        context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+        context.Response.Headers["X-Frame-Options"] = "DENY";
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        context.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
+    }
+    await next(context);
+});
+app.Use(async (context, next) =>
+{
     if (IsUnsafeMethod(context.Request.Method) &&
         context.Request.Path.StartsWithSegments("/api/tasks") &&
         !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins))
@@ -183,7 +201,11 @@ app.Use(async (context, next) =>
     }
     await next(context);
 });
-app.UseWebSockets();
+app.UseWebSockets(new WebSocketOptions
+{
+    KeepAliveInterval = TimeSpan.FromSeconds(20),
+    KeepAliveTimeout = TimeSpan.FromSeconds(15)
+});
 app.Use(async (context, next) =>
 {
     if (!Guid.TryParse(context.Request.Cookies[RequestorIdentity.CookieName], out _))
@@ -203,6 +225,7 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapOpenApi();
+app.MapAdmin();
 app.MapGet("/health/live", () => TypedResults.Ok(new { status = "healthy" }));
 app.MapGet("/health/ready", (StartupProjectionState state) => state.IsReady
     ? (IResult)TypedResults.Ok(new { status = "ready" })

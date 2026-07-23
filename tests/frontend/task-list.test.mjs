@@ -76,8 +76,11 @@ test('failure details prefer the provider reason and translate legacy recovery c
   renderTaskList(container, [
     { taskId: 'provider-failure', capabilityName: 'TripoSplat', status: 'Failed', attemptCount: 4, failureStep: 'triposplat', failureReason: 'The model manifest could not be downloaded.', canReevaluate: false, canRetrieveResult: false },
     { taskId: 'recovery-failure', capabilityName: 'TripoSplat', status: 'Failed', attemptCount: 4, failureStep: 'disconnect_recovery_expired', canReevaluate: false, canRetrieveResult: false },
+    { taskId: 'safety-failure', capabilityName: 'FLUX.2', status: 'Failed', attemptCount: 1, failureStep: 'content_safety', failureReason: 'The generated image was blocked as inappropriate content.', canReevaluate: false, canRetrieveResult: false },
   ]);
 
   assert.equal(container.children[0].children[1].children.at(-1).textContent, 'Needs attention: The model manifest could not be downloaded.');
   assert.equal(container.children[1].children[1].children.at(-1).textContent, 'Needs attention: The provider disconnected and did not reconnect before the recovery window expired.');
+  assert.equal(container.children[2].children[0].children[1].textContent, 'Inappropriate content');
+  assert.equal(container.children[2].children[1].children.at(-1).textContent, 'Needs attention: The generated image was blocked as inappropriate content.');
 });

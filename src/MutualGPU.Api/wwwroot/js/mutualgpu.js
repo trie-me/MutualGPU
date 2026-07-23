@@ -1,9 +1,12 @@
 import { renderResourceGrid } from './resource-grid.js';
 import { createFiberDiagnosticsOverlay } from './fiber-tree-overlay.js?v=20260721-sharedcompute3';
 import { createScalarPayload } from './capability-form.js';
+import { reconcileCatalogueSelection } from './capability-catalogue.js';
 import { renderTaskList } from './task-list.js';
 
 const select = document.querySelector('#capability-select');
+const refreshCapabilitiesButton = document.querySelector('#refresh-capabilities');
+const capabilityRefreshStatus = document.querySelector('#capability-refresh-status');
 const form = document.querySelector('#task-form');
 const message = document.querySelector('#task-message');
 const grid = document.querySelector('#resource-picker');
@@ -12,6 +15,7 @@ let catalogue = [];
 let selectedResources = null;
 let sort = { computeDescending: false, memoryDescending: true };
 let webGpuKey = null;
+let catalogueRefreshInFlight = false;
 
 const webGpuDialog = document.querySelector('#webgpu-enrollment-dialog');
 const webGpuStatus = document.querySelector('#webgpu-enrollment-status');
@@ -87,12 +91,49 @@ function validateStep(selector) {
   return [...document.querySelectorAll(`${selector} input, ${selector} select`)].every(element => element.reportValidity());
 }
 
-async function load() {
-  const response = await fetch('/api/capabilities/'); catalogue = await response.json();
+async function refreshCatalogue({ initial = false } = {}) {
+  const previousCapabilityId = select.value;
+  const response = await fetch('/api/capabilities/', { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Capabilities are unavailable (HTTP ${response.status}).`);
+  const nextCatalogue = await response.json();
+  const reconciliation = reconcileCatalogueSelection(nextCatalogue, previousCapabilityId, selectedResources);
+
+  catalogue = nextCatalogue;
   const placeholder = new Option('Choose a task from the collection', '', true, true); placeholder.disabled = true;
   select.replaceChildren(placeholder, ...catalogue.map(capability => new Option(capability.name, capability.capabilityId)));
-  renderInputs();
+  if (reconciliation.selectedCapability) select.value = reconciliation.selectedCapability.capabilityId;
+  selectedResources = reconciliation.selectedResources;
+
+  if (initial || reconciliation.selectionRemoved || !reconciliation.selectedCapability) {
+    renderInputs();
+  } else {
+    document.querySelector('#submit-task').disabled = !selectedResources;
+    renderResources();
+  }
+
+  return reconciliation;
 }
+
+async function requestCatalogueRefresh({ initial = false } = {}) {
+  if (catalogueRefreshInFlight) return;
+  catalogueRefreshInFlight = true;
+  refreshCapabilitiesButton.disabled = true;
+  capabilityRefreshStatus.classList.remove('capability-picker__status--error');
+  if (!initial) capabilityRefreshStatus.textContent = 'Refreshing task types…';
+  try {
+    const reconciliation = await refreshCatalogue({ initial });
+    capabilityRefreshStatus.textContent = reconciliation.selectionRemoved
+      ? 'That task is no longer available because its provider disconnected.'
+      : initial ? '' : 'Task types refreshed.';
+  } catch {
+    capabilityRefreshStatus.textContent = 'Task types are unavailable. Try refreshing again.';
+    capabilityRefreshStatus.classList.add('capability-picker__status--error');
+  } finally {
+    refreshCapabilitiesButton.disabled = false;
+    catalogueRefreshInFlight = false;
+  }
+}
+
 async function renderTasks() {
   try {
     const response = await fetch('/api/tasks/');
@@ -126,8 +167,10 @@ form.addEventListener('submit', async event => {
     document.querySelector('#my-work').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 });
-load().then(renderTasks).catch(() => { message.textContent = 'Capabilities are unavailable.'; });
+void requestCatalogueRefresh({ initial: true });
+void renderTasks();
 setInterval(() => { void renderTasks(); }, 2000);
+refreshCapabilitiesButton.addEventListener('click', () => { void requestCatalogueRefresh(); });
 document.querySelector('#refresh-tasks').addEventListener('click', () => { void renderTasks(); });
 
 function openWebGpuEnrollment() {
