@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 import os
 import sys
 import time
@@ -18,6 +19,10 @@ TORCH: Any = None
 DEVICE = ""
 MODEL = os.environ.get("MUTUALGPU_FLUX2_MODEL", "black-forest-labs/FLUX.2-klein-4B")
 SAFETY_MODEL = os.environ.get("MUTUALGPU_FLUX2_SAFETY_MODEL", "CompVis/stable-diffusion-safety-checker")
+PREVIEW_MAX_DIMENSION = 576
+PREVIEW_TARGET_BYTES = 180 * 1024
+PREVIEW_DIMENSIONS = (PREVIEW_MAX_DIMENSION, 448, 384, 320)
+PREVIEW_COLORS = (256, 192, 128, 64)
 
 
 def emit(message: dict[str, Any]) -> None:
@@ -115,6 +120,33 @@ def image_is_inappropriate(image: Any) -> bool:
     return any(bool(flag) for flag in flags)
 
 
+def encode_preview(image: Any) -> bytes:
+    """Return a display-sized PNG without changing the full PNG result."""
+    from PIL import Image
+
+    for maximum_dimension in PREVIEW_DIMENSIONS:
+        preview = image.copy()
+        preview.thumbnail((maximum_dimension, maximum_dimension), Image.Resampling.LANCZOS)
+        if preview.mode not in ("RGB", "L"):
+            preview = preview.convert("RGB")
+        for colors in PREVIEW_COLORS:
+            palette = preview.quantize(colors=colors, method=Image.Quantize.MEDIANCUT)
+            encoded = BytesIO()
+            palette.save(encoded, format="PNG", optimize=True, compress_level=9)
+            if encoded.tell() <= PREVIEW_TARGET_BYTES:
+                return encoded.getvalue()
+
+    # The final encode is deliberately small enough to keep a noisy image within
+    # the preview budget while still preserving a useful task-list rendition.
+    preview = image.copy()
+    preview.thumbnail((256, 256), Image.Resampling.LANCZOS)
+    if preview.mode not in ("RGB", "L"):
+        preview = preview.convert("RGB")
+    encoded = BytesIO()
+    preview.quantize(colors=64, method=Image.Quantize.MEDIANCUT).save(encoded, format="PNG", optimize=True, compress_level=9)
+    return encoded.getvalue()
+
+
 def generate(request: dict[str, Any]) -> None:
     identifier = str(request["id"])
     output_directory = Path(request["outputDirectory"])
@@ -157,8 +189,10 @@ def generate(request: dict[str, Any]) -> None:
         raise RuntimeError("FLUX.2 safety checker rejected the generated image")
 
     image_path = output_directory / "image.png"
+    preview_path = output_directory / "preview.png"
     thumbnail_path = output_directory / "thumbnail.png"
     image.save(image_path, format="PNG", optimize=True)
+    preview_path.write_bytes(encode_preview(image))
     thumbnail = image.copy()
     thumbnail.thumbnail((256, 256))
     thumbnail.save(thumbnail_path, format="PNG", optimize=True)
@@ -172,6 +206,7 @@ def generate(request: dict[str, Any]) -> None:
         "numInferenceSteps": steps,
         "guidanceScale": float(request["guidanceScale"]),
         "durationMs": duration_ms,
+        "preview": {"contentType": "image/png", "maximumDimension": PREVIEW_MAX_DIMENSION},
         "safetyCheckerApplied": True,
     }
     metadata_path = output_directory / "metadata.json"

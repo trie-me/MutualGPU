@@ -3,6 +3,8 @@ import io
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 
 def load_inference_module():
     path = Path(__file__).parents[1] / "src" / "inference.py"
@@ -13,6 +15,17 @@ def load_inference_module():
 
 
 class InferenceStartupTests(unittest.TestCase):
+    def test_preview_is_display_sized_and_within_the_upload_budget(self):
+        inference = load_inference_module()
+        image = Image.effect_noise((1024, 1024), 100).convert("RGB")
+
+        encoded = inference.encode_preview(image)
+
+        self.assertLessEqual(len(encoded), inference.PREVIEW_TARGET_BYTES)
+        self.assertEqual(encoded[:8], b"\x89PNG\r\n\x1a\n")
+        with Image.open(io.BytesIO(encoded)) as preview:
+            self.assertLessEqual(max(preview.size), inference.PREVIEW_MAX_DIMENSION)
+
     def test_serve_warms_model_and_safety_checker_before_ready(self):
         inference = load_inference_module()
         events = []

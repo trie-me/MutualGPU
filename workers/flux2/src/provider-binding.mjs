@@ -53,7 +53,7 @@ export function createTaskHandler({ runtime, logger = console, chooseSeed, activ
     try {
       published = await task.uploadResult({
         resultZip: generated.resultZip,
-        preview: { data: generated.preview, contentType: "image/png", fileName: "image.png" },
+        preview: { data: generated.preview, contentType: "image/png", fileName: "preview.png" },
         thumbnail: { data: generated.thumbnail, contentType: "image/png", fileName: "thumbnail.png" },
         metadata: generated.metadata,
         logs: generated.logs

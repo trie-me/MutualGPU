@@ -208,4 +208,17 @@ async function createWebGpuEnrollment() {
   }
 }
 
-createFiberDiagnosticsOverlay({ overlay: document.querySelector('#fiber-overlay'), tree: document.querySelector('#fiber-tree'), toggle: document.querySelector('#fiber-toggle'), close: document.querySelector('#fiber-close'), reset: document.querySelector('#fiber-reset'), fit: document.querySelector('#fiber-fit'), taskOnly: document.querySelector('#fiber-task-only'), pause: document.querySelector('#fiber-pause'), status: document.querySelector('#fiber-status'), summary: document.querySelector('#fiber-summary'), history: document.querySelector('#fiber-history'), simulations: document.querySelector('#fiber-simulations'), selection: document.querySelector('#fiber-selection'), treeDetail: document.querySelector('#fiber-tree-detail'), treeDetailBody: document.querySelector('#fiber-tree-detail-body'), treeDetailClose: document.querySelector('#fiber-tree-detail-close') });
+async function enableDiagnosticsWhenAvailable() {
+  const toggle = document.querySelector('#fiber-toggle');
+  try {
+    const response = await fetch('/_netcats/fibers/snapshot', { cache: 'no-store' });
+    if (!response.ok) return;
+  } catch {
+    return;
+  }
+
+  toggle.hidden = false;
+  createFiberDiagnosticsOverlay({ overlay: document.querySelector('#fiber-overlay'), tree: document.querySelector('#fiber-tree'), toggle, close: document.querySelector('#fiber-close'), reset: document.querySelector('#fiber-reset'), fit: document.querySelector('#fiber-fit'), taskOnly: document.querySelector('#fiber-task-only'), pause: document.querySelector('#fiber-pause'), status: document.querySelector('#fiber-status'), summary: document.querySelector('#fiber-summary'), history: document.querySelector('#fiber-history'), simulations: document.querySelector('#fiber-simulations'), selection: document.querySelector('#fiber-selection'), treeDetail: document.querySelector('#fiber-tree-detail'), treeDetailBody: document.querySelector('#fiber-tree-detail-body'), treeDetailClose: document.querySelector('#fiber-tree-detail-close') });
+}
+
+void enableDiagnosticsWhenAvailable();

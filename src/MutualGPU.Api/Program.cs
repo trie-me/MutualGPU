@@ -20,16 +20,32 @@ builder.Services.Configure<FormOptions>(options =>
 });
 var providerCorsOrigins = builder.Configuration.GetSection("MutualGPU:ProviderCorsOrigins").Get<string[]>() ?? [];
 var trustForwardedProto = builder.Configuration.GetValue("MutualGPU:TrustForwardedProto", false);
+var trustedProxyNetworks = builder.Configuration.GetSection("MutualGPU:TrustedProxyNetworks").Get<string[]>() ?? [];
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     if (trustForwardedProto)
     {
-        // Set only when the host is reachable exclusively through a trusted TLS-terminating proxy.
+        if (trustedProxyNetworks.Length is 0)
+        {
+            throw new InvalidOperationException("MutualGPU:TrustedProxyNetworks must be configured when forwarded headers are trusted.");
+        }
+
+        // Accept forwarded values only from the ALB subnets, never from an arbitrary caller.
         options.KnownIPNetworks.Clear();
         options.KnownProxies.Clear();
+        foreach (var network in trustedProxyNetworks)
+        {
+            if (!System.Net.IPNetwork.TryParse(network, out var parsed))
+            {
+                throw new InvalidOperationException($"MutualGPU:TrustedProxyNetworks contains an invalid CIDR: {network}.");
+            }
+
+            options.KnownIPNetworks.Add(parsed);
+        }
     }
 });
+builder.Services.AddHsts(options => options.MaxAge = TimeSpan.FromDays(365));
 builder.Services.AddCors(options => options.AddPolicy("mutualgpu-provider", policy =>
 {
     if (providerCorsOrigins.Length > 0)
@@ -178,15 +194,15 @@ app.Use(async (context, next) =>
 app.UseCors("mutualgpu-provider");
 app.Use(async (context, next) =>
 {
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://api.producthunt.com; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
     if (context.Request.Path.StartsWithSegments("/admin"))
     {
         context.Response.Headers.CacheControl = "no-store, private";
         context.Response.Headers.Pragma = "no-cache";
-        context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
-        context.Response.Headers["X-Frame-Options"] = "DENY";
-        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
-        context.Response.Headers["Referrer-Policy"] = "no-referrer";
-        context.Response.Headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()";
     }
     await next(context);
 });

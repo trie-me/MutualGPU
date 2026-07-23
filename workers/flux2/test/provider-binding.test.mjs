@@ -59,6 +59,7 @@ test("binding accepts, publishes, and completes a generated image through the SD
   assert.equal(events.filter(([name]) => name === "progress").length, 4);
   assert.deepEqual(events.filter(([name]) => name === "progress").map(([, update]) => update.percent), [1, 50, 90, 95]);
   assert.equal(events.find(([name]) => name === "upload")[1].metadata.seed, 7);
+  assert.equal(events.find(([name]) => name === "upload")[1].preview.contentType, "image/png");
   assert.deepEqual(events.at(-1), ["complete", "receipt-1"]);
 });
 

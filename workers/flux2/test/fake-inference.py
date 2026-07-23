@@ -16,6 +16,7 @@ for line in sys.stdin:
     (output / "result.zip").write_bytes(b"PKfake")
     png = bytes((0x89, 0x50, 0x4E, 0x47, 0x00))
     (output / "image.png").write_bytes(png)
+    (output / "preview.png").write_bytes(png)
     (output / "thumbnail.png").write_bytes(png)
     print(json.dumps({
         "type": "progress", "id": request["id"], "phase": "inference",

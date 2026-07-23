@@ -34,6 +34,11 @@ Parameters:
     Type: String
     Default: 'https://yosun-triposplat-webgpu-demo.static.hf.space'
     Description: Exact Chrome-provider origin. No wildcard matching is enabled.
+  ProviderEnrollmentRateLimit:
+    Type: Number
+    Default: 10
+    MinValue: 10
+    Description: Maximum provider-identifier mints per source IP during one minute.
 
 Conditions:
   HasProviderCorsOrigin0: !Not [!Equals [!Ref ProviderCorsOrigin0, '']]
@@ -61,6 +66,68 @@ Resources:
       Tags:
         - Key: Project
           Value: MutualGPU
+
+  ProviderEnrollmentWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: mutualgpu-provider-enrollment
+      Scope: REGIONAL
+      Description: Limits anonymous provider-identifier minting while leaving enrollment open to everyone.
+      DefaultAction:
+        Allow: {}
+      CustomResponseBodies:
+        enrollmentRateLimited:
+          ContentType: APPLICATION_JSON
+          Content: '{"code":"enrollment_rate_limited"}'
+      Rules:
+        - Name: provider-enrollment-rate-limit
+          Priority: 0
+          Action:
+            Block:
+              CustomResponse:
+                ResponseCode: 429
+                CustomResponseBodyKey: enrollmentRateLimited
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              Limit: !Ref ProviderEnrollmentRateLimit
+              EvaluationWindowSec: 60
+              ScopeDownStatement:
+                AndStatement:
+                  Statements:
+                    - ByteMatchStatement:
+                        FieldToMatch:
+                          Method: {}
+                        PositionalConstraint: EXACTLY
+                        SearchString: POST
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+                    - ByteMatchStatement:
+                        FieldToMatch:
+                          UriPath: {}
+                        PositionalConstraint: EXACTLY
+                        SearchString: /api/webgpu-enrollments
+                        TextTransformations:
+                          - Priority: 0
+                            Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: providerEnrollmentRateLimit
+            SampledRequestsEnabled: false
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: mutualgpuProviderEnrollment
+        SampledRequestsEnabled: false
+      Tags:
+        - Key: Project
+          Value: MutualGPU
+
+  ProviderEnrollmentWebAclAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Ref LoadBalancer
+      WebACLArn: !GetAtt ProviderEnrollmentWebAcl.Arn
 
   WebTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -177,10 +244,10 @@ Resources:
               Value: Production
             - Name: MutualGPU__TrustForwardedProto
               Value: 'true'
-            - Name: NetCats__FiberDiagnostics__Enabled
-              Value: 'true'
-            - Name: NetCats__FiberDiagnostics__EnableInProduction
-              Value: 'true'
+            - Name: MutualGPU__TrustedProxyNetworks__0
+              Value: 10.42.0.0/20
+            - Name: MutualGPU__TrustedProxyNetworks__1
+              Value: 10.42.16.0/20
             - Name: MutualGPU__ProviderKeyS3__BucketName
               Value: !Ref ProviderKeyBucketName
             - Name: MutualGPU__ProviderKeyS3__Region

@@ -155,7 +155,7 @@ export class Flux2Runtime {
 async function collectResult(outputDirectory, metadata) {
   const [resultZip, preview, thumbnail] = await Promise.all([
     readFile(join(outputDirectory, "result.zip")),
-    readFile(join(outputDirectory, "image.png")),
+    readFile(join(outputDirectory, "preview.png")),
     readFile(join(outputDirectory, "thumbnail.png"))
   ]);
   assertSize(resultZip, MAX_ZIP_BYTES, "result ZIP");
