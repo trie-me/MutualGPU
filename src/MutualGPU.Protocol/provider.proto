@@ -61,6 +61,9 @@ message TaskAssignment {
 message InputDownloadAuthorization { string url = 1; }
 message ResultUploadAuthorization { string upload_token = 1; }
 message CompletionAccepted { string task_id = 1; }
+// Instructs the provider to stop an accepted assignment. The handle makes the
+// request unambiguous when a provider reconnects or receives a later attempt.
+message TaskCancelled { string task_id = 1; string attempt_id = 2; string task_handle = 3; }
 message ProtocolError { string code = 1; string message = 2; }
 message ServerMessage {
   oneof body {
@@ -70,5 +73,6 @@ message ServerMessage {
     ResultUploadAuthorization result_upload = 4;
     CompletionAccepted completion = 5;
     ProtocolError error = 6;
+    TaskCancelled cancelled = 7;
   }
 }

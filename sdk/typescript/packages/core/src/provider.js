@@ -80,7 +80,8 @@ export class ProviderClient {
     const opening = Promise.resolve(this.#transport.connect(
       async assignment => this.#receive(assignment),
       activeTaskHandle,
-      error => this.#disconnected(error)));
+      error => this.#disconnected(error),
+      cancellation => this.#cancel(cancellation)));
     this.#connection = opening;
     try {
       await opening;
@@ -138,7 +139,7 @@ export class ProviderClient {
       }
     }
 
-    const active = { assignment, state: "pending" };
+    const active = { assignment, state: "pending", abortController: new AbortController() };
     this.#active = active;
     this.#progressSequence = 0;
     this.#lastProgressAt = 0;
@@ -161,6 +162,20 @@ export class ProviderClient {
         if (this.#recycleWhenIdle) this.#transport.close?.();
         else this.#scheduleLifecycleCheck();
       }
+    }
+  }
+
+  #cancel(cancellation) {
+    const active = this.#active;
+    if (!active || active.state === "terminal") return;
+    const { assignment } = active;
+    if (assignment.taskId !== cancellation.taskId || assignment.attemptId !== cancellation.attemptId || assignment.taskHandle !== cancellation.taskHandle) return;
+    active.state = "terminal";
+    active.abortController.abort();
+    if (this.#active === active) {
+      this.#active = null;
+      if (this.#recycleWhenIdle) this.#transport.close?.();
+      else this.#scheduleLifecycleCheck();
     }
   }
 
@@ -208,6 +223,7 @@ export class ProviderClient {
     return Object.freeze({
       ...assignment,
       acknowledgementDeadline: new Date(Date.now() + 30_000),
+      signal: active.abortController.signal,
       accept: () => this.#accept(active),
       reject: reason => this.#reject(active, reason),
       reportProgress: async update => {

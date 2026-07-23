@@ -138,6 +138,8 @@ public sealed class DisconnectRecoveryTests
 
         public bool TryDeliver(ExecutionUnitId executionUnitId, ProviderAssignment assignment) => false;
 
+        public bool TryCancel(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle) => false;
+
         public void Track(ExecutionUnitId executionUnitId, TaskRequest trackedTask, TaskAttempt trackedAttempt) { }
 
         public bool TryGet(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle, out TaskRequest found)

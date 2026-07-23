@@ -9,6 +9,7 @@ public enum TaskStatus
     Assigned,
     Running,
     Completed,
+    Cancelled,
     Failed,
 }
 
@@ -20,6 +21,7 @@ public enum AttemptState
     Rejected,
     Disconnected,
     Revoked,
+    Cancelled,
     Completed,
     Failed,
 }
@@ -200,6 +202,24 @@ public sealed class TaskRequest
         ReplaceAttempt(attempt with { State = AttemptState.Completed });
         Result = result;
         Status = TaskStatus.Completed;
+    }
+
+    /// <summary>Ends this requestor-owned task and invalidates any active assignment handle.</summary>
+    public TaskAttempt? Cancel()
+    {
+        if (Status is TaskStatus.Completed or TaskStatus.Cancelled or TaskStatus.Failed)
+        {
+            throw new DomainRuleViolation("task_not_cancellable", "Only queued or active tasks may be cancelled.");
+        }
+
+        var active = attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Assigned or AttemptState.Accepted or AttemptState.Disconnected);
+        if (active is not null)
+        {
+            ReplaceAttempt(active with { State = AttemptState.Cancelled, FailureStep = "requestor_cancelled", FailureReason = "The requestor cancelled the task." });
+        }
+
+        Status = TaskStatus.Cancelled;
+        return active;
     }
 
     private TaskAttempt GetOwnedAttempt(AttemptId attemptId, string handle, params AttemptState[] expectedStates)

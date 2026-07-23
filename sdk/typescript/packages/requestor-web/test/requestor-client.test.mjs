@@ -16,6 +16,7 @@ test("requestor client covers every finite requestor endpoint with credentials",
     json({ taskId: "task" }),
     json({ taskId: "created-json" }, { status: 201, headers: { Location: "/api/tasks/created-json" } }),
     json({ taskId: "created-image" }, { status: 201, headers: { Location: "/api/tasks/created-image" } }),
+    new Response(null, { status: 204 }),
     new Response(null, { status: 202, headers: { Location: "/api/tasks/task" } }),
     json({ taskId: "task", artifacts: [] }),
     json({ executionUnitId: "unit", providerKey: "secret" })
@@ -39,6 +40,7 @@ test("requestor client covers every finite requestor endpoint with credentials",
   assert.equal((await client.getTask("task")).taskId, "task");
   assert.equal((await client.submitTask(submission)).taskId, "created-json");
   assert.equal((await client.submitTask(submission, new Blob(["image"], { type: "image/png" }))).taskId, "created-image");
+  await client.cancelTask("task");
   assert.deepEqual(await client.reevaluateTask("task"), { location: "/api/tasks/task", task: null });
   assert.deepEqual(await client.getTaskResult("task"), { taskId: "task", artifacts: [] });
   assert.deepEqual(await client.createWebGpuEnrollment(), { executionUnitId: "unit", providerKey: "secret" });
@@ -50,6 +52,7 @@ test("requestor client covers every finite requestor endpoint with credentials",
     ["GET", "/api/tasks/task"],
     ["POST", "/api/tasks/"],
     ["POST", "/api/tasks/"],
+    ["DELETE", "/api/tasks/task"],
     ["POST", "/api/tasks/task/reevaluate"],
     ["GET", "/api/tasks/task/result"],
     ["POST", "/api/webgpu-enrollments"]

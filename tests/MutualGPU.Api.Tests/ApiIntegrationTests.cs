@@ -497,6 +497,41 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
+    public async Task Requestor_cancellation_sends_an_exact_wss_control_frame_and_invalidates_the_attempt()
+    {
+        using var requestor = CreateHttpsClient();
+        using var bootstrap = await requestor.GetAsync("/");
+        var cookie = Assert.Single(bootstrap.Headers.GetValues("Set-Cookie"), value => value.StartsWith($"{RequestorIdentity.CookieName}=", StringComparison.Ordinal));
+        var requestorId = new RequestorId(Guid.Parse(cookie.Split(';', 2)[0].Split('=', 2)[1]));
+        var capability = new CapabilityDefinition(CapabilityId.New(), "wss-cancel-test", [], new OutputDefinition(), "wss-cancel-contract");
+        var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var units = factory.Services.GetRequiredService<IExecutionUnitRepository>();
+        var tasks = factory.Services.GetRequiredService<ITaskRepository>();
+        await units.SaveAsync(unit, CancellationToken.None);
+        var task = new TaskRequest(TaskId.New(), requestorId, capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        await tasks.SaveAsync(task, CancellationToken.None);
+
+        using var socket = await factory.Server.CreateWebSocketClient().ConnectAsync(new Uri("wss://localhost/provider/connect"), CancellationToken.None);
+        await SendAsync(socket, new ProviderMessage { Connect = new ConnectRequest { ProtocolVersion = 1, Authorization = ProviderKey } });
+        _ = await ReceiveAsync(socket);
+        Assert.Equal(1, await factory.Services.GetRequiredService<SchedulerApplication>().Evaluate(DateTimeOffset.UtcNow).RunAsync(CancellationToken.None));
+        var assignment = (await ReceiveAsync(socket)).Assignment;
+        await SendAsync(socket, new ProviderMessage { Accepted = new TaskAccepted { TaskId = assignment.TaskId, AttemptId = assignment.AttemptId, TaskHandle = assignment.TaskHandle } });
+
+        using var cancellation = await requestor.DeleteAsync($"/api/tasks/{task.Id.Value:D}");
+        Assert.Equal(System.Net.HttpStatusCode.NoContent, cancellation.StatusCode);
+        var cancelled = (await ReceiveAsync(socket)).Cancelled;
+        Assert.Equal(assignment.TaskId, cancelled.TaskId);
+        Assert.Equal(assignment.AttemptId, cancelled.AttemptId);
+        Assert.Equal(assignment.TaskHandle, cancelled.TaskHandle);
+        var reloaded = await tasks.GetAsync(requestorId, task.Id, CancellationToken.None);
+        Assert.Equal(MutualGPU.Domain.TaskStatus.Cancelled, reloaded!.Status);
+        Assert.Equal(AttemptState.Cancelled, Assert.Single(reloaded.Attempts).State);
+
+        await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Websocket_provider_disconnect_removes_its_capability_from_the_requestor_catalogue()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "disconnect-catalogue-test", [], new OutputDefinition(), "disconnect-catalogue-contract");

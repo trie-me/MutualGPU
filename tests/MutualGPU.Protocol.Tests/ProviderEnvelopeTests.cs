@@ -54,4 +54,20 @@ public sealed class ProviderEnvelopeTests
         Assert.Equal(upload, ProviderMessage.Parser.ParseFrom(upload.ToByteArray()));
         Assert.Equal(progress, ProviderMessage.Parser.ParseFrom(progress.ToByteArray()));
     }
+
+    [Fact]
+    public void Requestor_cancellation_envelope_preserves_the_exact_attempt_handle()
+    {
+        var cancellation = new ServerMessage
+        {
+            Cancelled = new TaskCancelled { TaskId = "task", AttemptId = "attempt", TaskHandle = "handle" },
+        };
+
+        var parsed = ServerMessage.Parser.ParseFrom(cancellation.ToByteArray());
+
+        Assert.Equal(ServerMessage.BodyOneofCase.Cancelled, parsed.BodyCase);
+        Assert.Equal("task", parsed.Cancelled.TaskId);
+        Assert.Equal("attempt", parsed.Cancelled.AttemptId);
+        Assert.Equal("handle", parsed.Cancelled.TaskHandle);
+    }
 }

@@ -197,6 +197,7 @@ public sealed class SchedulerApplicationTests
             presence.MarkBusy(executionUnitId);
             return true;
         }
+        public bool TryCancel(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle) => false;
         public void Track(ExecutionUnitId executionUnitId, TaskRequest task, TaskAttempt attempt) { }
         public bool TryGet(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle, out TaskRequest task) { task = null!; return false; }
         public void Remove(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId) => Removed.Add((executionUnitId, taskId, attemptId));

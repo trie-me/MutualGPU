@@ -49,6 +49,7 @@ test("canonical protobuf bytes round-trip with the .NET provider contracts", () 
       input: { url: "https://input.example/a", contentType: "image/png", length: 42, sha256: "digest" }
     }
   });
+  const cancelled = MutualGpuProtocol.encodeServer({ cancelled: { taskId: "task", attemptId: "attempt", taskHandle: "handle" } });
 
   assert.equal(Buffer.from(connect).toString("base64"), "CgcIARoDa2V5");
   assert.equal(Buffer.from(resultUpload).toString("base64"), "MhcKBmhhbmRsZRIEdGFzaxoHYXR0ZW1wdA==");
@@ -63,6 +64,7 @@ test("canonical protobuf bytes round-trip with the .NET provider contracts", () 
       input: { url: "https://input.example/a", contentType: "image/png", length: 42, sha256: "digest" }
     }
   });
+  assert.deepEqual(MutualGpuProtocol.decodeServer(cancelled), { cancelled: { taskId: "task", attemptId: "attempt", taskHandle: "handle" } });
 });
 
 test("provider explicitly accepts one assignment and coalesces progress", async () => {
@@ -84,6 +86,32 @@ test("provider explicitly accepts one assignment and coalesces progress", async 
   });
   await receive({ taskHandle: "opaque" });
   assert.deepEqual(calls, [["accept", "opaque"], ["progress", 1], ["complete"]]);
+});
+
+test("requestor cancellation aborts only the matching provider task", async () => {
+  let receive;
+  let cancel;
+  let signal;
+  const transport = {
+    connect: async (onAssignment, _handle, _disconnect, onCancellation) => { receive = onAssignment; cancel = onCancellation; },
+    accept: async () => {}, reject: async () => {}, progress: async () => {}, fail: async () => {},
+    refreshInputDownload: async () => "url", requestResultUpload: async () => "token", complete: async () => {}
+  };
+  const client = new ProviderClient(transport);
+  await client.connect(async task => {
+    await task.accept();
+    signal = task.signal;
+    await new Promise(resolve => task.signal.addEventListener("abort", resolve, { once: true }));
+  });
+
+  const handling = receive({ taskId: "task", attemptId: "attempt", taskHandle: "handle" });
+  await new Promise(resolve => setImmediate(resolve));
+  cancel({ taskId: "other", attemptId: "attempt", taskHandle: "handle" });
+  assert.equal(signal.aborted, false);
+  cancel({ taskId: "task", attemptId: "attempt", taskHandle: "handle" });
+  await handling;
+  assert.equal(signal.aborted, true);
+  client.close();
 });
 
 test("provider can reject before acceptance and rejects a handler that never acknowledges", async () => {

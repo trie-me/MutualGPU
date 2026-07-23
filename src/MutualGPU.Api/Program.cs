@@ -259,6 +259,7 @@ var tasks = app.MapGroup("/api/tasks");
 tasks.MapPost("/", MutualGpuEndpoints.SubmitTask);
 tasks.MapGet("/", MutualGpuEndpoints.ListTasks);
 tasks.MapGet("/{taskId:guid}", MutualGpuEndpoints.GetTask);
+tasks.MapDelete("/{taskId:guid}", MutualGpuEndpoints.CancelTask);
 tasks.MapPost("/{taskId:guid}/reevaluate", MutualGpuEndpoints.ReevaluateTask);
 tasks.MapGet("/{taskId:guid}/result", MutualGpuEndpoints.GetTaskResult);
 

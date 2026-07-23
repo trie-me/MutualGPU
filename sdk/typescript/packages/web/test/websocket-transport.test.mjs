@@ -104,6 +104,29 @@ test("browser transport maps task control, input refresh, upload authorization, 
   }
 });
 
+test("browser transport forwards a matching cancellation frame", async () => {
+  const previous = globalThis.WebSocket;
+  let socket;
+  class FakeWebSocket {
+    constructor() { socket = this; queueMicrotask(() => this.onopen?.()); }
+    send(bytes) {
+      if (MutualGpuProtocol.decodeProvider(new Uint8Array(bytes)).connect)
+        queueMicrotask(() => this.onmessage?.({ data: MutualGpuProtocol.encodeServer({ connected: { executionUnitId: "unit" } }).buffer }));
+    }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const transport = new BrowserWebSocketTransport("wss://mutualgpu.example/provider/connect", "provider-key", "https://mutualgpu.example/");
+    let cancellation;
+    await transport.connect(async () => {}, "", () => {}, value => { cancellation = value; });
+    socket.onmessage({ data: MutualGpuProtocol.encodeServer({ cancelled: { taskId: "task", attemptId: "attempt", taskHandle: "handle" } }).buffer });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(cancellation, { taskId: "task", attemptId: "attempt", taskHandle: "handle" });
+  } finally {
+    globalThis.WebSocket = previous;
+  }
+});
+
 test("browser transport rebinds the supplied active handle and reports a closed session", async () => {
   const previous = globalThis.WebSocket;
   let socket;

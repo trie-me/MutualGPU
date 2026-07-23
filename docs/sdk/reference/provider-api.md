@@ -71,6 +71,7 @@ The handler passed to `connect` receives a frozen task object.
 | `scalars` | object of string values | Submitted scalar inputs keyed by enrollment input key |
 | `input` | object or absent | `{ url, contentType, length, sha256 }` for the optional image input |
 | `acknowledgementDeadline` | `Date` | Local 30-second acknowledgement deadline calculated when the assignment is received |
+| `signal` | `AbortSignal` | Aborted when the requestor cancels this exact task attempt |
 
 ### State transitions
 
@@ -97,6 +98,8 @@ If the handler returns while pending, the SDK rejects the assignment. If it retu
 `requestResultUpload()` is present on the current facade for transport-level integration, but ordinary consumers should use `uploadResult()` so the SDK owns token acquisition, multipart construction, checksum calculation, and receipt validation.
 
 Progress updates accept `{ phase, percent, message }`. Calls inside the one-second window are dropped rather than queued; execution must never depend on delivery of every intermediate update.
+
+Requestor cancellation is terminal immediately: the SDK aborts `task.signal`, invalidates the task facade, and releases the provider session without waiting for the handler to return. Do not call `complete`, `fail`, or upload methods after the signal aborts. Browser JavaScript cannot preempt synchronous main-thread code; run force-terminable workloads in a Worker when that isolation is required.
 
 ## Result object
 

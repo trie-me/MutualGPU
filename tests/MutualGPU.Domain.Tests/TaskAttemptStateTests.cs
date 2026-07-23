@@ -51,4 +51,20 @@ public sealed class TaskAttemptStateTests
         Assert.Equal(TaskStatus.Running, task.Status);
         Assert.Equal(AttemptState.Accepted, task.Attempts.Single().State);
     }
+
+    [Fact]
+    public void Requestor_cancellation_is_terminal_and_invalidates_the_active_handle()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UnixEpoch);
+        var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), "valid-handle", DateTimeOffset.UnixEpoch);
+        task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UnixEpoch.AddSeconds(1));
+
+        var cancelled = task.Cancel();
+
+        Assert.Equal(attempt.Id, cancelled?.Id);
+        Assert.Equal(TaskStatus.Cancelled, task.Status);
+        Assert.Equal(AttemptState.Cancelled, task.Attempts.Single().State);
+        Assert.Throws<DomainRuleViolation>(() => task.Complete(attempt.Id, attempt.Handle, new TaskResult(new ResultArtifact(ArtifactId.New(), "application/zip", 1, "digest"))));
+    }
 }

@@ -103,9 +103,17 @@ public sealed record ProviderAssignment(
     IReadOnlyDictionary<string, string> Scalars,
     ProviderInputAssignment? Input = null);
 
+public abstract record ProviderServerMessage;
+
+public sealed record ProviderAssignmentMessage(ProviderAssignment Assignment) : ProviderServerMessage;
+
+public sealed record ProviderCancellation(TaskId TaskId, AttemptId AttemptId, string Handle) : ProviderServerMessage;
+
 public interface IProviderAssignments
 {
     bool TryDeliver(ExecutionUnitId executionUnitId, ProviderAssignment assignment);
+
+    bool TryCancel(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle);
 
     void Track(ExecutionUnitId executionUnitId, TaskRequest task, TaskAttempt attempt);
 

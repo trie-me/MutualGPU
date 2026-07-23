@@ -23,7 +23,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         ArgumentNullException.ThrowIfNull(unit);
         lock (gate)
         {
-            var channel = Channel.CreateBounded<ProviderAssignment>(new BoundedChannelOptions(8)
+            var channel = Channel.CreateBounded<ProviderServerMessage>(new BoundedChannelOptions(8)
             {
                 FullMode = BoundedChannelFullMode.DropWrite,
                 SingleReader = true,
@@ -120,10 +120,22 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         lock (gate)
         {
             if (!connections.TryGetValue(executionUnitId, out var connection) || !connection.IsIdle) return false;
-            if (!connection.Outbound.Writer.TryWrite(assignment)) return false;
+            if (!connection.Outbound.Writer.TryWrite(new ProviderAssignmentMessage(assignment))) return false;
             connections[executionUnitId] = connection with { IsIdle = false };
             if (sessions.TryGetValue(connection.SessionId, out var session))
                 AddEvent(session, "assignment_delivered", "Assignment delivered to provider.", timeProvider.GetUtcNow(), assignment.TaskId, assignment.AttemptId);
+            return true;
+        }
+    }
+
+    public bool TryCancel(ExecutionUnitId executionUnitId, TaskId taskId, AttemptId attemptId, string handle)
+    {
+        lock (gate)
+        {
+            if (!connections.TryGetValue(executionUnitId, out var connection)) return false;
+            if (!connection.Outbound.Writer.TryWrite(new ProviderCancellation(taskId, attemptId, handle))) return false;
+            if (sessions.TryGetValue(connection.SessionId, out var session))
+                AddEvent(session, "cancellation_requested", "Requestor cancelled the assignment.", timeProvider.GetUtcNow(), taskId, attemptId);
             return true;
         }
     }
@@ -336,7 +348,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     private readonly Dictionary<(ExecutionUnitId UnitId, TaskId TaskId, AttemptId AttemptId), ActiveProviderAssignment> active = [];
     private readonly Dictionary<TaskId, TaskProgress> progresses = [];
 
-    private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlyList<CapabilityDefinition> Capabilities, bool IsIdle, Channel<ProviderAssignment> Outbound);
+    private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlyList<CapabilityDefinition> Capabilities, bool IsIdle, Channel<ProviderServerMessage> Outbound);
 
     private sealed class MutableSession(Guid sessionId, ExecutionUnitId executionUnitId, string transport, string? sourceIp, string? providerName, DateTimeOffset connectedAt)
     {
@@ -353,7 +365,7 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     }
 }
 
-public sealed record ProviderSessionLease(ExecutionUnitId ExecutionUnitId, Guid SessionId, ChannelReader<ProviderAssignment> Assignments);
+public sealed record ProviderSessionLease(ExecutionUnitId ExecutionUnitId, Guid SessionId, ChannelReader<ProviderServerMessage> Assignments);
 
 public sealed record AdminDiagnosticsSnapshot(
     IReadOnlyList<AdminSessionSnapshot> Sessions,

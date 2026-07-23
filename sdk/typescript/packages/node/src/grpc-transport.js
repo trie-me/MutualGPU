@@ -123,7 +123,7 @@ class NativeGrpcSession {
     }
   }
 
-  async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {}) {
+  async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {}, onCancellation = () => {}) {
     if (this.#stream && !this.#stream.destroyed && !this.#stream.closed) {
       throw new Error("The MutualGPU gRPC provider session is already connected.");
     }
@@ -144,7 +144,7 @@ class NativeGrpcSession {
     session.on("error", end);
     stream.on("data", chunk => {
       try {
-        for (const payload of reader.push(chunk)) this.#receive(stream, this.#codec.decodeServer(payload), onAssignment);
+        for (const payload of reader.push(chunk)) this.#receive(stream, this.#codec.decodeServer(payload), onAssignment, onCancellation);
       } catch (error) {
         end(error);
       }
@@ -189,7 +189,7 @@ class NativeGrpcSession {
     session?.close();
   }
 
-  #receive(stream, message, onAssignment) {
+  #receive(stream, message, onAssignment, onCancellation) {
     if (stream !== this.#stream) return;
     if (message.connected && !this.#connected) {
       this.#connected = true;
@@ -199,6 +199,7 @@ class NativeGrpcSession {
     if (message.assignment) {
       void Promise.resolve(onAssignment(message.assignment)).catch(error => this.#end(stream, error));
     }
+    if (message.cancelled) onCancellation(message.cancelled);
     if (message.inputDownload) this.#resolveInput(message.inputDownload.url);
     if (message.resultUpload) this.#uploadWaiters.shift()?.resolve(message.resultUpload.uploadToken);
     if (message.completion) this.#completionWaiters.shift()?.resolve(message.completion);
@@ -289,10 +290,10 @@ export class NodeGrpcTransport {
       : this.#legacy.enroll(definition, { authorization: `Bearer ${this.presharedKey}` });
   }
 
-  async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {}) {
+  async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {}, onCancellation = () => {}) {
     return this.#native
-      ? this.#native.connect(onAssignment, activeTaskHandle, onDisconnect)
-      : this.#legacy.connect({ authorization: `Bearer ${this.presharedKey}` }, onAssignment, activeTaskHandle, onDisconnect);
+      ? this.#native.connect(onAssignment, activeTaskHandle, onDisconnect, onCancellation)
+      : this.#legacy.connect({ authorization: `Bearer ${this.presharedKey}` }, onAssignment, activeTaskHandle, onDisconnect, onCancellation);
   }
 
   accept(task) { return this.#sendOrLegacy({ accepted: wire(task) }, () => this.#legacy.send({ accepted: wire(task) })); }

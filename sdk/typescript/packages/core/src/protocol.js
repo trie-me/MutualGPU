@@ -115,6 +115,7 @@ const encodeServer = value => {
   else if (value.resultUpload) writer.message(4, new Writer().string(1, value.resultUpload.uploadToken).finish());
   else if (value.completion) writer.message(5, new Writer().string(1, value.completion.taskId).finish());
   else if (value.error) writer.message(6, new Writer().string(1, value.error.code).string(2, value.error.message).finish());
+  else if (value.cancelled) writer.message(7, taskWire(value.cancelled));
   else throw new TypeError("a ServerMessage body is required");
   return writer.finish();
 };
@@ -127,6 +128,7 @@ const decodeServer = value => {
   if (fields.has(4)) return { resultUpload: { uploadToken: text(nested(fields, 4), 1) } };
   if (fields.has(5)) return { completion: { taskId: text(nested(fields, 5), 1) } };
   if (fields.has(6)) { const error = nested(fields, 6); return { error: { code: text(error, 1), message: text(error, 2) } }; }
+  if (fields.has(7)) return { cancelled: decodeTask(nested(fields, 7)) };
   throw new TypeError("ServerMessage body is required");
 };
 

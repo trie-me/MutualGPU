@@ -34,6 +34,10 @@ export class RequestorClient {
     return (await this.#send(`/api/tasks/${segment(taskId)}`)).data;
   }
 
+  async cancelTask(taskId) {
+    await this.#send(`/api/tasks/${segment(taskId)}`, { method: "DELETE" });
+  }
+
   async submitTask(submission, image = null) {
     if (!submission || typeof submission !== "object") throw new TypeError("A task submission is required.");
     if (image == null) {

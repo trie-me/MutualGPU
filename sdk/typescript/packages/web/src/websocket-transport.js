@@ -51,7 +51,7 @@ export class BrowserWebSocketTransport {
     return this.codec.decodeEnrollResponse(new Uint8Array(await response.arrayBuffer()));
   }
 
-  async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {}) {
+  async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {}, onCancellation = () => {}) {
     if (typeof WebSocket !== "function") throw new TypeError("WebSocket is required to connect a browser provider.");
     if (this.#socket) throw new Error("The MutualGPU browser provider session is already connected.");
 
@@ -72,7 +72,7 @@ export class BrowserWebSocketTransport {
     };
 
     socket.onmessage = event => {
-      void this.#receive(event.data, onAssignment, () => { connected = true; resolveConnected(); })
+      void this.#receive(event.data, onAssignment, () => { connected = true; resolveConnected(); }, onCancellation)
         .catch(error => { disconnect(error); socket.close(); });
     };
     socket.onerror = () => disconnect(new Error("The MutualGPU provider WebSocket failed."));
@@ -98,7 +98,7 @@ export class BrowserWebSocketTransport {
 
   close() { this.#socket?.close(); }
 
-  async #receive(data, onAssignment, connected) {
+  async #receive(data, onAssignment, connected, onCancellation) {
     const bytes = data instanceof Blob
       ? new Uint8Array(await data.arrayBuffer())
       : data instanceof ArrayBuffer
@@ -109,6 +109,7 @@ export class BrowserWebSocketTransport {
     const message = this.codec.decodeServer(bytes);
     if (message.connected) connected();
     if (message.assignment) await onAssignment(message.assignment);
+    if (message.cancelled) onCancellation(message.cancelled);
     if (message.inputDownload) this.#resolveInput(message.inputDownload.url);
     if (message.resultUpload) this.#uploadWaiters.shift()?.resolve(message.resultUpload.uploadToken);
     if (message.completion) this.#completionWaiters.shift()?.resolve(message.completion);

@@ -19,11 +19,14 @@ Before the first API operation, the client performs one uncached credentialed `G
 | `listTasks()` | `GET /api/tasks/` |
 | `getTask(taskId)` | `GET /api/tasks/{taskId}` |
 | `submitTask(submission, image?)` | `POST /api/tasks/` |
+| `cancelTask(taskId)` | `DELETE /api/tasks/{taskId}` |
 | `reevaluateTask(taskId)` | `POST /api/tasks/{taskId}/reevaluate` |
 | `getTaskResult(taskId)` | `GET /api/tasks/{taskId}/result` |
 | `createWebGpuEnrollment()` | `POST /api/webgpu-enrollments` |
 
 `submitTask` sends JSON when `image` is omitted and multipart form data when passed a `Blob` or `File`. Keep scalar values as strings and echo the current capability contract hash.
+
+`cancelTask` is requestor-owned and terminal. For an assigned or running task, the API invalidates the attempt handle and sends the provider a cancellation control frame; the provider SDK aborts that task's `AbortSignal`. A `409 task_not_cancellable` means the task has already reached a terminal state.
 
 Failures throw `RequestorApiError` with `status`, `code`, `problem`, and raw `body` properties. Result artifact download URLs are short-lived; request a fresh result descriptor after expiry.
 

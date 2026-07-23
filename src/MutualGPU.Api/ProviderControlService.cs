@@ -187,8 +187,23 @@ public sealed class ProviderControlService(
 
     private async Task WriteAssignmentsAsync(ProviderSessionLease lease, IServerStreamWriter<ServerMessage> response, SemaphoreSlim responseGate, CancellationToken cancellationToken)
     {
-        await foreach (var assignment in lease.Assignments.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        await foreach (var message in lease.Assignments.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
+            if (message is ProviderCancellation cancelled)
+            {
+                await WriteAsync(response, responseGate, new ServerMessage
+                {
+                    Cancelled = new TaskCancelled
+                    {
+                        TaskId = cancelled.TaskId.Value.ToString("D"),
+                        AttemptId = cancelled.AttemptId.Value.ToString("D"),
+                        TaskHandle = cancelled.Handle,
+                    },
+                }, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+
+            var assignment = ((ProviderAssignmentMessage)message).Assignment;
             var wire = new TaskAssignment
             {
                 TaskId = assignment.TaskId.Value.ToString("D"),

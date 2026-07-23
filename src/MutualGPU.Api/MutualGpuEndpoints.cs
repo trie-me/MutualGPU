@@ -205,6 +205,27 @@ public static class MutualGpuEndpoints
         return TypedResults.Accepted($"/api/tasks/{taskId:D}");
     }
 
+    public static async Task<IResult> CancelTask(HttpContext context, Guid taskId, ITaskRepository tasks, IProviderAssignments assignments, IProviderProgress progress, IApplicationEventSink events, CancellationToken cancellationToken)
+    {
+        if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
+        var task = await tasks.GetAsync(requestorId, new TaskId(taskId), cancellationToken).ConfigureAwait(false);
+        if (task is null) return TypedResults.NotFound();
+
+        TaskAttempt? active;
+        try { active = task.Cancel(); }
+        catch (DomainRuleViolation) { return Problem("task_not_cancellable", StatusCodes.Status409Conflict); }
+
+        await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
+        if (active is not null)
+        {
+            assignments.TryCancel(active.ExecutionUnitId, task.Id, active.Id, active.Handle);
+            assignments.Remove(active.ExecutionUnitId, task.Id, active.Id);
+        }
+        progress.Remove(task.Id);
+        events.TriggerScheduler();
+        return TypedResults.NoContent();
+    }
+
     public static async Task<IResult> GetTaskResult(HttpContext context, Guid taskId, ITaskRepository tasks, IObjectStore store, MutualGPU.Infrastructure.MutualGpuObjectKeys keys, CancellationToken cancellationToken)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
@@ -237,9 +258,9 @@ public static class MutualGpuEndpoints
     private static TaskDto ToDto(TaskRequest task, TaskProgress? progress = null) => new(
         task.Id.Value, task.Capability.Name, task.CreatedAt, task.Resources,
         task.Status, task.AssignmentCount,
-        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureStep,
+        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked or AttemptState.Cancelled)?.FailureStep,
         task.Status is MutualGPU.Domain.TaskStatus.Running, task.Status is MutualGPU.Domain.TaskStatus.Completed, ToDto(progress),
-        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked)?.FailureReason);
+        task.Attempts.LastOrDefault(static attempt => attempt.State is AttemptState.Failed or AttemptState.Rejected or AttemptState.Revoked or AttemptState.Cancelled)?.FailureReason);
 
     private static TaskProgressDto? ToDto(TaskProgress? progress) => progress is null ? null : new TaskProgressDto(progress.SequenceNumber, progress.ObservedAt, progress.Phase, progress.Percent, progress.Message);
 

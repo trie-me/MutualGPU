@@ -243,6 +243,20 @@ Receiving an assignment is not acceptance. If the handler returns while pending,
 
 The task facade exposes an `acknowledgementDeadline` set to 30 seconds after local assignment receipt. Treat it as an operational deadline, not as a durable server timestamp. Accept or reject promptly instead of waiting until the final instant.
 
+## Requestor cancellation
+
+The requestor can cancel an accepted assignment. Cancellation is terminal immediately: the SDK aborts `task.signal` and invalidates its task facade without waiting for the handler to return. Pass the signal to abortable APIs. If a workload must be forcibly interrupted, run it in a dedicated Worker and terminate that Worker from the provider application; JavaScript cannot preempt synchronous code on the main thread.
+
+```js
+await provider.connect(async task => {
+  await task.accept();
+  const resultZip = await runWebGpuWork(task.scalars, { signal: task.signal });
+  if (task.signal.aborted) return;
+  const { receipt } = await task.uploadResult({ resultZip });
+  if (!task.signal.aborted) await task.complete(receipt);
+});
+```
+
 ## Read task inputs
 
 Scalar values are available as strings:

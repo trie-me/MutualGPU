@@ -70,7 +70,8 @@ var ProviderClient = class {
     const opening = Promise.resolve(this.#transport.connect(
       async (assignment) => this.#receive(assignment),
       activeTaskHandle,
-      (error) => this.#disconnected(error)
+      (error) => this.#disconnected(error),
+      (cancellation) => this.#cancel(cancellation)
     ));
     this.#connection = opening;
     try {
@@ -123,7 +124,7 @@ var ProviderClient = class {
         return;
       }
     }
-    const active = { assignment, state: "pending" };
+    const active = { assignment, state: "pending", abortController: new AbortController() };
     this.#active = active;
     this.#progressSequence = 0;
     this.#lastProgressAt = 0;
@@ -145,6 +146,19 @@ var ProviderClient = class {
         if (this.#recycleWhenIdle) this.#transport.close?.();
         else this.#scheduleLifecycleCheck();
       }
+    }
+  }
+  #cancel(cancellation) {
+    const active = this.#active;
+    if (!active || active.state === "terminal") return;
+    const { assignment } = active;
+    if (assignment.taskId !== cancellation.taskId || assignment.attemptId !== cancellation.attemptId || assignment.taskHandle !== cancellation.taskHandle) return;
+    active.state = "terminal";
+    active.abortController.abort();
+    if (this.#active === active) {
+      this.#active = null;
+      if (this.#recycleWhenIdle) this.#transport.close?.();
+      else this.#scheduleLifecycleCheck();
     }
   }
   #scheduleLifecycleCheck() {
@@ -185,6 +199,7 @@ var ProviderClient = class {
     return Object.freeze({
       ...assignment,
       acknowledgementDeadline: new Date(Date.now() + 3e4),
+      signal: active.abortController.signal,
       accept: () => this.#accept(active),
       reject: (reason) => this.#reject(active, reason),
       reportProgress: async (update) => {
@@ -528,6 +543,7 @@ var encodeServer = (value) => {
   else if (value.resultUpload) writer.message(4, new Writer().string(1, value.resultUpload.uploadToken).finish());
   else if (value.completion) writer.message(5, new Writer().string(1, value.completion.taskId).finish());
   else if (value.error) writer.message(6, new Writer().string(1, value.error.code).string(2, value.error.message).finish());
+  else if (value.cancelled) writer.message(7, taskWire(value.cancelled));
   else throw new TypeError("a ServerMessage body is required");
   return writer.finish();
 };
@@ -542,6 +558,7 @@ var decodeServer = (value) => {
     const error = nested(fields, 6);
     return { error: { code: text(error, 1), message: text(error, 2) } };
   }
+  if (fields.has(7)) return { cancelled: decodeTask(nested(fields, 7)) };
   throw new TypeError("ServerMessage body is required");
 };
 var MutualGpuProtocol = Object.freeze({
@@ -595,6 +612,7 @@ var BrowserWebSocketTransport = class {
     return this.codec.decodeEnrollResponse(new Uint8Array(await response.arrayBuffer()));
   }
   async connect(onAssignment, activeTaskHandle = "", onDisconnect = () => {
+  }, onCancellation = () => {
   }) {
     if (typeof WebSocket !== "function") throw new TypeError("WebSocket is required to connect a browser provider.");
     if (this.#socket) throw new Error("The MutualGPU browser provider session is already connected.");
@@ -621,7 +639,7 @@ var BrowserWebSocketTransport = class {
       void this.#receive(event.data, onAssignment, () => {
         connected = true;
         resolveConnected();
-      }).catch((error) => {
+      }, onCancellation).catch((error) => {
         disconnect(error);
         socket.close();
       });
@@ -663,13 +681,14 @@ var BrowserWebSocketTransport = class {
   close() {
     this.#socket?.close();
   }
-  async #receive(data, onAssignment, connected) {
+  async #receive(data, onAssignment, connected, onCancellation) {
     const bytes = data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : (() => {
       throw new TypeError("The MutualGPU server sent a non-binary WebSocket frame.");
     })();
     const message = this.codec.decodeServer(bytes);
     if (message.connected) connected();
     if (message.assignment) await onAssignment(message.assignment);
+    if (message.cancelled) onCancellation(message.cancelled);
     if (message.inputDownload) this.#resolveInput(message.inputDownload.url);
     if (message.resultUpload) this.#uploadWaiters.shift()?.resolve(message.resultUpload.uploadToken);
     if (message.completion) this.#completionWaiters.shift()?.resolve(message.completion);
@@ -764,6 +783,9 @@ var RequestorClient = class {
   }
   async getTask(taskId) {
     return (await this.#send(`/api/tasks/${segment(taskId)}`)).data;
+  }
+  async cancelTask(taskId) {
+    await this.#send(`/api/tasks/${segment(taskId)}`, { method: "DELETE" });
   }
   async submitTask(submission, image = null) {
     if (!submission || typeof submission !== "object") throw new TypeError("A task submission is required.");
