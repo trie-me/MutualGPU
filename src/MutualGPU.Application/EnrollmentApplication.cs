@@ -20,23 +20,13 @@ public sealed class EnrollmentApplication(IExecutionUnitRepository repository, I
         await using var held = await gate.AcquireAsync(cancellationToken).ConfigureAwait(false);
         var canonical = command.Capabilities.Select(Canonicalize).ToArray();
         var existingDefinitions = await repository.GetCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
-        var conflicts = canonical
-            .Select(candidate => existingDefinitions.FirstOrDefault(existing => StringComparer.Ordinal.Equals(existing.Name, candidate.Name)) is { } existing &&
-                !StringComparer.Ordinal.Equals(existing.ContractHash, candidate.ContractHash)
-                    ? new CapabilityContractConflict(existing.Id, existing.Name, CapabilityContracts.GetDelta(existing, candidate))
-                    : null)
-            .Where(static conflict => conflict is not null)
-            .Cast<CapabilityContractConflict>()
-            .ToArray();
-        if (conflicts.Length > 0)
-        {
-            return new EnrollResult.Conflict(conflicts);
-        }
-
         var resolved = canonical.Select(candidate =>
         {
             var existing = existingDefinitions.FirstOrDefault(existing => StringComparer.Ordinal.Equals(existing.Name, candidate.Name));
-            return existing is null ? candidate : candidate with { Id = existing.Id, ContractHash = existing.ContractHash };
+            // Capability names form a shared public catalogue. Until capability
+            // versioning is introduced, the first enrolled contract owns that
+            // name; every later provider is enrolled against it verbatim.
+            return existing ?? candidate;
         }).ToArray();
         var enrollment = new EnrollmentDefinition(command.Machine, resolved);
         var unit = await repository.GetAsync(command.ExecutionUnitId, cancellationToken).ConfigureAwait(false);

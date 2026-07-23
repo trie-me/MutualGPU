@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.mjs",
     "test": "node --test test/*.test.mjs",
-    "check:python": "python3 -c \"compile(open('src/inference.py', encoding='utf-8').read(), 'src/inference.py', 'exec')\"",
+    "check:python": "python3 -m unittest discover -s test -p '*_test.py'",
     "check": "npm test && npm run check:python"
   },
   "dependencies": {

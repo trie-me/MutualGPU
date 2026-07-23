@@ -2,7 +2,7 @@
 
 This is a standalone provider process. It uses the MutualGPU Node SDK for enrollment, assignment acknowledgement, progress, reconnect/rebinding, result upload, and completion. A persistent Python subprocess owns the FLUX.2 pipeline and GPU memory, so one model load is reused across the SDK client's sequential tasks.
 
-The default capability name is `flux2-klein-4b`. Enrollment is a complete replacement, so use a provider key dedicated to this worker. The provider key binds the SDK session to the execution unit; the worker never passes that key to Python.
+The default capability prefix is `flux2-klein-4b`; enrollment publishes `flux2-klein-4b-text-to-image` and `flux2-klein-4b-image-to-image`. Enrollment is a complete replacement, so use a provider key dedicated to this worker. The provider key binds the SDK session to the execution unit; the worker never passes that key to Python.
 
 ## Prerequisites
 
@@ -28,7 +28,7 @@ The npm dependencies point at the sibling SDK packages in this source checkout. 
 
 Model weights, framework binaries, caches, virtual environments, and generated outputs are runtime artifacts and must not be committed. Common model and checkpoint formats are ignored within this worker. Operators remain responsible for verifying the license and permitted use of any model selected through `MUTUALGPU_FLUX2_MODEL`.
 
-The default model is `black-forest-labs/FLUX.2-klein-4B`, the Apache-2.0 consumer-GPU variant. It and the output safety checker are downloaded from Hugging Face on the first task and then cached. To prepare them before accepting work:
+The default model is `black-forest-labs/FLUX.2-klein-4B`, the Apache-2.0 consumer-GPU variant. The worker downloads and loads it together with the output safety checker before enrollment, so a capability is never advertised until it is ready. To warm the cache without connecting a provider:
 
 ```sh
 mise exec -- uv run python src/inference.py --warmup
@@ -58,9 +58,9 @@ For a protected operator file containing one `<execution-unit-id> <provider-key>
 just flux2-worker-file /private/tmp/mutualgpu-provider-keys.example 4
 ```
 
-The process probes CUDA/MPS before enrolling, advertises the `flux2-klein-4b` capability through `ProviderClient.enroll`, then opens the provider session through `ProviderClient.connect`. Requestor prompts are sent to Python over stdin rather than process arguments and are not written to worker logs.
+The process probes CUDA/MPS, fully loads the FLUX.2 model and safety checker, and only then advertises its text-to-image and image-to-image capabilities through `ProviderClient.enroll` and opens the provider session. Requestor prompts are sent to Python over stdin rather than process arguments and are not written to worker logs.
 
-Supported scalar inputs are `prompt`, `num_inference_steps`, `guidance_scale`, `width`, `height`, and `seed`. The distilled FLUX.2 Klein model defaults to four inference steps; the request contract defaults guidance scale to `7`. A successful task uploads:
+Supported scalar inputs are `prompt`, `num_inference_steps`, `width`, `height`, and `seed`; image-to-image additionally accepts one PNG, JPEG, or WebP reference image through the MutualGPU image input. The distilled FLUX.2 Klein model uses four inference steps and fixed guidance of `1`. A successful task uploads:
 
 - `result.zip` containing `image.png`, `metadata.json`, and `logs.txt`;
 - a PNG preview and 256-pixel thumbnail;
@@ -72,13 +72,14 @@ Every output passes through the configured safety checker before publication. A 
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MUTUALGPU_FLUX2_CAPABILITY` | `flux2-klein-4b` | Enrolled capability name |
+| `MUTUALGPU_FLUX2_CAPABILITY` | `flux2-klein-4b` | Prefix for the two enrolled capability names |
 | `MUTUALGPU_FLUX2_MODEL` | `black-forest-labs/FLUX.2-klein-4B` | Compatible FLUX.2 Klein Diffusers model ID or local path |
 | `MUTUALGPU_FLUX2_SAFETY_MODEL` | `CompVis/stable-diffusion-safety-checker` | Output safety-checker model ID or local path |
 | `MUTUALGPU_FLUX2_DEVICE` | `auto` | `auto`, `cuda`, `mps`, or (when allowed) `cpu` |
 | `MUTUALGPU_FLUX2_MACHINE_TIER` | `Large` | MutualGPU provider classification |
 | `MUTUALGPU_FLUX2_COMPUTE_TIER` | machine tier | Scheduler compute envelope |
 | `MUTUALGPU_FLUX2_MEMORY_GIB` | `16` | Scheduler memory envelope |
+| `MUTUALGPU_FLUX2_STARTUP_TIMEOUT_SECONDS` | `3600` | Model and safety-checker warmup timeout, 60–7200 seconds |
 | `MUTUALGPU_FLUX2_TIMEOUT_SECONDS` | `900` | Per-image timeout, 30–3600 seconds |
 | `MUTUALGPU_FLUX2_LOCAL_FILES_ONLY` | `false` | Require an already cached/local model |
 | `MUTUALGPU_FLUX2_ALLOW_CPU` | `false` | Permit CPU-only development runs |

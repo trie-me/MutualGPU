@@ -2,7 +2,7 @@ import { renderResourceGrid } from './resource-grid.js';
 import { createFiberDiagnosticsOverlay } from './fiber-tree-overlay.js?v=20260721-sharedcompute3';
 import { createScalarPayload } from './capability-form.js';
 import { reconcileCatalogueSelection } from './capability-catalogue.js';
-import { renderTaskList } from './task-list.js';
+import { renderTaskList } from './task-list.js?v=20260723-result-preview2';
 
 const select = document.querySelector('#capability-select');
 const refreshCapabilitiesButton = document.querySelector('#refresh-capabilities');

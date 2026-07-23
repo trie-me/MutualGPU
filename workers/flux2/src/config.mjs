@@ -33,6 +33,7 @@ export function loadConfig(environment = process.env) {
     localFilesOnly: boolean(environment.MUTUALGPU_FLUX2_LOCAL_FILES_ONLY ?? "false", "MUTUALGPU_FLUX2_LOCAL_FILES_ONLY"),
     allowCpu: boolean(environment.MUTUALGPU_FLUX2_ALLOW_CPU ?? "false", "MUTUALGPU_FLUX2_ALLOW_CPU"),
     heartbeatMs: integer(environment.MUTUALGPU_FLUX2_HEARTBEAT_SECONDS ?? "15", "MUTUALGPU_FLUX2_HEARTBEAT_SECONDS", 1, 3600) * 1000,
+    startupTimeoutMs: integer(environment.MUTUALGPU_FLUX2_STARTUP_TIMEOUT_SECONDS ?? "3600", "MUTUALGPU_FLUX2_STARTUP_TIMEOUT_SECONDS", 60, 7200) * 1000,
     generationTimeoutMs: integer(environment.MUTUALGPU_FLUX2_TIMEOUT_SECONDS ?? "900", "MUTUALGPU_FLUX2_TIMEOUT_SECONDS", 30, 3600) * 1000
   });
 }

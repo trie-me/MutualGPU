@@ -6,6 +6,42 @@ const statusCopy = Object.freeze({
   Failed: { label: 'Needs attention', description: 'This task needs a human to look at the details.' },
 });
 
+const resultDescriptors = new Map();
+
+function resultDescriptorFor(task, fetchImpl) {
+  if (!resultDescriptors.has(task.taskId)) {
+    const descriptor = fetchImpl(`/api/tasks/${task.taskId}/result`)
+      .then(response => {
+        if (response.ok === false) throw new Error(`Result is unavailable (HTTP ${response.status}).`);
+        return response.json();
+      })
+      .catch(error => {
+        resultDescriptors.delete(task.taskId);
+        throw error;
+      });
+    resultDescriptors.set(task.taskId, descriptor);
+  }
+  return resultDescriptors.get(task.taskId);
+}
+
+function appendResultPreview(article, actions, document, task, artifact) {
+  const preview = document.createElement('img');
+  preview.className = 'task-list__result-preview';
+  const fallback = () => {
+    preview.onerror = null;
+    preview.src = '/images/no-result-preview.png';
+    preview.alt = `No result preview is available for ${task.capabilityName}`;
+  };
+  preview.onerror = fallback;
+  if (artifact?.downloadUrl) {
+    preview.src = artifact.downloadUrl;
+    preview.alt = `Result preview for ${task.capabilityName}`;
+  } else {
+    fallback();
+  }
+  article.insertBefore(preview, actions);
+}
+
 function presentationFor(task) {
   if (task.status === 'Failed' && task.failureStep === 'content_safety') {
     return { label: 'Inappropriate content', description: 'This image was blocked by the content-safety check.' };
@@ -78,12 +114,18 @@ export function renderTaskList(container, tasks, {
       actions.append(action);
     }
     if (task.canRetrieveResult) {
+      void resultDescriptorFor(task, fetchImpl)
+        .then(descriptor => {
+          const previewArtifact = descriptor.artifacts?.find(artifact => artifact.name === 'preview');
+          appendResultPreview(article, actions, document, task, previewArtifact);
+        })
+        .catch(() => { appendResultPreview(article, actions, document, task); });
       const result = document.createElement('a');
       result.textContent = 'Download result';
       result.href = `/api/tasks/${task.taskId}/result`;
       result.onclick = async event => {
         event.preventDefault();
-        const descriptor = await fetchImpl(result.href).then(value => value.json());
+        const descriptor = await resultDescriptorFor(task, fetchImpl);
         const download = descriptor.artifacts?.[0]?.downloadUrl;
         if (download) openWindow(download, '_blank', 'noopener');
       };

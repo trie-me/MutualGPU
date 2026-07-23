@@ -64,26 +64,32 @@ def load_pipeline() -> Any:
     global PIPELINE
     if PIPELINE is not None:
         return PIPELINE
-    from diffusers import Flux2KleinPipeline
 
-    log(f"loading model: {MODEL}")
-    dtype = TORCH.bfloat16 if DEVICE == "cuda" else TORCH.float16 if DEVICE == "mps" else TORCH.float32
-    PIPELINE = Flux2KleinPipeline.from_pretrained(
-        MODEL,
-        torch_dtype=dtype,
-        local_files_only=enabled("MUTUALGPU_FLUX2_LOCAL_FILES_ONLY"),
-    )
-    if DEVICE == "cuda":
-        PIPELINE.enable_model_cpu_offload()
-    else:
-        PIPELINE.to(DEVICE)
+    try:
+        from diffusers import Flux2KleinPipeline
+        log(f"loading model: {MODEL}")
+        dtype = TORCH.bfloat16 if DEVICE == "cuda" else TORCH.float16 if DEVICE == "mps" else TORCH.float32
+        PIPELINE = Flux2KleinPipeline.from_pretrained(
+            MODEL,
+            torch_dtype=dtype,
+            local_files_only=enabled("MUTUALGPU_FLUX2_LOCAL_FILES_ONLY"),
+        )
+        if DEVICE == "cuda":
+            PIPELINE.enable_model_cpu_offload()
+        else:
+            PIPELINE.to(DEVICE)
+    except Exception as error:
+        PIPELINE = None
+        raise RuntimeError("FLUX.2 model could not be loaded") from error
     log(f"model loaded on {DEVICE}")
     return PIPELINE
 
 
-def image_is_inappropriate(image: Any) -> bool:
+def load_safety_checker() -> tuple[Any, Any]:
     global SAFETY_CHECKER, SAFETY_PROCESSOR
-    if SAFETY_CHECKER is None:
+    if SAFETY_CHECKER is not None and SAFETY_PROCESSOR is not None:
+        return SAFETY_CHECKER, SAFETY_PROCESSOR
+    try:
         import numpy as np  # noqa: F401 - validates the safety checker dependency
         from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
         from transformers import CLIPImageProcessor
@@ -92,10 +98,20 @@ def image_is_inappropriate(image: Any) -> bool:
         local_only = enabled("MUTUALGPU_FLUX2_LOCAL_FILES_ONLY")
         SAFETY_CHECKER = StableDiffusionSafetyChecker.from_pretrained(SAFETY_MODEL, local_files_only=local_only).to("cpu")
         SAFETY_PROCESSOR = CLIPImageProcessor.from_pretrained(SAFETY_MODEL, local_files_only=local_only)
+    except Exception as error:
+        SAFETY_CHECKER = None
+        SAFETY_PROCESSOR = None
+        raise RuntimeError("FLUX.2 safety checker could not be loaded") from error
+    log("safety checker loaded on cpu")
+    return SAFETY_CHECKER, SAFETY_PROCESSOR
+
+
+def image_is_inappropriate(image: Any) -> bool:
     import numpy as np
 
-    clip_input = SAFETY_PROCESSOR(images=[image], return_tensors="pt").pixel_values
-    _, flags = SAFETY_CHECKER(images=np.asarray([np.asarray(image)]), clip_input=clip_input)
+    checker, processor = load_safety_checker()
+    clip_input = processor(images=[image], return_tensors="pt").pixel_values
+    _, flags = checker(images=np.asarray([np.asarray(image)]), clip_input=clip_input)
     return any(bool(flag) for flag in flags)
 
 
@@ -171,13 +187,22 @@ def generate(request: dict[str, Any]) -> None:
 
 
 def safe_category(error: BaseException) -> str:
-    message = str(error).lower()
+    messages: list[str] = []
+    current: BaseException | None = error
+    while current is not None and len(messages) < 8:
+        messages.append(str(current))
+        current = current.__cause__ or current.__context__
+    message = " ".join(messages).lower()
     if "dependencies are not installed" in message:
         return "MissingDependencies"
     if "device is unavailable" in message or "no cuda or mps gpu" in message:
         return "GpuUnavailable"
     if "out of memory" in message:
         return "GpuOutOfMemory"
+    if "model could not be loaded" in message:
+        return "ModelLoadFailed"
+    if "safety checker could not be loaded" in message:
+        return "SafetyCheckerLoadFailed"
     if "safety checker" in message:
         return "SafetyCheckRejected"
     return type(error).__name__
@@ -185,7 +210,10 @@ def safe_category(error: BaseException) -> str:
 
 def serve() -> None:
     initialize()
+    load_pipeline()
+    load_safety_checker()
     emit({"type": "ready", "device": DEVICE, "model": MODEL})
+    log("runtime warmup complete; accepting generation requests")
     for line in sys.stdin:
         request: Any = None
         try:
@@ -209,6 +237,7 @@ def main() -> None:
     initialize()
     if command == "--warmup":
         load_pipeline()
+        load_safety_checker()
     emit({"type": "ready", "device": DEVICE, "model": MODEL})
 
 

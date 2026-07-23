@@ -320,7 +320,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
-    public async Task Browser_enrollment_reports_a_capability_identity_conflict_with_contract_paths()
+    public async Task Browser_enrollment_uses_the_first_capability_contract_for_a_shared_name()
     {
         var executionUnitId = ExecutionUnitId.New();
         const string providerKey = "capability-identity-conflict-provider-key";
@@ -349,14 +349,13 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/x-protobuf");
 
         using var response = await client.SendAsync(request, CancellationToken.None);
-        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(CancellationToken.None));
 
-        Assert.Equal(System.Net.HttpStatusCode.Conflict, response.StatusCode);
-        Assert.Equal("application/problem+json", response.Content.Headers.ContentType?.MediaType);
-        Assert.Equal(ProviderWebSocketEndpoints.CapabilityIdentityConflictCode, body.RootElement.GetProperty("code").GetString());
-        var conflict = Assert.Single(body.RootElement.GetProperty("conflicts").EnumerateArray());
-        Assert.Equal(capabilityName, conflict.GetProperty("capabilityName").GetString());
-        Assert.Contains("inputs.enable_safety_checker.default", conflict.GetProperty("paths").EnumerateArray().Select(static path => path.GetString()));
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/x-protobuf", response.Content.Headers.ContentType?.MediaType);
+        var enrolled = await units.GetAsync(executionUnitId, CancellationToken.None);
+        var capability = Assert.Single(enrolled!.CurrentEnrollment.Capabilities);
+        Assert.Equal(capabilityName, capability.Name);
+        Assert.Equal("true", Assert.Single(capability.Inputs).Default);
     }
 
     [Fact]

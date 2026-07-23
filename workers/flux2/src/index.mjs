@@ -15,6 +15,7 @@ const runtime = new Flux2Runtime({
   device: config.device,
   localFilesOnly: config.localFilesOnly,
   allowCpu: config.allowCpu,
+  startupTimeoutMs: config.startupTimeoutMs,
   generationTimeoutMs: config.generationTimeoutMs,
   log: message => process.stderr.write(message)
 });
@@ -33,18 +34,19 @@ const stop = signal => {
 process.once("SIGINT", () => stop("SIGINT"));
 process.once("SIGTERM", () => stop("SIGTERM"));
 
-let startupStage = "FLUX.2 runtime preflight";
+let startupStage = "FLUX.2 model and safety-checker warmup";
 try {
+  console.info(`[1/4] Loading '${config.model}' and its safety checker before advertising FLUX.2 text-to-image and image-to-image.`);
   const runtimeInfo = await runtime.start();
   startupStage = "MutualGPU enrollment";
-  console.info(`[1/3] Runtime ready on ${runtimeInfo.device}; enrolling '${config.capabilityName}'.`);
+  console.info(`[2/4] Runtime ready on ${runtimeInfo.device}; enrolling FLUX.2 text-to-image and image-to-image.`);
   await provider.enroll(buildEnrollment(config));
   startupStage = "MutualGPU provider connection";
-  console.info("[2/3] Enrollment accepted; opening the provider session.");
+  console.info("[3/4] Enrollment accepted; opening the provider session.");
   await provider.connect(createTaskHandler({ runtime, activity }));
   activity.state = "idle";
   activity.lastEventAt = new Date();
-  console.info(`[3/3] Provider connected. '${config.capabilityName}' is bound to ${runtimeInfo.device} with model '${runtimeInfo.model}'.`);
+  console.info(`[4/4] Provider connected. FLUX.2 text-to-image and image-to-image are bound to ${runtimeInfo.device} with a warm model '${runtimeInfo.model}'.`);
   console.info(`[stream] Heartbeat every ${config.heartbeatMs / 1000}s; waiting for task assignments.`);
   const connectedAt = Date.now();
   heartbeat = setInterval(() => {
@@ -72,6 +74,7 @@ function safeErrorCategory(error) {
   if (grpcStatus) return `GrpcStatus${grpcStatus}`;
   const httpStatus = /HTTP request failed \((\d+)\)/.exec(message)?.[1];
   if (httpStatus) return `HttpStatus${httpStatus}`;
+  if (/runtime startup timed out/i.test(message)) return "StartupTimeout";
   if (/certificate|\bTLS\b|\bSSL\b/i.test(message)) return "TlsError";
   if (error?.code && typeof error.code === "string") return error.code;
   return "Error";
@@ -83,6 +86,10 @@ function remediation(category) {
     case "GrpcStatus6": return "The capability name already has a different shared contract. Set MUTUALGPU_FLUX2_CAPABILITY to a new versioned name.";
     case "MissingDependencies": return "Synchronize the Python project environment declared by pyproject.toml, then retry.";
     case "GpuUnavailable": return "No permitted CUDA or MPS accelerator is available to this process.";
+    case "GpuOutOfMemory": return "FLUX.2 could not fit in available accelerator memory. Free memory or select a smaller/quantized compatible model.";
+    case "ModelLoadFailed": return "The FLUX.2 model could not be downloaded or loaded. Check Hugging Face access, network connectivity, free disk space, and the configured model ID.";
+    case "SafetyCheckerLoadFailed": return "The output safety checker could not be downloaded or loaded. Check Hugging Face access, network connectivity, free disk space, and the configured safety model ID.";
+    case "StartupTimeout": return "Model warmup exceeded its allowance. Check download progress and connectivity, or increase MUTUALGPU_FLUX2_STARTUP_TIMEOUT_SECONDS.";
     case "TlsError": return "Check the API certificate trust chain and local TLS environment.";
     default: return "Review the stage above; credentials and request data were not written to this diagnostic.";
   }

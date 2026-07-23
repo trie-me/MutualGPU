@@ -42,6 +42,7 @@
 .task-list__details span { color:var(--muted); font-size:.86rem; }
 .task-list__progress { background:#020b1c; border-radius:99rem; height:.45rem; overflow:hidden; }
 .task-list__progress > span { background:linear-gradient(90deg, var(--lilac), var(--cyan)); box-shadow:0 0 .6rem var(--cyan); display:block; height:100%; transition:width .2s ease; }
+.task-list__result-preview { background:#041127; border:1px solid var(--line); border-radius:.7rem; display:block; max-height:18rem; max-width:100%; object-fit:contain; padding:.3rem; }
 .task-list__failure { color:var(--danger) !important; font-weight:700; }
 .task-list__actions { align-items:center; display:flex; flex-wrap:wrap; gap:.55rem; }
 .task-list__actions button { background:#0b2344; border:1px solid var(--line); box-shadow:none; color:var(--paper); padding:.4rem .6rem; }

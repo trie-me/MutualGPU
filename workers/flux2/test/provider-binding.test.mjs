@@ -10,20 +10,23 @@ test("configuration requires an HTTPS API and preserves the SDK machine envelope
     MUTUALGPU_FLUX2_MEMORY_GIB: "24"
   });
   const definition = buildEnrollment(config);
-  assert.equal(config.capabilityName, "flux2-klein-4b");
+  assert.equal(config.capabilityPrefix, "flux2-klein-4b");
   assert.equal(config.model, "black-forest-labs/FLUX.2-klein-4B");
+  assert.equal(config.startupTimeoutMs, 3_600_000);
   assert.deepEqual(definition.machine.specifications, { computeTier: "Large", memoryGiB: 24 });
+  assert.deepEqual(definition.capabilities.map(capability => capability.name), ["flux2-klein-4b-text-to-image", "flux2-klein-4b-image-to-image"]);
   assert.equal(definition.capabilities[0].output.hasPreview, true);
-  assert.equal(definition.capabilities[0].inputs.find(input => input.key === "guidance_scale").default, "7");
+  assert.equal(definition.capabilities[0].inputs.some(input => input.key === "guidance_scale"), false);
+  assert.equal(definition.capabilities[1].inputs.filter(input => input.type === "Image").length, 1);
   assert.deepEqual(definition.capabilities[0].output.previewContentTypes, ["image/png"]);
 });
 
 test("generation scalars are parsed, bounded, and assigned a seed", () => {
   const request = parseGenerationRequest({
-    prompt: "  a small tabby cat  ", width: "768", height: "512", guidance_scale: "6.5"
+    prompt: "  a small tabby cat  ", width: "768", height: "512"
   }, () => 42);
   assert.deepEqual(request, {
-    prompt: "a small tabby cat", steps: 4, guidanceScale: 6.5,
+    prompt: "a small tabby cat", steps: 4, guidanceScale: 1,
     width: 768, height: 512, seed: 42
   });
   assert.throws(() => parseGenerationRequest({ prompt: "cat", width: "513" }), /divisible by 8/);

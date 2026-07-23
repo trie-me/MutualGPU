@@ -35,6 +35,35 @@ public sealed class ExecutionUnitRepositoryTests
     }
 
     [Fact]
+    public async Task First_enrollment_contract_wins_when_a_later_provider_uses_the_same_name()
+    {
+        var store = new InMemoryObjectStore();
+        var keys = new MutualGpuObjectKeys();
+        var firstId = ExecutionUnitId.New();
+        var secondId = ExecutionUnitId.New();
+        var registry = new ObjectStoreProviderKeyRegistry(store, keys);
+        await registry.ProvisionAsync(firstId, "first-key", CancellationToken.None);
+        await registry.ProvisionAsync(secondId, "second-key", CancellationToken.None);
+        var locks = new RepositoryLockRegistry();
+        var repository = new ObjectStoreExecutionUnitRepository(store, keys, registry, locks);
+        var application = new EnrollmentApplication(repository, new Events(), locks);
+        var first = new CapabilityDefinition(CapabilityId.New(), "shared-image", [new InputDefinition("prompt", CapabilityInputType.String, true, "Prompt")], new OutputDefinition(HasMetadata: true), "ignored");
+        var later = new CapabilityDefinition(CapabilityId.New(), "shared-image", [new InputDefinition("image", CapabilityInputType.Image, true, "Image")], new OutputDefinition(HasPreview: true), "ignored");
+
+        var firstResult = Assert.IsType<EnrollResult.Enrolled>(await application.Enroll(new EnrollCommand(firstId, Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [first])).RunAsync());
+        var laterResult = Assert.IsType<EnrollResult.Enrolled>(await application.Enroll(new EnrollCommand(secondId, Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [later])).RunAsync());
+
+        var firstCapability = Assert.Single(firstResult.Unit.CurrentEnrollment.Capabilities);
+        var laterCapability = Assert.Single(laterResult.Unit.CurrentEnrollment.Capabilities);
+        Assert.Equal(firstCapability.Id, laterCapability.Id);
+        Assert.Equal(firstCapability.ContractHash, laterCapability.ContractHash);
+        Assert.Equal("prompt", Assert.Single(laterCapability.Inputs).Key);
+        Assert.True(laterCapability.Output.HasMetadata);
+        Assert.False(laterCapability.Output.HasPreview);
+        Assert.Single(await repository.GetCapabilitiesAsync(CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Sdk_style_reenrollment_computes_the_omitted_server_owned_contract_hash()
     {
         var store = new InMemoryObjectStore();
