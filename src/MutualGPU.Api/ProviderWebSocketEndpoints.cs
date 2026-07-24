@@ -87,10 +87,12 @@ public static class ProviderWebSocketEndpoints
         DisconnectRecoveryService recovery,
         TaskAttemptFiberTracker taskFibers,
         MutualGpuFiberOwner fibers,
+        ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
         if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
         var sourceIp = context.Connection.RemoteIpAddress?.ToString();
+        var logger = loggerFactory.CreateLogger("MutualGPU.ProviderWebSocket");
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         var scope = fibers.ProviderSessions.CreateChild(new FiberScopeOptions("provider-websocket-session"));
         using var cancellation = cancellationToken.Register(static state => _ = ((FiberScope)state!).CloseAsync(), scope);
@@ -99,7 +101,7 @@ public static class ProviderWebSocketEndpoints
         {
             var fiber = scope.Start(Latent<int>.DelayAsync(async fiberCancellationToken =>
             {
-                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, fiberCancellationToken).ConfigureAwait(false);
+                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, logger, fiberCancellationToken).ConfigureAwait(false);
                 return 0;
             }), new FiberDescriptor("provider-websocket-session"));
             outcome = await fiber.JoinAsync().ConfigureAwait(false);
@@ -124,6 +126,7 @@ public static class ProviderWebSocketEndpoints
         MutualGpuObjectKeys keys,
         DisconnectRecoveryService recovery,
         TaskAttemptFiberTracker taskFibers,
+        ILogger logger,
         CancellationToken cancellationToken)
     {
         ProviderMessage first;
@@ -157,7 +160,7 @@ public static class ProviderWebSocketEndpoints
             while (socket.State is WebSocketState.Open)
             {
                 var message = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false);
-                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, taskFibers, unitId, message, cancellationToken).ConfigureAwait(false);
+                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, taskFibers, unitId, message, logger, cancellationToken).ConfigureAwait(false);
                 if (!valid) { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Invalid task handle.", cancellationToken).ConfigureAwait(false); break; }
                 if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
                     await SendAsync(socket, sendGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);
@@ -181,7 +184,7 @@ public static class ProviderWebSocketEndpoints
         }
     }
 
-    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, ExecutionUnitId unitId, ProviderMessage message, CancellationToken cancellationToken)
+    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, ExecutionUnitId unitId, ProviderMessage message, ILogger logger, CancellationToken cancellationToken)
     {
         var accepted = message.BodyCase switch
         {
@@ -195,6 +198,7 @@ public static class ProviderWebSocketEndpoints
             _ => false,
         };
         if (!accepted) return false;
+        ProviderMessageLogging.Accepted(logger, unitId, message);
 
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Accepted)
         {

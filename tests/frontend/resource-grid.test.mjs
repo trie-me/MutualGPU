@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 class Element {
@@ -20,6 +21,13 @@ class Element {
 globalThis.document = { createElement: tagName => new Element(tagName) };
 
 const { renderResourceGrid, resourceTiers } = await import('../../src/MutualGPU.Api/wwwroot/js/resource-grid.js');
+
+test('resource tile decoration is encoding-safe', async () => {
+  const stylesheet = await readFile(new URL('../../src/MutualGPU.Api/wwwroot/css/mutualgpu.css', import.meta.url), 'utf8');
+
+  assert.match(stylesheet, /\.resource-tile::before \{[^}]*content:'\\2301  \\2301'/);
+  assert.doesNotMatch(stylesheet, /⌁/);
+});
 
 test('resource picker uses the fixed MacBook CPU/GPU profiles and descending memory rows', () => {
   const container = new Element('div');

@@ -60,6 +60,7 @@ test("requestor client covers every finite requestor endpoint with credentials",
   assert.ok(calls.every(call => call.init.credentials === "include"));
   assert.ok(calls.every(call => call.receiver === globalThis));
   assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[8].init.cache, "no-store");
   assert.deepEqual(JSON.parse(calls[4].init.body), submission);
   assert.equal(calls[4].init.headers["Content-Type"], "application/json");
   assert.equal(calls[5].init.headers, undefined);

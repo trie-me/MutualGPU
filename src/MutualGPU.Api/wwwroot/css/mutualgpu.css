@@ -78,7 +78,7 @@
 .resource-grid__empty { background:#06162d; border:1px dashed #3974aa66; border-radius:.65rem; min-height:5.9rem; }
 .resource-tile { background:linear-gradient(145deg, #0d2950, #07182f); border:1px solid #4d92cf9c; border-radius:.7rem; box-shadow:inset 0 1px #b5eaff19, 0 0 0 1px #000a17; color:var(--paper); min-height:5.9rem; padding:.65rem; text-align:left; }
 .resource-tile:hover { border-color:var(--cyan); box-shadow:0 0 1rem #4de8ff40, inset 0 1px #c2f9ff32; transform:translateY(-.1rem); }
-.resource-tile::before { color:var(--cyan); content:'⌁  ⌁'; display:block; font-size:.72rem; font-weight:900; letter-spacing:.12rem; }
+.resource-tile::before { color:var(--cyan); content:'\2301  \2301'; display:block; font-size:.72rem; font-weight:900; letter-spacing:.12rem; }
 .resource-tile strong, .resource-tile span { display:block; }
 .resource-tile span { color:var(--paper-muted); font-size:.78rem; font-weight:500; margin-top:.3rem; }
 .resource-tile--waiting { background:linear-gradient(145deg, #1e1c3e, #0e1933); border-color:#9472d3; color:#ded2ff; }

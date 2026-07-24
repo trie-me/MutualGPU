@@ -21,7 +21,7 @@
   <meta name="twitter:description" content="Turn spare GPU capacity into someone else’s breakthrough.">
   <meta name="twitter:image" content="https://mutualgpu.com/images/mutualgpu-link-preview.png">
   <link rel="stylesheet" href="/css/site.css?v=20260723-product-hunt3">
-  <link rel="stylesheet" href="/css/mutualgpu.css?v=20260723-result-preview-size1">
+  <link rel="stylesheet" href="/css/mutualgpu.css?v=20260724-resource-tile-encoding1">
   <link rel="stylesheet" href="/css/fiber-tree-overlay.css?v=20260721-sharedcompute3">
 </head>
 <body>
@@ -30,6 +30,7 @@
       <a class="brand" href="/"><img class="brand-mark" src="/images/mutualgpu-shared-compute.png" alt="">MutualGPU</a>
       <p class="site-tagline">Shared compute. Limitless possibilities.</p>
       <div class="header-actions">
+        <a class="header-link" href="#partner-integration">MutualGPU Partner <span aria-hidden="true">↘</span></a>
         <a class="header-link" href="#task-list">Your tasks <span aria-hidden="true">↘</span></a>
         <button class="webgpu-toggle" id="webgpu-enrollment-toggle" type="button">Offer compute</button>
         <button class="diagnostics-toggle" id="fiber-toggle" type="button" hidden>System activity</button>
@@ -147,6 +148,30 @@
         </div>
       </section>
 
+      <section class="partner-integration card" id="partner-integration" aria-labelledby="partner-integration-title">
+        <div class="partner-integration__copy">
+          <p class="eyebrow">MutualGPU Partner</p>
+          <h2 id="partner-integration-title">Join the MutualGPU partner network.</h2>
+          <p>Register your organization and the one HTTPS origin that needs access. We record every request for review; an administrator vets it before it is whitelisted.</p>
+          <ul>
+            <li><strong>Register.</strong> Submit your organization, contact, and one exact origin.</li>
+            <li><strong>Review.</strong> We verify the resource before approving it—no wildcards, paths, or query strings.</li>
+            <li><strong>Integrate.</strong> Once approved, connect your experience with the MutualGPU SDK.</li>
+          </ul>
+        </div>
+        <form id="partner-resource-form" class="partner-resource-form">
+          <label for="partner-name">Partner or organization</label>
+          <input id="partner-name" name="partnerName" type="text" minlength="2" maxlength="160" autocomplete="organization" required>
+          <label for="partner-email">Contact email</label>
+          <input id="partner-email" name="contactEmail" type="email" maxlength="254" autocomplete="email" required>
+          <label for="partner-origin">HTTPS origin to whitelist</label>
+          <input id="partner-origin" name="origin" type="url" inputmode="url" placeholder="https://partner.example" maxlength="2048" autocomplete="url" required aria-describedby="partner-origin-help">
+          <p id="partner-origin-help" class="assist">Use a single origin only. Wildcards such as <code>*.example.com</code> are not accepted.</p>
+          <button type="submit">Register as a partner <span aria-hidden="true">↗</span></button>
+          <p id="partner-resource-status" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
       <footer class="site-footer">
         <p class="site-footer__product-hunt-copy">Discover MutualGPU on Product Hunt.</p>
         <section class="product-hunt-embed" aria-label="Find MutualGPU on Product Hunt">
@@ -189,5 +214,6 @@
     <p class="fiber-overlay__connection" id="fiber-status" role="status">Closed</p><p class="fiber-overlay__summary" id="fiber-summary"></p><div class="fiber-history" id="fiber-history" aria-label="Observed snapshot history"></div><section class="fiber-simulations" id="fiber-simulations" hidden aria-label="Simulated registrations"></section><canvas id="fiber-tree" class="fiber-forest" aria-label="Live logical runtime forest"></canvas><p id="fiber-selection" class="fiber-overlay__selection" aria-live="polite"></p><section class="fiber-tree-detail" id="fiber-tree-detail" hidden aria-label="Logical runtime tree detail"><div><strong>Logical runtime tree</strong><button id="fiber-tree-detail-close" type="button">Close tree</button></div><div id="fiber-tree-detail-body"></div></section>
   </aside>
   <script type="module" src="/js/mutualgpu.js?v=20260723-diagnostics-gate1"></script>
+  <script type="module" src="/js/partner-resource-form.js?v=20260724-partner-registry1"></script>
 </body>
 </html>

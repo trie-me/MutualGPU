@@ -12,6 +12,8 @@ public static class AdminEndpoints
         app.MapPost("/admin/api/login", Login);
         app.MapPost("/admin/api/logout", Logout);
         app.MapGet("/admin/api/overview", Overview);
+        app.MapGet("/admin/api/partner-resources/pending", PendingPartnerResources);
+        app.MapPost("/admin/api/partner-resources/{id:guid}/approve", ApprovePartnerResource);
     }
 
     private static IResult Login(HttpContext context, AdminLoginRequest request, AdminAccessService access)
@@ -88,6 +90,31 @@ public static class AdminEndpoints
             diagnostics.Sessions,
             transactions,
             assignments));
+    }
+
+    private static async Task<IResult> PendingPartnerResources(
+        HttpContext context,
+        AdminAccessService access,
+        IPartnerResourceRegistry registry,
+        CancellationToken cancellationToken)
+    {
+        NoStore(context.Response);
+        if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
+        var requests = await registry.ListPendingAsync(cancellationToken).ConfigureAwait(false);
+        return Results.Ok(requests.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+    }
+
+    private static async Task<IResult> ApprovePartnerResource(
+        HttpContext context,
+        Guid id,
+        AdminAccessService access,
+        IPartnerResourceRegistry registry,
+        CancellationToken cancellationToken)
+    {
+        NoStore(context.Response);
+        if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
+        var approved = await registry.ApproveAsync(id, cancellationToken).ConfigureAwait(false);
+        return approved is null ? Results.NotFound() : Results.Ok(PartnerResourceRequestDto.From(approved));
     }
 
     private static CookieOptions Cookie(DateTimeOffset? expiresAt) => new()

@@ -55,6 +55,33 @@ public interface IAdminTaskReader
     Task<IReadOnlyList<TaskRequest>> GetAllAsync(CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Durable review queue for partner origins. An approved origin is allowed to make
+/// browser requests to MutualGPU; it is never expanded from a wildcard pattern.
+/// </summary>
+public interface IPartnerResourceRegistry
+{
+    Task InitializeAsync(CancellationToken cancellationToken);
+
+    Task<PartnerResourceRequest> SubmitAsync(PartnerResourceSubmission submission, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<PartnerResourceRequest>> ListPendingAsync(CancellationToken cancellationToken);
+
+    Task<PartnerResourceRequest?> ApproveAsync(Guid id, CancellationToken cancellationToken);
+
+    bool IsApprovedOrigin(string? origin);
+}
+
+public sealed record PartnerResourceSubmission(string PartnerName, string ContactEmail, string Origin);
+
+public sealed record PartnerResourceRequest(
+    Guid Id,
+    string PartnerName,
+    string ContactEmail,
+    string Origin,
+    DateTimeOffset SubmittedAt,
+    DateTimeOffset? ProcessedAt = null);
+
 public interface IStartupRecovery
 {
     Task<int> RecoverAsync(CancellationToken cancellationToken);

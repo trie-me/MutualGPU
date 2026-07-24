@@ -23,7 +23,8 @@ public sealed class ProviderControlService(
     MutualGpuObjectKeys keys,
     DisconnectRecoveryService recovery,
     MutualGpuFiberOwner fibers,
-    TaskAttemptFiberTracker taskFibers) : ProviderControl.ProviderControlBase
+    TaskAttemptFiberTracker taskFibers,
+    ILogger<ProviderControlService> logger) : ProviderControl.ProviderControlBase
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -151,6 +152,7 @@ public sealed class ProviderControlService(
                                     ? await IssueInputDownloadAsync(executionUnitId, message.InputDownload, response, responseGate, cancellationToken).ConfigureAwait(false)
                                 : true;
         if (!accepted) throw new RpcException(new Status(StatusCode.FailedPrecondition, "The task handle is unknown, revoked, or not owned by this provider."));
+        ProviderMessageLogging.Accepted(logger, executionUnitId, message);
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
         {
             await WriteAsync(response, responseGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);

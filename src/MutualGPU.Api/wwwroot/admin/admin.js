@@ -1,5 +1,5 @@
 const el = id => document.getElementById(id);
-const state = { data: null, selectedSession: null, view: 'sessions', query: '' };
+const state = { data: null, partnerResources: [], selectedSession: null, view: 'sessions', query: '' };
 
 el('login-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -32,10 +32,14 @@ document.querySelectorAll('.tab').forEach(button => button.addEventListener('cli
 }));
 
 async function load() {
-  const response = await fetch('/admin/api/overview', { credentials: 'same-origin', cache: 'no-store' });
-  if (response.status === 401) { showLogin(); return; }
-  if (!response.ok) { el('live-state').textContent = 'Unavailable'; return; }
+  const [response, resources] = await Promise.all([
+    fetch('/admin/api/overview', { credentials: 'same-origin', cache: 'no-store' }),
+    fetch('/admin/api/partner-resources/pending', { credentials: 'same-origin', cache: 'no-store' })
+  ]);
+  if (response.status === 401 || resources.status === 401) { showLogin(); return; }
+  if (!response.ok || !resources.ok) { el('live-state').textContent = 'Unavailable'; return; }
   state.data = await response.json();
+  state.partnerResources = await resources.json();
   el('login-view').hidden = true;
   el('console-view').hidden = false;
   render();
@@ -43,6 +47,7 @@ async function load() {
 
 function showLogin() {
   state.data = null;
+  state.partnerResources = [];
   el('console-view').hidden = true;
   el('login-view').hidden = false;
   el('password').focus();
@@ -58,8 +63,8 @@ function render() {
     ['Assignments', summary.assignments], ['Unsuccessful', summary.unsuccessfulAssignments]
   ];
   replace(el('metrics'), metrics.map(([label, value]) => node('div', 'metric', node('strong', '', String(value)), node('span', '', label))));
-  ['sessions', 'transactions', 'assignments'].forEach(view => { el(`${view}-view`).hidden = state.view !== view; });
-  renderSessions(); renderTransactions(); renderAssignments();
+  ['sessions', 'transactions', 'assignments', 'partner-resources'].forEach(view => { el(`${view}-view`).hidden = state.view !== view; });
+  renderSessions(); renderTransactions(); renderAssignments(); renderPartnerResources();
 }
 
 function renderSessions() {
@@ -134,6 +139,25 @@ function renderAssignments() {
       node('td', '', providerNameFor(item.sessionId) || shortId(item.executionUnitId), node('small', '', `${shortId(item.executionUnitId)} · ${sourceIpFor(item.sessionId) || 'source unknown'}`)), node('td', '', session), node('td', '', pill(item.state)), node('td', '', formatDate(item.assignedAt)),
       node('td', '', transition ? formatDate(transition) : '—'), node('td', '', outcome));
   }));
+}
+
+function renderPartnerResources() {
+  const requests = state.partnerResources.filter(item => matches(item.partnerName, item.contactEmail, item.origin, item.id));
+  el('partner-resource-count').textContent = `${requests.length} awaiting review`;
+  replace(el('partner-resource-list'), requests.length ? requests.map(item => {
+    const approve = node('button', 'approve-resource', 'Approve & whitelist');
+    approve.type = 'button';
+    approve.addEventListener('click', async () => {
+      approve.disabled = true;
+      const response = await fetch(`/admin/api/partner-resources/${encodeURIComponent(item.id)}/approve`, { method: 'POST', credentials: 'same-origin' });
+      if (!response.ok) { approve.disabled = false; approve.textContent = 'Could not approve — retry'; return; }
+      state.partnerResources = state.partnerResources.filter(request => request.id !== item.id);
+      renderPartnerResources();
+    });
+    return node('article', 'partner-resource-card',
+      node('div', '', node('p', 'eyebrow', 'Pending review'), node('h3', '', item.partnerName), node('p', 'resource-origin', item.origin), node('p', 'muted', item.contactEmail), node('small', '', `Submitted ${formatDate(item.submittedAt)}`)),
+      approve);
+  }) : [node('p', 'empty pending-empty', 'No partner resource requests are awaiting review.')]);
 }
 
 function node(tag, className, ...children) {

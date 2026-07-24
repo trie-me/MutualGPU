@@ -38,7 +38,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
 
     public bool ReportProgress(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress update) => progress.TryReport(unitId, taskId, attemptId, handle, update);
 
-    public Latent<int> Disconnect(ExecutionUnitId unitId) => Latent<int>.DelayAsync(async cancellationToken =>
+    public Latent<int> Disconnect(ExecutionUnitId unitId) => Latent<int>.Delay(() =>
     {
         var changed = 0;
         foreach (var active in assignments.GetForExecutionUnit(unitId))
@@ -47,7 +47,9 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
             {
                 if (active.Task.Attempts.SingleOrDefault(attempt => attempt.Id == active.Attempt.Id)?.State is not AttemptState.Accepted) continue;
                 active.Task.Disconnect(active.Attempt.Id, active.Attempt.Handle, timeProvider.GetUtcNow());
-                await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
+                // Disconnect/rebind is a process-local recovery state. Persisting every
+                // brief transport flap creates an unbounded stream of S3 facts without
+                // improving restart recovery; a terminal revocation is still durable.
                 changed++;
             }
             catch (DomainRuleViolation) { }
@@ -55,13 +57,12 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
         return changed;
     });
 
-    public Latent<bool> Rebind(ExecutionUnitId unitId, string handle) => Latent<bool>.DelayAsync(async cancellationToken =>
+    public Latent<bool> Rebind(ExecutionUnitId unitId, string handle) => Latent<bool>.Delay(() =>
     {
         if (!assignments.TryGetByHandle(unitId, handle, out var active)) return false;
         try
         {
             active.Task.Rebind(active.Attempt.Id, handle);
-            await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
             return true;
         }
         catch (DomainRuleViolation) { return false; }

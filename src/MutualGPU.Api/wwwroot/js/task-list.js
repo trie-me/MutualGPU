@@ -10,14 +10,13 @@ const resultDescriptors = new Map();
 
 function resultDescriptorFor(task, fetchImpl) {
   if (!resultDescriptors.has(task.taskId)) {
-    const descriptor = fetchImpl(`/api/tasks/${task.taskId}/result`)
+    const descriptor = fetchImpl(`/api/tasks/${task.taskId}/result`, { cache: 'no-store' })
       .then(response => {
         if (response.ok === false) throw new Error(`Result is unavailable (HTTP ${response.status}).`);
         return response.json();
       })
-      .catch(error => {
-        resultDescriptors.delete(task.taskId);
-        throw error;
+      .finally(() => {
+        if (resultDescriptors.get(task.taskId) === descriptor) resultDescriptors.delete(task.taskId);
       });
     resultDescriptors.set(task.taskId, descriptor);
   }

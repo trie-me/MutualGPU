@@ -30,6 +30,7 @@ public sealed class DisconnectRecoveryTests
         // and one final read selects the disconnected attempt for revocation.
         Assert.Equal(7, fixture.Assignments.DisconnectedChecks);
         Assert.Equal(1, fixture.Events.TriggerCount);
+        Assert.Equal(1, fixture.Tasks.SaveCount);
         await fixture.DisposeAsync();
     }
 
@@ -51,6 +52,7 @@ public sealed class DisconnectRecoveryTests
         Assert.Equal(AttemptState.Accepted, Assert.Single(fixture.Task.Attempts).State);
         Assert.Equal(MutualGPU.Domain.TaskStatus.Running, fixture.Task.Status);
         Assert.Equal(3, fixture.Assignments.DisconnectedChecks);
+        Assert.Equal(0, fixture.Tasks.SaveCount);
         await fixture.DisposeAsync();
     }
 
@@ -94,7 +96,8 @@ public sealed class DisconnectRecoveryTests
             Task.Accept(Attempt.Id, Attempt.Handle, time.GetUtcNow());
             Assignments = new Assignments(UnitId, Task, Attempt);
             Events = new Events();
-            var session = new ProviderSessionApplication(new Tasks(), Assignments, new StagedResults(), new Progress(), Events, time);
+            Tasks = new Tasks();
+            var session = new ProviderSessionApplication(Tasks, Assignments, new StagedResults(), new Progress(), Events, time);
             Session = session;
             fibers = new MutualGpuFiberOwner(new ServiceCollection().BuildServiceProvider());
             Recovery = new DisconnectRecoveryService(session, Assignments, time, fibers, NullLogger<DisconnectRecoveryService>.Instance);
@@ -110,6 +113,8 @@ public sealed class DisconnectRecoveryTests
 
         public Events Events { get; }
 
+        public Tasks Tasks { get; }
+
         public ProviderSessionApplication Session { get; }
 
         public DisconnectRecoveryService Recovery { get; }
@@ -123,11 +128,17 @@ public sealed class DisconnectRecoveryTests
 
     private sealed class Tasks : ITaskRepository
     {
+        public int SaveCount { get; private set; }
+
         public Task<TaskRequest?> GetAsync(RequestorId requestorId, TaskId id, CancellationToken cancellationToken) => Task.FromResult<TaskRequest?>(null);
 
         public Task<IReadOnlyList<TaskRequest>> GetByRequestorAsync(RequestorId requestorId, CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<TaskRequest>>([]);
 
-        public Task SaveAsync(TaskRequest task, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task SaveAsync(TaskRequest task, CancellationToken cancellationToken)
+        {
+            SaveCount++;
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class Assignments(ExecutionUnitId unitId, TaskRequest task, TaskAttempt attempt) : IProviderAssignments

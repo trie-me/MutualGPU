@@ -18,7 +18,10 @@ builder.Services.Configure<FormOptions>(options =>
     options.ValueLengthLimit = 64 * 1024;
     options.MultipartHeadersLengthLimit = 16 * 1024;
 });
-var providerCorsOrigins = builder.Configuration.GetSection("MutualGPU:ProviderCorsOrigins").Get<string[]>() ?? [];
+var providerCorsOrigins = (builder.Configuration.GetSection("MutualGPU:ProviderCorsOrigins").Get<string[]>() ?? [])
+    .Select(origin => PartnerResourceOrigin.Normalize(origin)
+        ?? throw new InvalidOperationException("MutualGPU:ProviderCorsOrigins entries must be explicit HTTPS origins without wildcards or paths."))
+    .ToArray();
 var trustForwardedProto = builder.Configuration.GetValue("MutualGPU:TrustForwardedProto", false);
 var trustedProxyNetworks = builder.Configuration.GetSection("MutualGPU:TrustedProxyNetworks").Get<string[]>() ?? [];
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -46,16 +49,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     }
 });
 builder.Services.AddHsts(options => options.MaxAge = TimeSpan.FromDays(365));
-builder.Services.AddCors(options => options.AddPolicy("mutualgpu-provider", policy =>
-{
-    if (providerCorsOrigins.Length > 0)
-    {
-        policy.WithOrigins(providerCorsOrigins)
-            .WithMethods("POST")
-            .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256")
-            .AllowCredentials();
-    }
-}));
+builder.Services.AddCors();
 
 var providerCredentials = builder.Configuration.GetSection("MutualGPU:Providers").Get<ProviderCredential[]>() ?? [];
 var providerKeys = providerCredentials
@@ -138,6 +132,8 @@ builder.Services.AddSingleton<SchedulerSignal>();
 builder.Services.AddSingleton<IApplicationEventSink>(static services => services.GetRequiredService<SchedulerSignal>());
 builder.Services.AddSingleton<MutualGpuTelemetry>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
+builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
 builder.Services.AddSingleton(services => new AdminAccessService(
     builder.Configuration["MutualGPU:Admin:MasterPassword"],
     services.GetRequiredService<TimeProvider>()));
@@ -175,6 +171,8 @@ if (Boolean.TryParse(builder.Configuration["NetCats:FiberDiagnostics:Enabled"], 
 }
 
 var app = builder.Build();
+var partnerResources = app.Services.GetRequiredService<IPartnerResourceRegistry>();
+await partnerResources.InitializeAsync(CancellationToken.None);
 app.UseExceptionHandler();
 app.UseForwardedHeaders();
 app.UseHsts();
@@ -191,7 +189,13 @@ app.Use(async (context, next) =>
     }
     await next(context);
 });
-app.UseCors("mutualgpu-provider");
+app.UseCors(policy => policy
+    .SetIsOriginAllowed(origin =>
+        providerCorsOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase) ||
+        partnerResources.IsApprovedOrigin(origin))
+    .WithMethods("GET", "POST")
+    .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256")
+    .AllowCredentials());
 app.Use(async (context, next) =>
 {
     context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://api.producthunt.com https://mutualgpu-data.s3.us-east-1.amazonaws.com; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
@@ -211,6 +215,13 @@ app.Use(async (context, next) =>
     if (IsUnsafeMethod(context.Request.Method) &&
         context.Request.Path.StartsWithSegments("/api/tasks") &&
         !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    if (IsUnsafeMethod(context.Request.Method) &&
+        context.Request.Path.StartsWithSegments("/api/partner-resources") &&
+        !IsSameOrigin(context))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return;
@@ -250,6 +261,7 @@ app.MapGrpcService<ProviderControlService>();
 app.MapPost("/provider/enroll", ProviderWebSocketEndpoints.Enroll);
 app.Map("/provider/connect", ProviderWebSocketEndpoints.Connect);
 app.MapPost("/api/webgpu-enrollments", WebGpuEnrollmentEndpoints.Create);
+app.MapPost("/api/partner-resources", PartnerResourceEndpoints.Submit);
 app.MapPost("/provider/tasks/{taskId:guid}/attempts/{attemptId:guid}/upload-token", ProviderResultEndpoints.IssueToken);
 app.MapPost("/provider/tasks/{taskId:guid}/attempts/{attemptId:guid}/result", ProviderResultEndpoints.Upload);
 app.MapPost("/provider/tasks/{taskId:guid}/attempts/{attemptId:guid}/complete/{receipt}", ProviderResultEndpoints.Complete);
@@ -281,9 +293,15 @@ static bool IsTrustedBrowserWriteOrigin(HttpContext context, IReadOnlyCollection
 {
     var origin = context.Request.Headers.Origin.ToString();
     if (String.IsNullOrWhiteSpace(origin)) return true;
-    var requestOrigin = $"{context.Request.Scheme}://{context.Request.Host}";
-    return StringComparer.OrdinalIgnoreCase.Equals(origin, requestOrigin) ||
+    return IsSameOrigin(context) ||
         allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase);
+}
+
+static bool IsSameOrigin(HttpContext context)
+{
+    var origin = context.Request.Headers.Origin.ToString();
+    return String.IsNullOrWhiteSpace(origin) ||
+        StringComparer.OrdinalIgnoreCase.Equals(origin, $"{context.Request.Scheme}://{context.Request.Host}");
 }
 
 static bool IsUnsafeMethod(string method) =>

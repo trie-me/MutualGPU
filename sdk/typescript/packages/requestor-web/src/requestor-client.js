@@ -60,7 +60,7 @@ export class RequestorClient {
   }
 
   async getTaskResult(taskId) {
-    return (await this.#send(`/api/tasks/${segment(taskId)}/result`)).data;
+    return (await this.#send(`/api/tasks/${segment(taskId)}/result`, { cache: "no-store" })).data;
   }
 
   async createWebGpuEnrollment() {

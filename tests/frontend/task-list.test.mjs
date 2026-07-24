@@ -34,7 +34,8 @@ test('polled tasks render status, reevaluation, and result download behavior in 
   const opened = [];
   const fetchImpl = async (url, init) => {
     requests.push({ url, init });
-    return { json: async () => ({ artifacts: [{ name: 'result', downloadUrl: 'https://objects.example/result.zip' }, { name: 'preview', downloadUrl: 'https://objects.example/preview.png' }] }) };
+    const resultNumber = requests.filter(request => request.url.endsWith('/result')).length;
+    return { json: async () => ({ artifacts: [{ name: 'result', downloadUrl: `https://objects.example/result-${resultNumber}.zip` }, { name: 'preview', downloadUrl: 'https://objects.example/preview.png' }] }) };
   };
   renderTaskList(container, [
     { taskId: 'running', capabilityName: 'Styliser', status: 'Running', attemptCount: 1, canReevaluate: true, canRetrieveResult: false },
@@ -63,10 +64,11 @@ test('polled tasks render status, reevaluation, and result download behavior in 
 
   assert.equal(prevented, true);
   assert.deepEqual(requests, [
-    { url: '/api/tasks/complete/result', init: undefined },
+    { url: '/api/tasks/complete/result', init: { cache: 'no-store' } },
     { url: '/api/tasks/running/reevaluate', init: { method: 'POST' } },
+    { url: '/api/tasks/complete/result', init: { cache: 'no-store' } },
   ]);
-  assert.deepEqual(opened, [['https://objects.example/result.zip', '_blank', 'noopener']]);
+  assert.deepEqual(opened, [['https://objects.example/result-2.zip', '_blank', 'noopener']]);
 });
 
 test('an empty poll result explains where newly queued work will appear', () => {

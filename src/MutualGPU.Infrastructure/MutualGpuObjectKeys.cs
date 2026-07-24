@@ -17,6 +17,11 @@ public sealed class MutualGpuObjectKeys
 
     public ObjectPrefix ProviderKeys() => new($"{Root}/provider-keys");
 
+    public ObjectKey PartnerResourceRequest(Guid requestId) =>
+        new($"{Root}/partner-resources/{requestId:N}.json");
+
+    public ObjectPrefix PartnerResourceRequests() => new($"{Root}/partner-resources");
+
     public ObjectKey NodeIdentity(string presharedKey) => NodeIdentityForProviderDigest(ProviderDigest(presharedKey));
 
     public ObjectKey NodeIdentityForProviderDigest(string providerDigest) =>

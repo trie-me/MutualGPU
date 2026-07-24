@@ -63,6 +63,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("webgpu-enrollment-key", page, StringComparison.Ordinal);
         Assert.Contains("Offer one useful unit, straight from Chrome.", page, StringComparison.Ordinal);
         Assert.Contains("https://yosun-triposplat-webgpu-demo.static.hf.space/e2e-web#provider-panel", page, StringComparison.Ordinal);
+        Assert.Contains("partner-integration", page, StringComparison.Ordinal);
+        Assert.Contains("partner-resource-form.js", page, StringComparison.Ordinal);
         Assert.True(snapshot.IsSuccessStatusCode);
         Assert.Contains("roots", await snapshot.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
@@ -125,6 +127,56 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var response = await client.PostAsJsonAsync("/admin/api/login", new { password = "any-password-that-is-long-enough" });
 
         Assert.Equal(System.Net.HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Partner_resource_requests_require_an_explicit_origin_and_admin_approval_whitelists_it()
+    {
+        const string adminPassword = "partner-resource-admin-password-32-bytes";
+        using var adminFactory = factory.WithWebHostBuilder(builder =>
+            builder.UseSetting("MutualGPU:Admin:MasterPassword", adminPassword));
+        using var client = adminFactory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = true,
+        });
+
+        using var invalid = await client.PostAsJsonAsync("/api/partner-resources", new
+        {
+            partnerName = "Example Partner",
+            contactEmail = "ops@example.test",
+            origin = "https://*.example.test",
+        });
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, invalid.StatusCode);
+
+        using var submitted = await client.PostAsJsonAsync("/api/partner-resources", new
+        {
+            partnerName = "Example Partner",
+            contactEmail = "ops@example.test",
+            origin = "https://app.example.test/",
+        });
+        Assert.Equal(System.Net.HttpStatusCode.Created, submitted.StatusCode);
+        var request = await submitted.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
+        Assert.NotNull(request);
+        Assert.Equal("https://app.example.test", request.Origin);
+        Assert.Null(request.ProcessedAt);
+
+        using var login = await client.PostAsJsonAsync("/admin/api/login", new { password = adminPassword });
+        Assert.True(login.IsSuccessStatusCode);
+        using var pending = await client.GetAsync("/admin/api/partner-resources/pending");
+        var pendingRequests = await pending.Content.ReadFromJsonAsync<PartnerResourceRequestDto[]>();
+        Assert.Contains(pendingRequests!, item => item.Id == request.Id && item.Origin == request.Origin);
+
+        using var approved = await client.PostAsync($"/admin/api/partner-resources/{request.Id:D}/approve", null);
+        Assert.True(approved.IsSuccessStatusCode);
+        var approvedRequest = await approved.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
+        Assert.NotNull(approvedRequest?.ProcessedAt);
+
+        using var capabilityRequest = new HttpRequestMessage(HttpMethod.Get, "/api/capabilities/");
+        capabilityRequest.Headers.Add("Origin", request.Origin);
+        using var capabilityResponse = await client.SendAsync(capabilityRequest);
+        Assert.True(capabilityResponse.IsSuccessStatusCode);
+        Assert.Equal(request.Origin, capabilityResponse.Headers.GetValues("Access-Control-Allow-Origin").Single());
     }
 
     [Fact]
@@ -388,6 +440,44 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal(created.TaskId, repeated!.TaskId);
         var listed = await client.GetFromJsonAsync<TaskDto[]>("/api/tasks/");
         Assert.Contains(listed!, task => task.TaskId == created.TaskId);
+    }
+
+    [Fact]
+    public async Task Exhausted_provider_failures_return_the_latest_actionable_reason_without_a_result()
+    {
+        var requestorId = RequestorId.New();
+        var capability = new CapabilityDefinition(CapabilityId.New(), "TripoSplat", [], new OutputDefinition(), "triposplat-contract");
+        var task = new TaskRequest(TaskId.New(), requestorId, capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        for (var index = 1; index <= 4; index++)
+        {
+            var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), $"triposplat-handle-{index}", DateTimeOffset.UtcNow);
+            task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
+            task.Requeue(attempt.Id, attempt.Handle, AttemptState.Failed, "triposplat", "ONNX inference failed for 'triposplat/vae'.");
+        }
+        await factory.Services.GetRequiredService<ITaskRepository>().SaveAsync(task, CancellationToken.None);
+
+        using var client = CreateHttpsClient(handleCookies: false);
+        using var taskRequest = new HttpRequestMessage(HttpMethod.Get, $"/api/tasks/{task.Id.Value:D}");
+        taskRequest.Headers.Add("Cookie", $"{RequestorIdentity.CookieName}={requestorId.Value:D}");
+        using var taskResponse = await client.SendAsync(taskRequest, CancellationToken.None);
+        var dto = await taskResponse.Content.ReadFromJsonAsync<TaskDto>();
+
+        Assert.True(taskResponse.IsSuccessStatusCode);
+        Assert.NotNull(dto);
+        Assert.Equal(MutualGPU.Domain.TaskStatus.Failed, dto.Status);
+        Assert.Equal(4, dto.AttemptCount);
+        Assert.Equal("triposplat", dto.FailureStep);
+        Assert.Equal("ONNX inference failed for 'triposplat/vae'.", dto.FailureReason);
+        Assert.False(dto.CanRetrieveResult);
+
+        using var resultRequest = new HttpRequestMessage(HttpMethod.Get, $"/api/tasks/{task.Id.Value:D}/result");
+        resultRequest.Headers.Add("Cookie", $"{RequestorIdentity.CookieName}={requestorId.Value:D}");
+        using var resultResponse = await client.SendAsync(resultRequest, CancellationToken.None);
+        using var problem = JsonDocument.Parse(await resultResponse.Content.ReadAsStringAsync(CancellationToken.None));
+
+        Assert.Equal(System.Net.HttpStatusCode.Conflict, resultResponse.StatusCode);
+        Assert.Equal("no-store, private", resultResponse.Headers.CacheControl?.ToString());
+        Assert.Equal("result_not_available", problem.RootElement.GetProperty("code").GetString());
     }
 
     [Fact]
@@ -658,6 +748,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var requestorClient = CreateHttpsClient(handleCookies: false);
         using var resultResponse = await requestorClient.SendAsync(resultRequest, CancellationToken.None);
         Assert.True(resultResponse.IsSuccessStatusCode);
+        Assert.Equal("no-store, private", resultResponse.Headers.CacheControl?.ToString());
         using var resultDocument = JsonDocument.Parse(await resultResponse.Content.ReadAsStringAsync(CancellationToken.None));
         var artifacts = resultDocument.RootElement.GetProperty("artifacts").EnumerateArray().ToArray();
         Assert.Equal(["result", "metadata", "thumbnail", "preview", "logs"], artifacts.Select(static artifact => artifact.GetProperty("name").GetString()));

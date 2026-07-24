@@ -92,6 +92,18 @@ h3 { font-size:1.08rem; margin-bottom:.4rem; }
 .community-callout > div:first-child { max-width:43rem; }
 .community-callout > div:first-child > p:not(.eyebrow) { color:var(--paper-muted); line-height:1.75; }
 .community-callout__button { margin-top:.5rem; }
+.partner-integration { align-items:start; display:grid; gap:clamp(1.5rem, 5vw, 4rem); grid-template-columns:minmax(0, 1fr) minmax(20rem, .72fr); margin-top:4.5rem; }
+.partner-integration__copy > p:not(.eyebrow) { color:var(--paper-muted); line-height:1.7; max-width:42rem; }
+.partner-integration__copy ul { color:#c6d8f3; line-height:1.75; margin:1.2rem 0 0; padding-left:1.25rem; }
+.partner-integration__copy li::marker { color:var(--lime); }
+.partner-resource-form { background:#06162dd9; border:1px solid #5eb9ff54; border-radius:.85rem; padding:1.2rem; }
+.partner-resource-form label { color:#cfe1fa; display:block; font-size:.84rem; font-weight:800; margin-top:.95rem; }
+.partner-resource-form label:first-child { margin-top:0; }
+.partner-resource-form .assist { color:var(--paper-muted); font-size:.78rem; line-height:1.5; margin:-.45rem 0 1.05rem; }
+.partner-resource-form .assist code { color:var(--lime); }
+.partner-resource-form button { margin-top:.35rem; width:100%; }
+.partner-resource-form [role=status] { font-size:.86rem; line-height:1.5; margin:.85rem 0 0; min-height:1.3rem; }
+.form-success { color:var(--lime); }.form-error { color:var(--danger); }
 .signal-stack { background:linear-gradient(135deg, #0d2850aa, #07152baa); border:1px solid #558ed766; border-radius:1rem; display:grid; gap:.65rem; justify-items:stretch; padding:2.1rem; position:relative; }
 .signal-stack::before { background:radial-gradient(circle, #b785ff33, transparent 65%); content:""; inset:0; pointer-events:none; position:absolute; }
 .signal-stack span { background:linear-gradient(90deg, var(--lilac), var(--cyan)); border-radius:99rem; box-shadow:0 0 .9rem #4de8ff2e; display:block; height:.32rem; position:relative; }
@@ -103,7 +115,7 @@ h3 { font-size:1.08rem; margin-bottom:.4rem; }
 @media(max-width:850px) {
   .site-header { align-items:flex-start; flex-wrap:wrap; }
   .site-tagline { margin:0; order:3; width:100%; }
-  .hero, .layout, .community-callout { grid-template-columns:1fr; }
+  .hero, .layout, .community-callout, .partner-integration { grid-template-columns:1fr; }
   .browser-contribution { grid-template-columns:auto minmax(0, 1fr); }
   .browser-contribution__link { grid-column:2; justify-self:start; }
   .hero { min-height:unset; }

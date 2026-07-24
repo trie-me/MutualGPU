@@ -807,7 +807,7 @@ var RequestorClient = class {
     return { location: result.response.headers.get("location"), task: result.data };
   }
   async getTaskResult(taskId) {
-    return (await this.#send(`/api/tasks/${segment(taskId)}/result`)).data;
+    return (await this.#send(`/api/tasks/${segment(taskId)}/result`, { cache: "no-store" })).data;
   }
   async createWebGpuEnrollment() {
     return (await this.#send("/api/webgpu-enrollments", { method: "POST" })).data;

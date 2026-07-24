@@ -191,7 +191,7 @@ public sealed class TaskRequest
     public void Rebind(AttemptId attemptId, string handle)
     {
         var attempt = GetOwnedAttempt(attemptId, handle, AttemptState.Disconnected);
-        ReplaceAttempt(attempt with { State = AttemptState.Accepted });
+        ReplaceAttempt(attempt with { State = AttemptState.Accepted, DisconnectedAt = null });
         Status = TaskStatus.Running;
     }
 

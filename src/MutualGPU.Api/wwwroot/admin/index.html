@@ -41,6 +41,7 @@
         <button class="tab active" data-view="sessions">Sessions</button>
         <button class="tab" data-view="transactions">Transactions</button>
         <button class="tab" data-view="assignments">Assignments</button>
+        <button class="tab" data-view="partner-resources">Partner requests</button>
         <label class="search"><span>Search</span><input id="search" type="search" placeholder="Name, ID, IP, capability…"></label>
       </nav>
 
@@ -50,6 +51,10 @@
       </section>
       <section id="transactions-view" hidden><div class="section-head"><h2>Task transactions</h2><span id="transaction-count" class="count"></span></div><div class="table-wrap"><table><thead><tr><th>Task</th><th>Capability</th><th>Status</th><th>Resources</th><th>Attempts</th><th>Result</th><th>Created</th></tr></thead><tbody id="transactions-body"></tbody></table></div></section>
       <section id="assignments-view" hidden><div class="section-head"><h2>Provider assignments</h2><span id="assignment-count" class="count"></span></div><div class="table-wrap"><table><thead><tr><th>Attempt</th><th>Task / capability</th><th>Provider</th><th>Session</th><th>State</th><th>Assigned</th><th>Last transition</th><th>Outcome detail</th></tr></thead><tbody id="assignments-body"></tbody></table></div></section>
+      <section id="partner-resources-view" hidden>
+        <div class="section-head"><div><h2>Pending partner resource requests</h2><p class="review-note">Vet the organization and verify control of the exact origin before approving. Approval immediately whitelists that one origin for browser access.</p></div><span id="partner-resource-count" class="count"></span></div>
+        <div id="partner-resource-list" class="partner-resource-list"></div>
+      </section>
     </section>
   </main>
   <script type="module" src="/admin/admin.js"></script>

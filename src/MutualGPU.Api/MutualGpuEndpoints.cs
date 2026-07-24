@@ -228,6 +228,7 @@ public static class MutualGpuEndpoints
 
     public static async Task<IResult> GetTaskResult(HttpContext context, Guid taskId, ITaskRepository tasks, IObjectStore store, MutualGPU.Infrastructure.MutualGpuObjectKeys keys, CancellationToken cancellationToken)
     {
+        context.Response.Headers.CacheControl = "no-store, private";
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
         var task = await tasks.GetAsync(requestorId, new TaskId(taskId), cancellationToken).ConfigureAwait(false);
         if (task is null) return TypedResults.NotFound();
