@@ -13,7 +13,9 @@ public static class AdminEndpoints
         app.MapPost("/admin/api/logout", Logout);
         app.MapGet("/admin/api/overview", Overview);
         app.MapGet("/admin/api/partner-resources/pending", PendingPartnerResources);
+        app.MapGet("/admin/api/partner-resources/approved", ApprovedPartnerResources);
         app.MapPost("/admin/api/partner-resources/{id:guid}/approve", ApprovePartnerResource);
+        app.MapPost("/admin/api/partner-resources/{id:guid}/revoke", RevokePartnerResource);
     }
 
     private static IResult Login(HttpContext context, AdminLoginRequest request, AdminAccessService access)
@@ -115,6 +117,31 @@ public static class AdminEndpoints
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
         var approved = await registry.ApproveAsync(id, cancellationToken).ConfigureAwait(false);
         return approved is null ? Results.NotFound() : Results.Ok(PartnerResourceRequestDto.From(approved));
+    }
+
+    private static async Task<IResult> ApprovedPartnerResources(
+        HttpContext context,
+        AdminAccessService access,
+        IPartnerResourceRegistry registry,
+        CancellationToken cancellationToken)
+    {
+        NoStore(context.Response);
+        if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
+        var requests = await registry.ListApprovedAsync(cancellationToken).ConfigureAwait(false);
+        return Results.Ok(requests.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+    }
+
+    private static async Task<IResult> RevokePartnerResource(
+        HttpContext context,
+        Guid id,
+        AdminAccessService access,
+        IPartnerResourceRegistry registry,
+        CancellationToken cancellationToken)
+    {
+        NoStore(context.Response);
+        if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
+        var revoked = await registry.RevokeAsync(id, cancellationToken).ConfigureAwait(false);
+        return revoked is null ? Results.NotFound() : Results.Ok(PartnerResourceRequestDto.From(revoked));
     }
 
     private static CookieOptions Cookie(DateTimeOffset? expiresAt) => new()

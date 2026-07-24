@@ -1,5 +1,5 @@
 const el = id => document.getElementById(id);
-const state = { data: null, partnerResources: [], selectedSession: null, view: 'sessions', query: '' };
+const state = { data: null, partnerResources: [], approvedPartners: [], selectedSession: null, view: 'sessions', query: '' };
 
 el('login-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -32,14 +32,16 @@ document.querySelectorAll('.tab').forEach(button => button.addEventListener('cli
 }));
 
 async function load() {
-  const [response, resources] = await Promise.all([
+  const [response, resources, approved] = await Promise.all([
     fetch('/admin/api/overview', { credentials: 'same-origin', cache: 'no-store' }),
-    fetch('/admin/api/partner-resources/pending', { credentials: 'same-origin', cache: 'no-store' })
+    fetch('/admin/api/partner-resources/pending', { credentials: 'same-origin', cache: 'no-store' }),
+    fetch('/admin/api/partner-resources/approved', { credentials: 'same-origin', cache: 'no-store' })
   ]);
-  if (response.status === 401 || resources.status === 401) { showLogin(); return; }
-  if (!response.ok || !resources.ok) { el('live-state').textContent = 'Unavailable'; return; }
+  if (response.status === 401 || resources.status === 401 || approved.status === 401) { showLogin(); return; }
+  if (!response.ok || !resources.ok || !approved.ok) { el('live-state').textContent = 'Unavailable'; return; }
   state.data = await response.json();
   state.partnerResources = await resources.json();
+  state.approvedPartners = await approved.json();
   el('login-view').hidden = true;
   el('console-view').hidden = false;
   render();
@@ -48,6 +50,7 @@ async function load() {
 function showLogin() {
   state.data = null;
   state.partnerResources = [];
+  state.approvedPartners = [];
   el('console-view').hidden = true;
   el('login-view').hidden = false;
   el('password').focus();
@@ -63,8 +66,8 @@ function render() {
     ['Assignments', summary.assignments], ['Unsuccessful', summary.unsuccessfulAssignments]
   ];
   replace(el('metrics'), metrics.map(([label, value]) => node('div', 'metric', node('strong', '', String(value)), node('span', '', label))));
-  ['sessions', 'transactions', 'assignments', 'partner-resources'].forEach(view => { el(`${view}-view`).hidden = state.view !== view; });
-  renderSessions(); renderTransactions(); renderAssignments(); renderPartnerResources();
+  ['sessions', 'transactions', 'assignments', 'partner-resources', 'approved-partners'].forEach(view => { el(`${view}-view`).hidden = state.view !== view; });
+  renderSessions(); renderTransactions(); renderAssignments(); renderPartnerResources(); renderApprovedPartners();
 }
 
 function renderSessions() {
@@ -151,13 +154,35 @@ function renderPartnerResources() {
       approve.disabled = true;
       const response = await fetch(`/admin/api/partner-resources/${encodeURIComponent(item.id)}/approve`, { method: 'POST', credentials: 'same-origin' });
       if (!response.ok) { approve.disabled = false; approve.textContent = 'Could not approve — retry'; return; }
+      const approved = await response.json();
       state.partnerResources = state.partnerResources.filter(request => request.id !== item.id);
+      state.approvedPartners = [approved, ...state.approvedPartners];
       renderPartnerResources();
     });
     return node('article', 'partner-resource-card',
       node('div', '', node('p', 'eyebrow', 'Pending review'), node('h3', '', item.partnerName), node('p', 'resource-origin', item.origin), node('p', 'muted', item.contactEmail), node('small', '', `Submitted ${formatDate(item.submittedAt)}`)),
       approve);
   }) : [node('p', 'empty pending-empty', 'No partner resource requests are awaiting review.')]);
+}
+
+function renderApprovedPartners() {
+  const partners = state.approvedPartners.filter(item => matches(item.partnerName, item.contactEmail, item.origin, item.id));
+  el('approved-partner-count').textContent = `${partners.length} active`;
+  replace(el('approved-partner-list'), partners.length ? partners.map(item => {
+    const revoke = node('button', 'revoke-resource', 'Revoke access');
+    revoke.type = 'button';
+    revoke.addEventListener('click', async () => {
+      if (!window.confirm(`Revoke browser access for ${item.origin}?`)) return;
+      revoke.disabled = true;
+      const response = await fetch(`/admin/api/partner-resources/${encodeURIComponent(item.id)}/revoke`, { method: 'POST', credentials: 'same-origin' });
+      if (!response.ok) { revoke.disabled = false; revoke.textContent = 'Could not revoke — retry'; return; }
+      state.approvedPartners = state.approvedPartners.filter(partner => partner.id !== item.id);
+      renderApprovedPartners();
+    });
+    return node('article', 'partner-resource-card',
+      node('div', '', node('p', 'eyebrow', 'Browser access active'), node('h3', '', item.partnerName), node('p', 'resource-origin', item.origin), node('p', 'muted', item.contactEmail), node('small', '', `Approved ${formatDate(item.processedAt)}`)),
+      revoke);
+  }) : [node('p', 'empty pending-empty', 'No partners currently have browser access.')]);
 }
 
 function node(tag, className, ...children) {

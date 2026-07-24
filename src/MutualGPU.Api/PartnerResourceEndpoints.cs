@@ -105,8 +105,9 @@ public sealed record PartnerResourceRequestDto(
     string ContactEmail,
     string Origin,
     DateTimeOffset SubmittedAt,
-    DateTimeOffset? ProcessedAt)
+    DateTimeOffset? ProcessedAt,
+    DateTimeOffset? RevokedAt)
 {
     public static PartnerResourceRequestDto From(PartnerResourceRequest request) =>
-        new(request.Id, request.PartnerName, request.ContactEmail, request.Origin, request.SubmittedAt, request.ProcessedAt);
+        new(request.Id, request.PartnerName, request.ContactEmail, request.Origin, request.SubmittedAt, request.ProcessedAt, request.RevokedAt);
 }

@@ -172,11 +172,37 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         var approvedRequest = await approved.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
         Assert.NotNull(approvedRequest?.ProcessedAt);
 
+        using var approvedPartners = await client.GetAsync("/admin/api/partner-resources/approved");
+        var activePartners = await approvedPartners.Content.ReadFromJsonAsync<PartnerResourceRequestDto[]>();
+        Assert.Contains(activePartners!, item => item.Id == request.Id && item.RevokedAt is null);
+
         using var capabilityRequest = new HttpRequestMessage(HttpMethod.Get, "/api/capabilities/");
         capabilityRequest.Headers.Add("Origin", request.Origin);
         using var capabilityResponse = await client.SendAsync(capabilityRequest);
         Assert.True(capabilityResponse.IsSuccessStatusCode);
         Assert.Equal(request.Origin, capabilityResponse.Headers.GetValues("Access-Control-Allow-Origin").Single());
+
+        using var revoked = await client.PostAsync($"/admin/api/partner-resources/{request.Id:D}/revoke", null);
+        Assert.True(revoked.IsSuccessStatusCode);
+        var revokedRequest = await revoked.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
+        Assert.NotNull(revokedRequest?.RevokedAt);
+
+        using var revokedCapabilityRequest = new HttpRequestMessage(HttpMethod.Get, "/api/capabilities/");
+        revokedCapabilityRequest.Headers.Add("Origin", request.Origin);
+        using var revokedCapabilityResponse = await client.SendAsync(revokedCapabilityRequest);
+        Assert.True(revokedCapabilityResponse.IsSuccessStatusCode);
+        Assert.False(revokedCapabilityResponse.Headers.TryGetValues("Access-Control-Allow-Origin", out _));
+
+        using var approvedAfterRevocation = await client.GetAsync("/admin/api/partner-resources/approved");
+        var activeAfterRevocation = await approvedAfterRevocation.Content.ReadFromJsonAsync<PartnerResourceRequestDto[]>();
+        Assert.DoesNotContain(activeAfterRevocation!, item => item.Id == request.Id);
+
+        var restartedRegistry = new ObjectStorePartnerResourceRegistry(
+            adminFactory.Services.GetRequiredService<IObjectStore>(),
+            adminFactory.Services.GetRequiredService<MutualGpuObjectKeys>(),
+            TimeProvider.System);
+        await restartedRegistry.InitializeAsync(CancellationToken.None);
+        Assert.False(restartedRegistry.IsApprovedOrigin(request.Origin));
     }
 
     [Fact]

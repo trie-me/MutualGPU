@@ -67,7 +67,11 @@ public interface IPartnerResourceRegistry
 
     Task<IReadOnlyList<PartnerResourceRequest>> ListPendingAsync(CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<PartnerResourceRequest>> ListApprovedAsync(CancellationToken cancellationToken);
+
     Task<PartnerResourceRequest?> ApproveAsync(Guid id, CancellationToken cancellationToken);
+
+    Task<PartnerResourceRequest?> RevokeAsync(Guid id, CancellationToken cancellationToken);
 
     bool IsApprovedOrigin(string? origin);
 }
@@ -80,7 +84,8 @@ public sealed record PartnerResourceRequest(
     string ContactEmail,
     string Origin,
     DateTimeOffset SubmittedAt,
-    DateTimeOffset? ProcessedAt = null);
+    DateTimeOffset? ProcessedAt = null,
+    DateTimeOffset? RevokedAt = null);
 
 public interface IStartupRecovery
 {

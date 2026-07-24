@@ -16,14 +16,14 @@ public sealed class ObjectStorePartnerResourceRegistry(
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ConcurrentDictionary<string, byte> approvedOrigins = new(StringComparer.Ordinal);
-    private readonly SemaphoreSlim approvalGate = new(1, 1);
+    private readonly SemaphoreSlim reviewGate = new(1, 1);
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await foreach (var entry in store.ListAsync(keys.PartnerResourceRequests(), cancellationToken).ConfigureAwait(false))
         {
             var request = await ReadAsync(entry.Key, cancellationToken).ConfigureAwait(false);
-            if (request?.ProcessedAt is not null)
+            if (request is { ProcessedAt: not null, RevokedAt: null })
             {
                 approvedOrigins.TryAdd(request.Origin, 0);
             }
@@ -58,26 +58,34 @@ public sealed class ObjectStorePartnerResourceRegistry(
         return pending.OrderBy(static request => request.SubmittedAt).ToArray();
     }
 
+    public async Task<IReadOnlyList<PartnerResourceRequest>> ListApprovedAsync(CancellationToken cancellationToken)
+    {
+        var approved = new List<PartnerResourceRequest>();
+        await foreach (var entry in store.ListAsync(keys.PartnerResourceRequests(), cancellationToken).ConfigureAwait(false))
+        {
+            var request = await ReadAsync(entry.Key, cancellationToken).ConfigureAwait(false);
+            if (request is { ProcessedAt: not null, RevokedAt: null })
+            {
+                approved.Add(request);
+            }
+        }
+
+        return approved.OrderByDescending(static request => request.ProcessedAt).ToArray();
+    }
+
     public async Task<PartnerResourceRequest?> ApproveAsync(Guid id, CancellationToken cancellationToken)
     {
         if (id == Guid.Empty) return null;
-        await approvalGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await reviewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var key = keys.PartnerResourceRequest(id);
-            PartnerResourceRequest? request;
-            string? eTag;
-            await using (var read = await store.GetAsync(key, cancellationToken).ConfigureAwait(false))
-            {
-                if (read is null) return null;
-                eTag = read.ETag;
-                request = await JsonSerializer.DeserializeAsync<PartnerResourceRequest>(read.Content, JsonOptions, cancellationToken).ConfigureAwait(false);
-            }
+            var (request, eTag) = await ReadForUpdateAsync(id, cancellationToken).ConfigureAwait(false);
             if (request is null) return null;
+            if (request.RevokedAt is not null) return request;
             if (request.ProcessedAt is null)
             {
                 request = request with { ProcessedAt = timeProvider.GetUtcNow() };
-                await WriteAsync(key, request, new ObjectWriteConditions(ExpectedETag: eTag), cancellationToken).ConfigureAwait(false);
+                await WriteAsync(keys.PartnerResourceRequest(id), request, new ObjectWriteConditions(ExpectedETag: eTag), cancellationToken).ConfigureAwait(false);
             }
 
             approvedOrigins.TryAdd(request.Origin, 0);
@@ -85,7 +93,32 @@ public sealed class ObjectStorePartnerResourceRegistry(
         }
         finally
         {
-            approvalGate.Release();
+            reviewGate.Release();
+        }
+    }
+
+    public async Task<PartnerResourceRequest?> RevokeAsync(Guid id, CancellationToken cancellationToken)
+    {
+        if (id == Guid.Empty) return null;
+        await reviewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var (request, eTag) = await ReadForUpdateAsync(id, cancellationToken).ConfigureAwait(false);
+            if (request is not { ProcessedAt: not null, RevokedAt: null }) return null;
+
+            request = request with { RevokedAt = timeProvider.GetUtcNow() };
+            await WriteAsync(keys.PartnerResourceRequest(id), request, new ObjectWriteConditions(ExpectedETag: eTag), cancellationToken).ConfigureAwait(false);
+            approvedOrigins.TryRemove(request.Origin, out _);
+            if ((await ListApprovedAsync(cancellationToken).ConfigureAwait(false)).Any(active =>
+                StringComparer.Ordinal.Equals(active.Origin, request.Origin)))
+            {
+                approvedOrigins.TryAdd(request.Origin, 0);
+            }
+            return request;
+        }
+        finally
+        {
+            reviewGate.Release();
         }
     }
 
@@ -98,6 +131,14 @@ public sealed class ObjectStorePartnerResourceRegistry(
         return read is null
             ? null
             : await JsonSerializer.DeserializeAsync<PartnerResourceRequest>(read.Content, JsonOptions, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<(PartnerResourceRequest? Request, string? ETag)> ReadForUpdateAsync(Guid id, CancellationToken cancellationToken)
+    {
+        await using var read = await store.GetAsync(keys.PartnerResourceRequest(id), cancellationToken).ConfigureAwait(false);
+        if (read is null) return (null, null);
+        var request = await JsonSerializer.DeserializeAsync<PartnerResourceRequest>(read.Content, JsonOptions, cancellationToken).ConfigureAwait(false);
+        return (request, read.ETag);
     }
 
     private async Task WriteAsync(ObjectKey key, PartnerResourceRequest request, ObjectWriteConditions conditions, CancellationToken cancellationToken)

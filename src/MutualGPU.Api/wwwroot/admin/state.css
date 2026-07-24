@@ -1,1 +1,2 @@
 [hidden] { display: none !important; }
+.revoke-resource{background:#3a1721;border:1px solid #8b3448;border-radius:8px;color:#fecdd3;cursor:pointer;font-weight:800;padding:10px 12px;white-space:nowrap}.revoke-resource:hover{background:#54202e;border-color:#fb7185;color:#fff1f2}.revoke-resource:disabled{opacity:.55}

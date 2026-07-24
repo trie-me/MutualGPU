@@ -42,6 +42,7 @@
         <button class="tab" data-view="transactions">Transactions</button>
         <button class="tab" data-view="assignments">Assignments</button>
         <button class="tab" data-view="partner-resources">Partner requests</button>
+        <button class="tab" data-view="approved-partners">Approved partners</button>
         <label class="search"><span>Search</span><input id="search" type="search" placeholder="Name, ID, IP, capability…"></label>
       </nav>
 
@@ -54,6 +55,10 @@
       <section id="partner-resources-view" hidden>
         <div class="section-head"><div><h2>Pending partner resource requests</h2><p class="review-note">Vet the organization and verify control of the exact origin before approving. Approval immediately whitelists that one origin for browser access.</p></div><span id="partner-resource-count" class="count"></span></div>
         <div id="partner-resource-list" class="partner-resource-list"></div>
+      </section>
+      <section id="approved-partners-view" hidden>
+        <div class="section-head"><div><h2>Approved partners</h2><p class="review-note">Revoking a partner removes its exact origin from the live browser allow-list immediately and keeps it revoked after restart.</p></div><span id="approved-partner-count" class="count"></span></div>
+        <div id="approved-partner-list" class="partner-resource-list"></div>
       </section>
     </section>
   </main>
