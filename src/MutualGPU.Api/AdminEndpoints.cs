@@ -111,11 +111,13 @@ public static class AdminEndpoints
         Guid id,
         AdminAccessService access,
         IPartnerResourceRegistry registry,
+        BrowserObjectCorsSynchronizer browserObjectCors,
         CancellationToken cancellationToken)
     {
         NoStore(context.Response);
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
         var approved = await registry.ApproveAsync(id, cancellationToken).ConfigureAwait(false);
+        if (approved is not null) await browserObjectCors.SynchronizeAsync(cancellationToken).ConfigureAwait(false);
         return approved is null ? Results.NotFound() : Results.Ok(PartnerResourceRequestDto.From(approved));
     }
 
@@ -136,11 +138,13 @@ public static class AdminEndpoints
         Guid id,
         AdminAccessService access,
         IPartnerResourceRegistry registry,
+        BrowserObjectCorsSynchronizer browserObjectCors,
         CancellationToken cancellationToken)
     {
         NoStore(context.Response);
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
         var revoked = await registry.RevokeAsync(id, cancellationToken).ConfigureAwait(false);
+        if (revoked is not null) await browserObjectCors.SynchronizeAsync(cancellationToken).ConfigureAwait(false);
         return revoked is null ? Results.NotFound() : Results.Ok(PartnerResourceRequestDto.From(revoked));
     }
 

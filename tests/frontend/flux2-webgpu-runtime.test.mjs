@@ -32,16 +32,36 @@ test("browser runtime pins and validates the replacement Hugging Face model", as
 
   assert.match(runtime, /black-forest-labs\/FLUX\.2-klein-4B/);
   assert.match(runtime, /e7b7dc27f91deacad38e78976d1f2b499d76a294/);
-  assert.match(runtime, /trie-me\/flux2-klein-4b-webgpu/);
+  assert.match(runtime, /KatzenStuff\/flux-2-klein-4b-webgpu/);
+  assert.match(runtime, /resolve\/main\/models\/klein-4b/);
   assert.match(runtime, /onnxruntime-web@1\.27\.0/);
+  assert.match(runtime, /RUNTIME_BUILD = "20260725-klein-fp16-diagnostics-1"/);
   assert.match(runtime, /pipeline-1024\/manifest\.json/);
   assert.match(runtime, /transformerManifest\.parts\?\.length !== 4/);
   assert.match(runtime, /vaeManifest\.dtype !== "float16"/);
   assert.match(runtime, /DeterministicNormalGenerator/);
 
   assert.doesNotMatch(runtime, /ryanhlewis/);
+  assert.doesNotMatch(runtime, /trie-me\/flux2-klein-4b-webgpu/);
   assert.doesNotMatch(runtime, /custom-lowbit-webgpu/);
   assert.doesNotMatch(runtime, /enableFusedTransformer/);
+});
+
+test("browser provider records the precise FLUX.2 download and WebGPU-session failure stage", async () => {
+  const [runtime, host] = await Promise.all([
+    readFile(new URL("js/flux2-webgpu-runtime.js", root), "utf8"),
+    readFile(new URL("js/host-compute.js", root), "utf8")
+  ]);
+
+  assert.match(runtime, /Received \$\{label\} response: HTTP \$\{response\.status\}/);
+  assert.match(runtime, /Verified \$\{label\}:/);
+  assert.match(runtime, /stage: "artifact_download"/);
+  assert.match(runtime, /stage: "webgpu_session_create"/);
+  assert.match(runtime, /WebGPU device lost:/);
+  assert.match(host, /describeAssignmentFailure/);
+  assert.match(host, /stage === "artifact_download" \? "model_download"/);
+  assert.match(host, /stage === "webgpu_session_create" \? "webgpu_session_create"/);
+  assert.match(host, /FLUX\.2 provider diagnostic:/);
 });
 
 test("Klein prompt preparation uses the no-thinking Qwen template and a causal padding mask", () => {

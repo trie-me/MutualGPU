@@ -11,6 +11,12 @@ Parameters:
   CertificateArn:
     Type: String
     Description: Issued ACM certificate ARN for the public HTTPS listener.
+  PublicApiHost:
+    Type: String
+    Default: mutualgpu.com
+    AllowedPattern: '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$'
+    ConstraintDescription: Must be the DNS hostname covered by CertificateArn, without a scheme or path.
+    Description: Public DNS hostname covered by CertificateArn and routed to this load balancer.
   DeploymentSecretArn:
     Type: String
     Description: ARN of the Secrets Manager JSON secret named mutualgpu/deployment.
@@ -325,6 +331,10 @@ Outputs:
   LoadBalancerDnsName:
     Value: !GetAtt LoadBalancer.DNSName
   HttpsUrl:
+    Description: Certificate-valid public API base URL.
+    Value: !Sub 'https://${PublicApiHost}'
+  LoadBalancerHttpsUrl:
+    Description: Raw ALB HTTPS URL. Use only for infrastructure diagnostics; it is not certificate-valid unless CertificateArn covers this hostname.
     Value: !Sub 'https://${LoadBalancer.DNSName}'
   ServiceName:
     Value: !GetAtt Service.Name

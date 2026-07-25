@@ -24,6 +24,7 @@ public sealed class ProviderControlService(
     DisconnectRecoveryService recovery,
     MutualGpuFiberOwner fibers,
     TaskAttemptFiberTracker taskFibers,
+    MutualGpuTelemetry telemetry,
     ILogger<ProviderControlService> logger) : ProviderControl.ProviderControlBase
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -136,6 +137,24 @@ public sealed class ProviderControlService(
     {
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Connect)
             throw new RpcException(new Status(StatusCode.InvalidArgument, "ConnectRequest may appear only once."));
+        if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
+        {
+            var disposition = session.ReportProgress(
+                executionUnitId,
+                ParseTaskId(message.Progress.TaskId),
+                ParseAttemptId(message.Progress.AttemptId),
+                message.Progress.TaskHandle,
+                new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message));
+            ProviderMessageLogging.Progress(logger, "grpc", executionUnitId, message.Progress.TaskId, message.Progress.AttemptId, message.Progress.SequenceNumber, disposition);
+            telemetry.ProviderProgress("grpc", disposition);
+            if (disposition is ProviderProgressDisposition.DroppedStaleSequence or ProviderProgressDisposition.DroppedSuperseded) return;
+            if (disposition is not ProviderProgressDisposition.Accepted)
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "The progress update is not eligible for this assignment."));
+
+            var phase = String.IsNullOrWhiteSpace(message.Progress.Phase) ? "provider work" : message.Progress.Phase;
+            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), "task-phase", $"{phase} {message.Progress.Percent:0}%", cancellationToken).ConfigureAwait(false);
+            return;
+        }
         var accepted = message.BodyCase is ProviderMessage.BodyOneofCase.Accepted
             ? await session.Accept(executionUnitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), message.Accepted.TaskHandle, DateTimeOffset.UtcNow).RunAsync(cancellationToken).ConfigureAwait(false)
             : message.BodyCase is ProviderMessage.BodyOneofCase.Rejected
@@ -144,15 +163,15 @@ public sealed class ProviderControlService(
                     ? await session.Fail(executionUnitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step, message.Failed.Reason).RunAsync(cancellationToken).ConfigureAwait(false)
                     : message.BodyCase is ProviderMessage.BodyOneofCase.Completed
                         ? await session.Complete(executionUnitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false)
-                        : message.BodyCase is ProviderMessage.BodyOneofCase.Progress
-                            ? session.ReportProgress(executionUnitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), message.Progress.TaskHandle, new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message))
-                            : message.BodyCase is ProviderMessage.BodyOneofCase.ResultUpload
+                        : message.BodyCase is ProviderMessage.BodyOneofCase.ResultUpload
                                 ? await IssueUploadAuthorizationAsync(executionUnitId, message.ResultUpload, response, responseGate, cancellationToken).ConfigureAwait(false)
                                 : message.BodyCase is ProviderMessage.BodyOneofCase.InputDownload
                                     ? await IssueInputDownloadAsync(executionUnitId, message.InputDownload, response, responseGate, cancellationToken).ConfigureAwait(false)
                                 : true;
         if (!accepted) throw new RpcException(new Status(StatusCode.FailedPrecondition, "The task handle is unknown, revoked, or not owned by this provider."));
         ProviderMessageLogging.Accepted(logger, executionUnitId, message);
+        if (message.BodyCase is ProviderMessage.BodyOneofCase.Failed)
+            ProviderMessageLogging.Failed(logger, "grpc", executionUnitId, message.Failed);
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
         {
             await WriteAsync(response, responseGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);
@@ -161,11 +180,6 @@ public sealed class ProviderControlService(
         {
             taskFibers.Start(executionUnitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId));
             await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), "task-acceptance", "accept assignment", cancellationToken).ConfigureAwait(false);
-        }
-        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
-        {
-            var phase = String.IsNullOrWhiteSpace(message.Progress.Phase) ? "provider work" : message.Progress.Phase;
-            await taskFibers.OperationAsync(executionUnitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), "task-phase", $"{phase} {message.Progress.Percent:0}%", cancellationToken).ConfigureAwait(false);
         }
         else if (message.BodyCase is ProviderMessage.BodyOneofCase.ResultUpload)
         {

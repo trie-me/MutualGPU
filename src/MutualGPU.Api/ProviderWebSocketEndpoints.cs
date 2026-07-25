@@ -87,6 +87,7 @@ public static class ProviderWebSocketEndpoints
         DisconnectRecoveryService recovery,
         TaskAttemptFiberTracker taskFibers,
         MutualGpuFiberOwner fibers,
+        MutualGpuTelemetry telemetry,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
     {
@@ -101,7 +102,7 @@ public static class ProviderWebSocketEndpoints
         {
             var fiber = scope.Start(Latent<int>.DelayAsync(async fiberCancellationToken =>
             {
-                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, logger, fiberCancellationToken).ConfigureAwait(false);
+                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, telemetry, logger, fiberCancellationToken).ConfigureAwait(false);
                 return 0;
             }), new FiberDescriptor("provider-websocket-session"));
             outcome = await fiber.JoinAsync().ConfigureAwait(false);
@@ -126,6 +127,7 @@ public static class ProviderWebSocketEndpoints
         MutualGpuObjectKeys keys,
         DisconnectRecoveryService recovery,
         TaskAttemptFiberTracker taskFibers,
+        MutualGpuTelemetry telemetry,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -160,7 +162,7 @@ public static class ProviderWebSocketEndpoints
             while (socket.State is WebSocketState.Open)
             {
                 var message = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false);
-                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, taskFibers, unitId, message, logger, cancellationToken).ConfigureAwait(false);
+                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, taskFibers, telemetry, unitId, message, logger, cancellationToken).ConfigureAwait(false);
                 if (!valid) { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Invalid task handle.", cancellationToken).ConfigureAwait(false); break; }
                 if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
                     await SendAsync(socket, sendGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);
@@ -184,31 +186,45 @@ public static class ProviderWebSocketEndpoints
         }
     }
 
-    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, ExecutionUnitId unitId, ProviderMessage message, ILogger logger, CancellationToken cancellationToken)
+    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, MutualGpuTelemetry telemetry, ExecutionUnitId unitId, ProviderMessage message, ILogger logger, CancellationToken cancellationToken)
     {
+        if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
+        {
+            var disposition = sessions.ReportProgress(
+                unitId,
+                ParseTaskId(message.Progress.TaskId),
+                ParseAttemptId(message.Progress.AttemptId),
+                message.Progress.TaskHandle,
+                new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message));
+            ProviderMessageLogging.Progress(logger, "wss", unitId, message.Progress.TaskId, message.Progress.AttemptId, message.Progress.SequenceNumber, disposition);
+            telemetry.ProviderProgress("wss", disposition);
+            if (disposition is ProviderProgressDisposition.DroppedStaleSequence or ProviderProgressDisposition.DroppedSuperseded) return true;
+            if (disposition is not ProviderProgressDisposition.Accepted) return false;
+
+            var phase = String.IsNullOrWhiteSpace(message.Progress.Phase) ? "provider work" : message.Progress.Phase;
+            await taskFibers.OperationAsync(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), "task-phase", $"{phase} {message.Progress.Percent:0}%", cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+
         var accepted = message.BodyCase switch
         {
             ProviderMessage.BodyOneofCase.Accepted => await sessions.Accept(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), message.Accepted.TaskHandle, DateTimeOffset.UtcNow).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Rejected => await sessions.Reject(unitId, ParseTaskId(message.Rejected.TaskId), ParseAttemptId(message.Rejected.AttemptId), message.Rejected.TaskHandle, message.Rejected.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Failed => await sessions.Fail(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step, message.Failed.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Completed => await sessions.Complete(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false),
-            ProviderMessage.BodyOneofCase.Progress => sessions.ReportProgress(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), message.Progress.TaskHandle, new TaskProgress(message.Progress.SequenceNumber, DateTimeOffset.UtcNow, message.Progress.Phase, message.Progress.Percent, message.Progress.Message)),
             ProviderMessage.BodyOneofCase.ResultUpload => await IssueUploadAsync(assignments, uploads, socket, sendGate, unitId, message.ResultUpload, cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.InputDownload => await IssueInputAsync(assignments, store, keys, socket, sendGate, unitId, message.InputDownload, cancellationToken).ConfigureAwait(false),
             _ => false,
         };
         if (!accepted) return false;
         ProviderMessageLogging.Accepted(logger, unitId, message);
+        if (message.BodyCase is ProviderMessage.BodyOneofCase.Failed)
+            ProviderMessageLogging.Failed(logger, "wss", unitId, message.Failed);
 
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Accepted)
         {
             taskFibers.Start(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId));
             await taskFibers.OperationAsync(unitId, ParseTaskId(message.Accepted.TaskId), ParseAttemptId(message.Accepted.AttemptId), "task-acceptance", "accept assignment", cancellationToken).ConfigureAwait(false);
-        }
-        else if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
-        {
-            var phase = String.IsNullOrWhiteSpace(message.Progress.Phase) ? "provider work" : message.Progress.Phase;
-            await taskFibers.OperationAsync(unitId, ParseTaskId(message.Progress.TaskId), ParseAttemptId(message.Progress.AttemptId), "task-phase", $"{phase} {message.Progress.Percent:0}%", cancellationToken).ConfigureAwait(false);
         }
         else if (message.BodyCase is ProviderMessage.BodyOneofCase.InputDownload)
         {

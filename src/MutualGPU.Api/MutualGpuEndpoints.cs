@@ -221,7 +221,7 @@ public static class MutualGpuEndpoints
             assignments.TryCancel(active.ExecutionUnitId, task.Id, active.Id, active.Handle);
             assignments.Remove(active.ExecutionUnitId, task.Id, active.Id);
         }
-        progress.Remove(task.Id);
+        if (active is not null) progress.Remove(task.Id, active.Id);
         events.TriggerScheduler();
         return TypedResults.NoContent();
     }

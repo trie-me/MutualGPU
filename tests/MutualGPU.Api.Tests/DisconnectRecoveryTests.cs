@@ -193,15 +193,17 @@ public sealed class DisconnectRecoveryTests
 
     private sealed class Progress : IProviderProgress
     {
-        public bool TryReport(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress progress) => false;
+        public ProviderProgressDisposition Report(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress progress) => ProviderProgressDisposition.RejectedUnknownAssignment;
         public TaskProgress? Get(TaskId taskId) => null;
-        public void Remove(TaskId taskId) { }
+        public void Remove(TaskId taskId, AttemptId attemptId) { }
     }
 
     private sealed class StagedResults : IStagedResults
     {
         public void Stage(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, StagedResult result) { }
         public bool TryTake(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt, out StagedResult result) { result = null!; return false; }
+        public void MarkCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt) { }
+        public bool IsCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt) => false;
     }
 
     private sealed class Events : IApplicationEventSink

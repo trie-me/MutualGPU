@@ -224,6 +224,11 @@ Resources:
                   - !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}'
               - Effect: Allow
                 Action:
+                  - s3:PutBucketCORS
+                  - s3:DeleteBucketCORS
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}'
+              - Effect: Allow
+                Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject

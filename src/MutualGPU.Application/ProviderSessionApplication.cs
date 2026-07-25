@@ -23,20 +23,23 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
 
     public Latent<bool> Complete(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt) => Latent<bool>.DelayAsync(async cancellationToken =>
     {
-        if (!assignments.TryGet(unitId, taskId, attemptId, handle, out var task) || !stagedResults.TryTake(unitId, taskId, attemptId, handle, receipt, out var staged)) return false;
+        if (!assignments.TryGet(unitId, taskId, attemptId, handle, out var task))
+            return stagedResults.IsCompleted(unitId, taskId, attemptId, handle, receipt);
+        if (!stagedResults.TryTake(unitId, taskId, attemptId, handle, receipt, out var staged)) return false;
         try
         {
             task.Complete(attemptId, handle, staged.Result);
             await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
             assignments.Remove(unitId, taskId, attemptId);
-            progress.Remove(taskId);
+            progress.Remove(taskId, attemptId);
+            stagedResults.MarkCompleted(unitId, taskId, attemptId, handle, receipt);
             events.TriggerScheduler();
             return true;
         }
         catch (DomainRuleViolation) { return false; }
     });
 
-    public bool ReportProgress(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress update) => progress.TryReport(unitId, taskId, attemptId, handle, update);
+    public ProviderProgressDisposition ReportProgress(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress update) => progress.Report(unitId, taskId, attemptId, handle, update);
 
     public Latent<int> Disconnect(ExecutionUnitId unitId) => Latent<int>.Delay(() =>
     {
@@ -78,6 +81,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                 active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "disconnect_recovery_expired", "The provider disconnected and did not reconnect before the recovery window expired.");
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
+                progress.Remove(active.Task.Id, active.Attempt.Id);
                 changed++;
             }
             catch (DomainRuleViolation) { }
@@ -97,6 +101,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                 active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "disconnect_recovery_expired", "The provider disconnected and did not reconnect before the recovery window expired.");
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(unitId, active.Task.Id, active.Attempt.Id);
+                progress.Remove(active.Task.Id, active.Attempt.Id);
                 changed++;
             }
             catch (DomainRuleViolation) { }
@@ -115,11 +120,13 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                 active.Task.Requeue(active.Attempt.Id, active.Attempt.Handle, AttemptState.Revoked, "acknowledgement_timeout", "The provider did not accept the task before the acknowledgement deadline.");
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
+                progress.Remove(active.Task.Id, active.Attempt.Id);
                 changed = true;
             }
             catch (DomainRuleViolation)
             {
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
+                progress.Remove(active.Task.Id, active.Attempt.Id);
             }
         }
         if (changed) events.TriggerScheduler();
@@ -134,7 +141,11 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
             {
                 transition(task);
                 await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
-                if (remove) assignments.Remove(unitId, taskId, attemptId);
+                if (remove)
+                {
+                    assignments.Remove(unitId, taskId, attemptId);
+                    progress.Remove(taskId, attemptId);
+                }
                 events.TriggerScheduler();
                 return true;
             }

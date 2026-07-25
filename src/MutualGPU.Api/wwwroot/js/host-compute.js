@@ -1,5 +1,5 @@
-import { BrowserWebSocketTransport, ProviderClient } from "/js/mutualgpu-provider-sdk.js?v=20260725-klein-fp16-1";
-import { loadFlux2WebGpuRuntime } from "/js/flux2-webgpu-runtime.js?v=20260725-klein-fp16-1";
+import { BrowserWebSocketTransport, ProviderClient } from "/js/mutualgpu-provider-sdk.js?v=20260725-klein-fp16-3";
+import { loadFlux2WebGpuRuntime } from "/js/flux2-webgpu-runtime.js?v=20260725-klein-fp16-3";
 
 const SESSION_KEY = "mutualgpu.provider.enrollment";
 const CAPABILITIES = {
@@ -118,8 +118,14 @@ async function handleAssignment(task) {
       log(`Assignment ${task.taskId} was cancelled by the requestor.`, "warn");
       return;
     }
-    log(`Assignment ${task.taskId} failed: ${error.message || "runtime error"}.`, "error");
-    try { await task.fail("inference", "FLUX.2 WebGPU inference failed on the provider."); } catch { }
+    const failure = describeAssignmentFailure(error);
+    log(`Assignment ${task.taskId} failed [${failure.step}]: ${failure.reason}`, "error");
+    try {
+      await task.reportProgress({ phase: "failed", percent: 45, message: failure.reason });
+    } catch { }
+    try { await task.fail(failure.step, failure.reason); } catch (reportError) {
+      log(`Could not report assignment failure to MutualGPU: ${reportError?.message || "transport error"}.`, "warn");
+    }
   } finally {
     task.signal?.removeEventListener("abort", abortInference);
     $("#active-work").textContent = "Waiting for compatible work";
@@ -230,6 +236,39 @@ function integer(value, minimum, maximum, name) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < minimum || number > maximum) throw new Error(`${name} must be between ${minimum} and ${maximum}.`);
   return number;
+}
+
+function describeAssignmentFailure(error) {
+  const diagnostic = error?.flux2Diagnostic;
+  const stage = String(diagnostic?.stage || "inference");
+  const step = stage === "artifact_download" ? "model_download" :
+    stage === "webgpu_session_create" ? "webgpu_session_create" :
+      diagnostic?.deviceLoss ? "webgpu_device_lost" : "inference";
+  const details = [
+    `stage=${stage}`,
+    diagnostic?.build ? `build=${diagnostic.build}` : null,
+    diagnostic?.artifact ? `artifact=${diagnostic.artifact}` : null,
+    diagnostic?.component ? `component=${diagnostic.component}` : null,
+    Number.isFinite(diagnostic?.responseStatus) ? `http=${diagnostic.responseStatus}` : null,
+    Number.isFinite(diagnostic?.expectedBytes) ? `expected=${formatBytes(diagnostic.expectedBytes)}` : null,
+    Number.isFinite(diagnostic?.graphBytes) ? `graph=${formatBytes(diagnostic.graphBytes)}` : null,
+    Number.isFinite(diagnostic?.elapsedMs) ? `elapsed=${(diagnostic.elapsedMs / 1000).toFixed(1)}s` : null,
+    diagnostic?.memory ? diagnostic.memory : null,
+    diagnostic?.deviceLoss ? `deviceLost=${diagnostic.deviceLoss.reason}:${diagnostic.deviceLoss.message}` : null,
+    diagnostic?.errorName ? `${diagnostic.errorName}: ${diagnostic.errorMessage}` : (error?.message || "runtime error")
+  ].filter(Boolean).join("; ");
+  return { step, reason: clipText(`FLUX.2 provider diagnostic: ${details}`, 1400) };
+}
+
+function formatBytes(value) {
+  if (value >= 2 ** 30) return `${(value / 2 ** 30).toFixed(2)}GiB`;
+  if (value >= 2 ** 20) return `${(value / 2 ** 20).toFixed(1)}MiB`;
+  return `${Math.ceil(value / 2 ** 10)}KiB`;
+}
+
+function clipText(value, maximum) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maximum ? `${text.slice(0, maximum - 1)}…` : text;
 }
 
 async function createThumbnail(image) {

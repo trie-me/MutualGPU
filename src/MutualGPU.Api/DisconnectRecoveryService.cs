@@ -19,28 +19,26 @@ public sealed class DisconnectRecoveryService(
     ILogger<DisconnectRecoveryService> logger) : IHostedService
 {
     private static readonly TimeSpan[] Delays = [TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(40), TimeSpan.FromSeconds(80)];
-    private readonly ConcurrentDictionary<ExecutionUnitId, FiberScope> scopes = [];
+    private readonly ConcurrentDictionary<ExecutionUnitId, RecoveryScope> scopes = [];
 
     public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
     public void Start(ExecutionUnitId executionUnitId)
     {
         var scope = fibers.Root.CreateChild(new FiberScopeOptions("disconnect-recovery"));
-        if (!scopes.TryAdd(executionUnitId, scope))
-        {
-            _ = scope.CloseAsync();
-            return;
-        }
+        var recovery = new RecoveryScope(Guid.CreateVersion7(), scope);
+        var previous = scopes.AddOrUpdate(executionUnitId, recovery, (_, _) => recovery);
+        if (previous != recovery) _ = previous.Scope.CloseAsync();
 
         var fiber = scope.Start(Latent<int>.DelayAsync(token => RecoverAsync(executionUnitId, token)), new FiberDescriptor("reconnect-grace"));
-        _ = ObserveAsync(executionUnitId, scope, fiber);
+        _ = ObserveAsync(executionUnitId, recovery, fiber);
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
         foreach (var scope in scopes.Values)
         {
-            await scope.CloseAsync().ConfigureAwait(false);
+            await scope.Scope.CloseAsync().ConfigureAwait(false);
         }
         scopes.Clear();
     }
@@ -56,7 +54,7 @@ public sealed class DisconnectRecoveryService(
         return await sessions.RevokeDisconnected(executionUnitId).RunAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task ObserveAsync(ExecutionUnitId executionUnitId, FiberScope scope, Fiber<int> fiber)
+    private async Task ObserveAsync(ExecutionUnitId executionUnitId, RecoveryScope recovery, Fiber<int> fiber)
     {
         try
         {
@@ -68,11 +66,13 @@ public sealed class DisconnectRecoveryService(
         }
         finally
         {
-            scopes.TryRemove(executionUnitId, out _);
-            await scope.CloseAsync().ConfigureAwait(false);
+            ((ICollection<KeyValuePair<ExecutionUnitId, RecoveryScope>>)scopes).Remove(new KeyValuePair<ExecutionUnitId, RecoveryScope>(executionUnitId, recovery));
+            await recovery.Scope.CloseAsync().ConfigureAwait(false);
         }
     }
 
     private static bool IsDisconnected(ActiveProviderAssignment assignment) =>
         assignment.Task.Attempts.SingleOrDefault(attempt => attempt.Id == assignment.Attempt.Id)?.State is AttemptState.Disconnected;
+
+    private sealed record RecoveryScope(Guid Id, FiberScope Scope);
 }

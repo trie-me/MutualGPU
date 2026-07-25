@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="robots" content="noindex, nofollow">
+    <title>MutualGPU reconnect probe</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Provider protocol test harness</p>
+        <h1>Reconnect without losing the work.</h1>
+        <p class="lede">Exercise provider reconnect regressions in isolation, or create an explicitly marked browser test provider and drive one complete requestor-to-result run through the live API.</p>
+      </section>
+
+      <section class="panel connection-panel" aria-labelledby="connection-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Connection</p>
+            <h2 id="connection-title">Live provider session</h2>
+          </div>
+          <output id="connection-state" class="state state-idle">Idle</output>
+        </div>
+        <label>MutualGPU API URL<input id="api-base-url" type="url" inputmode="url" value="https://mutualgpu.com" placeholder="https://api.example.com" autocomplete="url"></label>
+        <label>Provider key<input id="provider-key" type="password" autocomplete="off" placeholder="Never stored by this harness"></label>
+        <div class="actions">
+          <button id="connect" type="button">Connect</button>
+          <button id="disconnect" type="button" class="secondary" disabled>Drop socket</button>
+        </div>
+        <p class="hint">Use a dedicated staging provider key. The key stays in page memory only and is never written to the event log.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="full-pipeline-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">End-to-end verification</p>
+            <h2 id="full-pipeline-title">Full browser pipeline</h2>
+          </div>
+          <output id="full-pipeline-state" class="state state-idle">Not provisioned</output>
+        </div>
+        <div class="actions">
+          <button id="provision-test-provider" type="button">Provision isolated test provider</button>
+          <button id="run-full-certification" type="button">Run full certification</button>
+          <button id="run-full-pipeline" type="button" class="secondary" disabled>Run full pipeline</button>
+          <button id="run-provider-failure" type="button" class="secondary" disabled>Run terminal failure</button>
+          <button id="run-requestor-cancellation" type="button" class="secondary" disabled>Run requestor cancellation</button>
+        </div>
+        <p class="hint">Run full certification is the one-press suite: it provisions an isolated browser provider, runs deterministic SDK checks plus the successful, terminal-failure, and requestor-cancellation scenarios, then reports every expected outcome. SDK checks include reconnect-time progress, completion-acknowledgement replay, and recovery-expiry handling. It may create a fresh isolated provider after a failed scenario so subsequent checks remain independent. The full pipeline creates one requestor task, forces one reconnect, proves duplicate progress is non-fatal, sends wrong-handle and malformed-progress frames that must be rejected and recover, then verifies browser retrieval of every result artifact. Credentials, task handles, upload tokens, and signed URLs stay in page memory only.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="task-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Accepted assignment</p>
+            <h2 id="task-title">Task controls</h2>
+          </div>
+          <output id="task-state" class="state state-idle">Waiting</output>
+        </div>
+        <dl class="assignment">
+          <div><dt>Task</dt><dd id="task-id">—</dd></div>
+          <div><dt>Attempt</dt><dd id="attempt-id">—</dd></div>
+        </dl>
+        <div class="actions controls">
+          <button id="burst-progress" type="button" disabled>Progress burst</button>
+          <button id="buffer-progress" type="button" disabled>Buffer then reconnect</button>
+          <button id="refresh-input" type="button" class="secondary" disabled>Refresh input</button>
+          <button id="request-upload" type="button" class="secondary" disabled>Request upload token</button>
+        </div>
+        <p class="hint">The burst should send one immediate update and retain only the newest value. A buffered update should flush after the socket reconnects.</p>
+      </section>
+
+      <section class="panel" aria-labelledby="matrix-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Regression matrix</p>
+            <h2 id="matrix-title">Live and SDK probes</h2>
+          </div>
+          <button id="run-sdk-checks" type="button" class="secondary">Run SDK contract checks</button>
+        </div>
+        <p class="hint">ACR means accepted-task connection recovery: rebind the same active task without calling its handler twice.</p>
+        <div class="scenario-grid">
+          <article><strong>ACR + input barrier</strong><span>Drop the socket, then refresh the input URL while reconnecting.</span><button id="acr-refresh" type="button" disabled>Run</button></article>
+          <article><strong>ACR + upload barrier</strong><span>Drop the socket, then request upload authorization while reconnecting.</span><button id="acr-upload" type="button" disabled>Run</button></article>
+          <article><strong>Duplicate/stale progress</strong><span>Raw frames: one accepted high sequence and one duplicate. Connection must remain usable.</span><button id="stale-progress" type="button" class="secondary" disabled>Run once</button></article>
+          <article><strong>Wrong-handle rejection</strong><span>Deliberately sends one invalid raw frame. Reconnect/rebind is expected.</span><button id="wrong-handle" type="button" class="secondary" disabled>Run</button></article>
+          <article><strong>Malformed progress rejection</strong><span>Deliberately sends a non-finite percent. Reconnect/rebind is expected.</span><button id="malformed-progress" type="button" class="secondary" disabled>Run</button></article>
+          <article><strong>Completion retry</strong><span>Use only after staging drops the first completion acknowledgement.</span><label class="inline-label">Receipt<input id="completion-receipt" type="password" autocomplete="off" placeholder="Upload receipt"></label><button id="retry-completion" type="button" class="secondary" disabled>Retry completion</button></article>
+        </div>
+        <dl id="matrix-results" class="matrix-results"></dl>
+      </section>
+
+      <section class="panel log-panel" aria-labelledby="events-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Safe diagnostics</p>
+            <h2 id="events-title">Event stream</h2>
+          </div>
+          <button id="clear-log" type="button" class="text-button">Clear</button>
+        </div>
+        <ol id="events" aria-live="polite"></ol>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

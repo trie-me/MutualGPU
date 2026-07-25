@@ -114,6 +114,25 @@ test("requestor cancellation aborts only the matching provider task", async () =
   client.close();
 });
 
+test("explicit provider shutdown lets an aborted handler return without reporting a failure", async () => {
+  let receive;
+  const calls = [];
+  const transport = {
+    connect: async callback => { receive = callback; }, accept: async () => {}, reject: async () => {}, progress: async () => {},
+    fail: async () => calls.push("fail"), refreshInputDownload: async () => "url", requestResultUpload: async () => "token", complete: async () => {}, close: () => {}
+  };
+  const client = new ProviderClient(transport);
+  await client.connect(async task => {
+    await task.accept();
+    await new Promise(resolve => task.signal.addEventListener("abort", resolve, { once: true }));
+  });
+  const handling = receive({ taskId: "task", attemptId: "attempt", taskHandle: "handle" });
+  await new Promise(resolve => setImmediate(resolve));
+  client.close();
+  await handling;
+  assert.deepEqual(calls, []);
+});
+
 test("provider can reject before acceptance and rejects a handler that never acknowledges", async () => {
   const calls = [];
   let receive;
@@ -190,6 +209,166 @@ test("provider automatically reconnects a dropped session with its active task h
 
   resume();
   await handling;
+  client.close();
+});
+
+test("progress retains only its newest value across a transient reconnect", async () => {
+  const task = { taskId: "task", attemptId: "attempt", taskHandle: "handle" };
+  const progress = [];
+  const handles = [];
+  let receive;
+  let disconnect;
+  let finish;
+  const transport = {
+    connect: async (callback, activeTaskHandle, onDisconnect) => { receive = callback; disconnect = onDisconnect; handles.push(activeTaskHandle); },
+    accept: async () => {}, reject: async () => {}, fail: async () => {}, complete: async () => {},
+    progress: async (_task, update) => { progress.push(update); },
+    refreshInputDownload: async () => "url", requestResultUpload: async () => "token", close: () => {}
+  };
+  const client = new ProviderClient(transport, { reconnectDelay: () => 0, progressIntervalMs: 5 });
+  await client.connect(async assigned => {
+    await assigned.accept();
+    await assigned.reportProgress({ percent: 1 });
+    await assigned.reportProgress({ percent: 2 });
+    await assigned.reportProgress({ percent: 3 });
+    disconnect(new Error("network lost"));
+    await new Promise(resolve => { finish = resolve; });
+    await assigned.complete("receipt");
+  });
+
+  const handling = receive(task);
+  for (let turn = 0; handles.length < 2 && turn < 10; turn += 1) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(progress.map(value => value.percent), [1, 3]);
+  assert.deepEqual(handles, ["", "handle"]);
+
+  finish();
+  await handling;
+  client.close();
+});
+
+test("task control waits for rebind instead of failing during reconnect backoff", async () => {
+  const task = { taskId: "task", attemptId: "attempt", taskHandle: "handle" };
+  let receive;
+  let disconnect;
+  let refresh;
+  let finish;
+  const transport = {
+    connect: async (callback, _handle, onDisconnect) => { receive = callback; disconnect = onDisconnect; },
+    accept: async () => {}, reject: async () => {}, progress: async () => {}, fail: async () => {}, complete: async () => {},
+    refreshInputDownload: async () => { refresh(); return "https://objects.example/input"; },
+    requestResultUpload: async () => "token", close: () => {}
+  };
+  const client = new ProviderClient(transport, { reconnectDelay: () => 0 });
+  await client.connect(async assigned => {
+    await assigned.accept();
+    disconnect(new Error("network lost"));
+    const url = await assigned.refreshInputDownload();
+    assert.equal(url, "https://objects.example/input");
+    await new Promise(resolve => { finish = resolve; });
+    await assigned.complete("receipt");
+  });
+  const handling = receive(task);
+  await new Promise(resolve => { refresh = resolve; });
+  for (let turn = 0; typeof finish !== "function" && turn < 10; turn += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(typeof finish, "function");
+  finish();
+  await handling;
+  client.close();
+});
+
+test("progress sent during reconnect is buffered without losing the accepted task", async () => {
+  const task = { taskId: "task", attemptId: "attempt", taskHandle: "handle" };
+  const handles = [];
+  const progress = [];
+  let receive;
+  let disconnect;
+  let finish;
+  const transport = {
+    connect: async (callback, activeTaskHandle, onDisconnect) => { receive = callback; disconnect = onDisconnect; handles.push(activeTaskHandle); },
+    accept: async () => {}, reject: async () => {}, fail: async () => {}, complete: async () => {},
+    progress: async (_task, update) => { progress.push(update); },
+    refreshInputDownload: async () => "https://objects.example/input", requestResultUpload: async () => "token", close: () => {}
+  };
+  const client = new ProviderClient(transport, { reconnectDelay: () => 0, progressIntervalMs: 1 });
+  await client.connect(async assigned => {
+    await assigned.accept();
+    disconnect(new Error("network lost"));
+    assert.equal(await assigned.reportProgress({ percent: 55 }), false, "progress must be buffered while disconnected");
+    assert.equal(await assigned.refreshInputDownload(), "https://objects.example/input");
+    await new Promise(resolve => { finish = resolve; });
+    await assigned.complete("receipt");
+  });
+
+  const handling = receive(task);
+  for (let turn = 0; handles.length < 2 && turn < 20; turn += 1) await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.deepEqual(handles, ["", "handle"]);
+  assert.deepEqual(progress.map(update => update.percent), [55]);
+  assert.equal(typeof finish, "function");
+
+  finish();
+  await handling;
+  client.close();
+});
+
+test("completion can be retried with the same receipt after its acknowledgement is lost", async () => {
+  const task = { taskId: "task", attemptId: "attempt", taskHandle: "handle" };
+  const handles = [];
+  let receive;
+  let disconnect;
+  let completionCalls = 0;
+  const transport = {
+    connect: async (callback, activeTaskHandle, onDisconnect) => { receive = callback; disconnect = onDisconnect; handles.push(activeTaskHandle); },
+    accept: async () => {}, reject: async () => {}, progress: async () => {}, fail: async () => {},
+    refreshInputDownload: async () => "https://objects.example/input", requestResultUpload: async () => "token",
+    complete: async () => {
+      completionCalls += 1;
+      if (completionCalls === 1) {
+        disconnect(new Error("completion acknowledgement lost"));
+        throw new Error("completion acknowledgement lost");
+      }
+    },
+    close: () => {}
+  };
+  const client = new ProviderClient(transport, { reconnectDelay: () => 0 });
+  await client.connect(async assigned => {
+    await assigned.accept();
+    await assert.rejects(assigned.complete("receipt"), /acknowledgement lost/);
+    await assigned.complete("receipt");
+  });
+
+  await receive(task);
+  assert.deepEqual(handles, ["", "handle"]);
+  assert.equal(completionCalls, 2);
+  client.close();
+});
+
+test("recovery expiry aborts the active task without reporting a second handler failure", async () => {
+  const task = { taskId: "task", attemptId: "attempt", taskHandle: "handle" };
+  let receive;
+  let disconnect;
+  let clock = 0;
+  let rejection;
+  const transport = {
+    connect: async (callback, _activeTaskHandle, onDisconnect) => {
+      if (!receive) { receive = callback; disconnect = onDisconnect; return; }
+      throw new Error("still unavailable");
+    },
+    accept: async () => {}, reject: async () => { rejection = true; }, progress: async () => {}, fail: async () => { rejection = true; },
+    refreshInputDownload: async () => "https://objects.example/input", requestResultUpload: async () => "token", complete: async () => {}, close: () => {}
+  };
+  const client = new ProviderClient(transport, { reconnectDelay: () => 0, recoveryDeadlineMs: 3, now: () => clock++ });
+  await client.connect(async assigned => {
+    await assigned.accept();
+    await new Promise(resolve => assigned.signal.addEventListener("abort", resolve, { once: true }));
+  });
+
+  const handling = receive(task);
+  await new Promise(resolve => setImmediate(resolve));
+  disconnect(new Error("network lost"));
+  await handling;
+  assert.equal(rejection, undefined, "expiry must not reject or fail an already accepted task");
   client.close();
 });
 

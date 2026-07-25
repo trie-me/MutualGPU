@@ -48,7 +48,7 @@ Define the infrastructure through Terraform, CDK, or CloudFormation under `deplo
 
 `deploy/aws/foundation.yaml` is the first CloudFormation stack. It creates the VPC, two public subnets, internet gateway and routing, security groups, private ECR repository, ECS cluster, CloudWatch log group, and ECS task roles. It also exports these shared resource identifiers for the second stack.
 
-`deploy/aws/service.yaml` is the second stack. It creates the public ALB, HTTP-to-HTTPS redirect, HTTPS listener, HTTP/1.1 and gRPC target groups, task definition, and the single-task Fargate service. Its only deployment inputs are an image URI (preferably a digest), an issued ACM certificate ARN, the deployment-secret ARN, and an optional Chrome-provider origin. It contains no credential values.
+`deploy/aws/service.yaml` is the second stack. It creates the public ALB, HTTP-to-HTTPS redirect, HTTPS listener, HTTP/1.1 and gRPC target groups, task definition, and the single-task Fargate service. Its deployment inputs include an image URI (preferably a digest), an issued ACM certificate ARN, the public DNS hostname covered by that certificate, the deployment-secret ARN, and optional Chrome-provider origins. It contains no credential values. The `HttpsUrl` output is the certificate-valid public hostname; `LoadBalancerDnsName` is only the DNS target for that hostname.
 
 Deploy it with:
 

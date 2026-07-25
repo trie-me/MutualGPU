@@ -21,6 +21,14 @@ export class ProviderClient {
   #closed = false;
   #progressSequence = 0;
   #lastProgressAt = 0;
+  #progressIntervalMs;
+  #progressTimer = null;
+  #connected = false;
+  #recoveryDeadlineMs;
+  #recoveryError = null;
+  #onDiagnostic;
+  #sdkBuild;
+  #connectionEpoch = 0;
   #reconnectDelay;
   #connectionOpenedAt = 0;
   #lifecycleTimer = null;
@@ -34,6 +42,10 @@ export class ProviderClient {
   constructor(transport, options = {}) {
     const {
       reconnectDelay = attempt => Math.min(1_000 * 2 ** (attempt - 1), 30_000),
+      progressIntervalMs = 1_000,
+      recoveryDeadlineMs = 155_000,
+      sdkBuild = "cancellation-preview-2026-07-25",
+      onDiagnostic = () => {},
       connectionLifecycle = transport.connectionLifecycle,
       // Browser timer methods are Web IDL operations. Keeping a detached method
       // reference makes some browsers throw "Illegal invocation" immediately
@@ -44,6 +56,11 @@ export class ProviderClient {
     } = options;
     this.#transport = transport;
     this.#reconnectDelay = reconnectDelay;
+    this.#progressIntervalMs = positiveDuration(progressIntervalMs) || 1_000;
+    this.#recoveryDeadlineMs = positiveDuration(recoveryDeadlineMs) || 155_000;
+    if (typeof onDiagnostic !== "function") throw new TypeError("onDiagnostic must be a function");
+    this.#onDiagnostic = onDiagnostic;
+    this.#sdkBuild = String(sdkBuild);
     this.#idleRecycleAfterMs = positiveDuration(connectionLifecycle?.idleRecycleAfterMs);
     this.#maximumConnectionAgeMs = positiveDuration(connectionLifecycle?.maximumConnectionAgeMs);
     if (this.#idleRecycleAfterMs && this.#maximumConnectionAgeMs && this.#idleRecycleAfterMs >= this.#maximumConnectionAgeMs) {
@@ -72,6 +89,10 @@ export class ProviderClient {
 
   close() {
     this.#closed = true;
+    this.#connected = false;
+    this.#discardPendingProgress(this.#active);
+    this.#active?.abortController.abort();
+    this.#active = null;
     this.#cancelLifecycleCheck();
     this.#connectionOpenedAt = 0;
     this.#transport.close?.();
@@ -88,6 +109,10 @@ export class ProviderClient {
     this.#connection = opening;
     try {
       await opening;
+      this.#connected = true;
+      this.#recoveryError = null;
+      this.#connectionEpoch += 1;
+      this.#diagnostic("connection_rebound", this.#active, { disposition: "accepted" });
       this.#connectionOpenedAt = this.#now();
       this.#recycleWhenIdle = false;
       this.#scheduleLifecycleCheck();
@@ -98,25 +123,41 @@ export class ProviderClient {
 
   #disconnected() {
     if (this.#closed || this.#reconnecting) return;
+    this.#connected = false;
+    this.#recoveryError = null;
+    this.#diagnostic("disconnect_observed", this.#active, { disposition: "transient" });
     this.#cancelLifecycleCheck();
     this.#connectionOpenedAt = 0;
     this.#recycleWhenIdle = false;
-    this.#reconnecting = this.#reconnectLoop().finally(() => { this.#reconnecting = null; });
+    this.#reconnecting = this.#reconnectLoop()
+      .catch(error => {
+        this.#recoveryError = error;
+        this.#expireRecovery(error);
+      })
+      .finally(() => { this.#reconnecting = null; });
   }
 
   async #reconnectLoop() {
+    const startedAt = this.#now();
     for (let attempt = 1; !this.#closed; attempt += 1) {
+      if (this.#now() - startedAt >= this.#recoveryDeadlineMs) {
+        throw new ProviderClientError("recovery_expired", "The MutualGPU reconnect recovery deadline expired.");
+      }
+      this.#diagnostic("reconnect_attempt_started", this.#active, { reconnectAttempt: attempt });
       const delay = Number(this.#reconnectDelay(attempt));
       if (Number.isFinite(delay) && delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
       if (this.#closed) return;
       try {
         await this.#openConnection();
+        if (this.#active?.state === "accepted") void this.#flushProgress(this.#active);
         return;
       } catch {
+        this.#diagnostic("reconnect_attempt_failed", this.#active, { reconnectAttempt: attempt });
         // The next bounded-backoff attempt owns any error mapping. The open stream
         // will also report a later close through the transport callback.
       }
     }
+    throw new ProviderClientError("provider_closed", "The provider session was closed while reconnecting.");
   }
 
   async #receive(assignment) {
@@ -142,7 +183,7 @@ export class ProviderClient {
       }
     }
 
-    const active = { assignment, state: "pending", abortController: new AbortController() };
+    const active = { assignment, state: "pending", abortController: new AbortController(), pendingProgress: null };
     this.#active = active;
     this.#progressSequence = 0;
     this.#lastProgressAt = 0;
@@ -150,12 +191,17 @@ export class ProviderClient {
 
     try {
       await this.#handler(task);
+      // Explicit close, cancellation, and recovery expiry detach the active
+      // facade before aborting the handler. A handler observing that abort must
+      // be allowed to return without being misreported as a provider failure.
+      if (this.#active !== active) return;
       if (active.state === "pending") {
         await this.#reject(active, "handler returned without accepting the assignment");
       } else if (active.state === "accepted") {
         await this.#fail(active, "execution", "handler returned without completing the assignment");
       }
     } catch (error) {
+      if (this.#active !== active) return;
       const reason = error instanceof Error ? error.message : "handler failed";
       if (active.state === "pending") await this.#reject(active, reason);
       else if (active.state === "accepted") await this.#fail(active, "execution", reason);
@@ -174,6 +220,7 @@ export class ProviderClient {
     const { assignment } = active;
     if (assignment.taskId !== cancellation.taskId || assignment.attemptId !== cancellation.attemptId || assignment.taskHandle !== cancellation.taskHandle) return;
     active.state = "terminal";
+    this.#discardPendingProgress(active);
     active.abortController.abort();
     if (this.#active === active) {
       this.#active = null;
@@ -231,18 +278,30 @@ export class ProviderClient {
       reject: reason => this.#reject(active, reason),
       reportProgress: async update => {
         this.#requireAccepted(active);
-        const now = Date.now();
-        if (now - this.#lastProgressAt < 1000) return false;
-        this.#lastProgressAt = now;
-        await this.#transport.progress(assignment, { ...update, sequenceNumber: ++this.#progressSequence });
-        return true;
+        active.pendingProgress = { ...update };
+        return this.#flushProgress(active);
       },
-      refreshInputDownload: () => { this.#requireAccepted(active); return this.#transport.refreshInputDownload(assignment); },
-      requestResultUpload: () => { this.#requireAccepted(active); return this.#transport.requestResultUpload(assignment); },
+      refreshInputDownload: async () => {
+        this.#requireAccepted(active);
+        await this.#waitForRebind(active);
+        return this.#transport.refreshInputDownload(assignment);
+      },
+      requestResultUpload: async () => {
+        this.#requireAccepted(active);
+        await this.#waitForRebind(active);
+        return this.#transport.requestResultUpload(assignment);
+      },
       uploadResult: async result => {
         this.#requireAccepted(active);
+        await this.#waitForRebind(active);
         const token = await this.#transport.requestResultUpload(assignment);
-        return this.#transport.uploadResult(assignment, token, result);
+        const uploadEpoch = this.#connectionEpoch;
+        try {
+          return await this.#transport.uploadResult(assignment, token, result);
+        } catch (error) {
+          if (!this.#connected || this.#connectionEpoch !== uploadEpoch) throw new ProviderClientError("upload_outcome_unknown", "The result upload outcome is unknown; server reconciliation is required.");
+          throw error;
+        }
       },
       complete: receipt => this.#complete(active, receipt),
       fail: (step, reason) => this.#fail(active, step, reason)
@@ -263,14 +322,18 @@ export class ProviderClient {
 
   async #complete(active, receipt) {
     this.#requireAccepted(active);
+    await this.#waitForRebind(active);
     await this.#transport.complete(active.assignment, receipt);
     active.state = "terminal";
+    this.#discardPendingProgress(active);
   }
 
   async #fail(active, step, reason) {
     this.#requireAccepted(active);
+    await this.#waitForRebind(active);
     await this.#transport.fail(active.assignment, step, reason);
     active.state = "terminal";
+    this.#discardPendingProgress(active);
   }
 
   #requireAccepted(active) { this.#requireState(active, "accepted"); }
@@ -278,6 +341,89 @@ export class ProviderClient {
   #requireState(active, expected) {
     if (this.#active !== active || active.state !== expected) {
       throw new ProviderClientError("invalid_task_state", `This task must be ${expected} before this operation.`);
+    }
+  }
+
+  async #waitForRebind(active) {
+    this.#requireAccepted(active);
+    if (this.#connected) return;
+    const reconnecting = this.#reconnecting ?? this.#connection;
+    if (!reconnecting) throw new ProviderClientError("disconnected", "The MutualGPU provider session is disconnected.");
+    await reconnecting;
+    if (this.#recoveryError) throw this.#recoveryError;
+    this.#requireAccepted(active);
+    if (!this.#connected) throw new ProviderClientError("disconnected", "The MutualGPU provider session is disconnected.");
+  }
+
+  async #flushProgress(active) {
+    this.#requireAccepted(active);
+    if (!active.pendingProgress || !this.#connected) {
+      this.#scheduleProgressFlush(active);
+      this.#diagnostic("progress_coalesced", active, { disposition: "buffered", bufferOccupied: true });
+      return false;
+    }
+    const delay = this.#progressIntervalMs - Math.max(0, this.#now() - this.#lastProgressAt);
+    if (delay > 0) {
+      this.#scheduleProgressFlush(active, delay);
+      this.#diagnostic("progress_coalesced", active, { disposition: "buffered", bufferOccupied: true });
+      return false;
+    }
+    const pending = active.pendingProgress;
+    active.pendingProgress = null;
+    this.#lastProgressAt = this.#now();
+    const sequenceNumber = ++this.#progressSequence;
+    try {
+      await this.#transport.progress(active.assignment, { ...pending, sequenceNumber });
+      this.#diagnostic("progress_sent", active, { sequence: sequenceNumber, disposition: "accepted", bufferOccupied: Boolean(active.pendingProgress) });
+      return true;
+    } catch {
+      if (this.#active === active && active.state === "accepted" && active.pendingProgress === null) active.pendingProgress = pending;
+      this.#disconnected();
+      this.#scheduleProgressFlush(active);
+      this.#diagnostic("progress_coalesced", active, { sequence: sequenceNumber, disposition: "transport_unavailable", bufferOccupied: true });
+      return false;
+    }
+  }
+
+  #scheduleProgressFlush(active, delay = this.#progressIntervalMs) {
+    if (this.#progressTimer !== null || !active?.pendingProgress || this.#closed) return;
+    this.#progressTimer = this.#scheduleTimeout(() => {
+      this.#progressTimer = null;
+      if (this.#active === active && active.state === "accepted") void this.#flushProgress(active);
+    }, delay);
+    this.#progressTimer?.unref?.();
+  }
+
+  #discardPendingProgress(active) {
+    if (active) active.pendingProgress = null;
+    if (this.#progressTimer !== null) {
+      this.#cancelTimeout(this.#progressTimer);
+      this.#progressTimer = null;
+    }
+  }
+
+  #expireRecovery(error) {
+    const active = this.#active;
+    if (!active || active.state === "terminal") return;
+    active.state = "terminal";
+    this.#discardPendingProgress(active);
+    active.abortController.abort(error);
+    if (this.#active === active) this.#active = null;
+    this.#diagnostic("recovery_expired", active, { disposition: error instanceof ProviderClientError ? error.code : "recovery_expired" });
+  }
+
+  #diagnostic(event, active, details = {}) {
+    try {
+      this.#onDiagnostic({
+        event,
+        sdkBuild: this.#sdkBuild,
+        connectionEpoch: this.#connectionEpoch,
+        taskId: active?.assignment?.taskId,
+        attemptId: active?.assignment?.attemptId,
+        ...details
+      });
+    } catch {
+      // Diagnostics are advisory and cannot affect task ownership or transport recovery.
     }
   }
 }

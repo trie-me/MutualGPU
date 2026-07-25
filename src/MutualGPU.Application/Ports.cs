@@ -76,6 +76,13 @@ public interface IPartnerResourceRegistry
     bool IsApprovedOrigin(string? origin);
 }
 
+/// <summary>Synchronizes the exact browser origins allowed to read presigned
+/// application objects directly from the production object store.</summary>
+public interface IBrowserObjectCorsPolicy
+{
+    Task SynchronizeAsync(IReadOnlyCollection<string> allowedOrigins, CancellationToken cancellationToken);
+}
+
 public sealed record PartnerResourceSubmission(string PartnerName, string ContactEmail, string Origin);
 
 public sealed record PartnerResourceRequest(
@@ -178,15 +185,31 @@ public interface IStagedResults
 {
     void Stage(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, StagedResult result);
     bool TryTake(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt, out StagedResult result);
+    void MarkCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt);
+    bool IsCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt);
 }
 
 public sealed record TaskProgress(ulong SequenceNumber, DateTimeOffset ObservedAt, string? Phase = null, double? Percent = null, string? Message = null);
 
+/// <summary>Safe, closed outcomes for an advisory provider progress update.
+/// Drops are deliberately distinct from authorization and lifecycle rejections.</summary>
+public enum ProviderProgressDisposition
+{
+    Accepted,
+    DroppedStaleSequence,
+    DroppedSuperseded,
+    RejectedUnknownAssignment,
+    RejectedWrongExecutionUnit,
+    RejectedWrongHandle,
+    RejectedAttemptState,
+    RejectedMalformed,
+}
+
 public interface IProviderProgress
 {
-    bool TryReport(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress progress);
+    ProviderProgressDisposition Report(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress progress);
     TaskProgress? Get(TaskId taskId);
-    void Remove(TaskId taskId);
+    void Remove(TaskId taskId, AttemptId attemptId);
 }
 
 public interface IApplicationEventSink

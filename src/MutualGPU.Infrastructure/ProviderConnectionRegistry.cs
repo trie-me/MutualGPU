@@ -204,21 +204,30 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         return false;
     }
 
-    public bool TryReport(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress progress)
+    public ProviderProgressDisposition Report(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress progress)
     {
         lock (gate)
         {
-            if (!active.TryGetValue((unitId, taskId, attemptId), out var assignment) || !StringComparer.Ordinal.Equals(assignment.Attempt.Handle, handle) ||
-                assignment.Task.Attempts.SingleOrDefault(attempt => attempt.Id == attemptId)?.State is not AttemptState.Accepted) return false;
-            if (progresses.TryGetValue(taskId, out var previous) && (progress.SequenceNumber <= previous.SequenceNumber || progress.ObservedAt - previous.ObservedAt < TimeSpan.FromSeconds(1))) return false;
-            progresses[taskId] = progress;
+            if (!IsWellFormed(progress)) return ProviderProgressDisposition.RejectedMalformed;
+            if (!active.TryGetValue((unitId, taskId, attemptId), out var assignment))
+            {
+                if (active.Keys.Any(key => key.TaskId == taskId && key.AttemptId == attemptId)) return ProviderProgressDisposition.RejectedWrongExecutionUnit;
+                return ProviderProgressDisposition.RejectedUnknownAssignment;
+            }
+            if (!StringComparer.Ordinal.Equals(assignment.Attempt.Handle, handle)) return ProviderProgressDisposition.RejectedWrongHandle;
+            if (assignment.Task.Attempts.SingleOrDefault(attempt => attempt.Id == attemptId)?.State is not AttemptState.Accepted)
+                return ProviderProgressDisposition.RejectedAttemptState;
+            var key = (taskId, attemptId);
+            if (progresses.TryGetValue(key, out var previous) && progress.SequenceNumber <= previous.SequenceNumber)
+                return ProviderProgressDisposition.DroppedStaleSequence;
+            progresses[key] = progress;
             CaptureAttemptState(unitId, taskId, attemptId);
             if (assignmentSessions.TryGetValue(attemptId, out var sessionId) && sessions.TryGetValue(sessionId, out var session))
             {
                 var percent = progress.Percent is { } value ? $" {value:0.#}%" : String.Empty;
                 AddEvent(session, "progress", $"{progress.Phase ?? "Provider work"}{percent}", progress.ObservedAt, taskId, attemptId);
             }
-            return true;
+            return ProviderProgressDisposition.Accepted;
         }
     }
 
@@ -234,12 +243,19 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
 
     public TaskProgress? Get(TaskId taskId)
     {
-        lock (gate) return progresses.GetValueOrDefault(taskId);
+        lock (gate)
+        {
+            var activeAttempt = active.Values
+                .Where(item => item.Task.Id == taskId)
+                .Select(item => item.Attempt.Id)
+                .FirstOrDefault();
+            return activeAttempt == default ? null : progresses.GetValueOrDefault((taskId, activeAttempt));
+        }
     }
 
-    public void Remove(TaskId taskId)
+    public void Remove(TaskId taskId, AttemptId attemptId)
     {
-        lock (gate) progresses.Remove(taskId);
+        lock (gate) progresses.Remove((taskId, attemptId));
     }
 
     public AdminDiagnosticsSnapshot Snapshot()
@@ -346,7 +362,12 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     }
 
     private readonly Dictionary<(ExecutionUnitId UnitId, TaskId TaskId, AttemptId AttemptId), ActiveProviderAssignment> active = [];
-    private readonly Dictionary<TaskId, TaskProgress> progresses = [];
+    private static bool IsWellFormed(TaskProgress progress) =>
+        progress.Phase is not { Length: > 128 } &&
+        progress.Message is not { Length: > 2_048 } &&
+        (progress.Percent is null || Double.IsFinite(progress.Percent.Value));
+
+    private readonly Dictionary<(TaskId TaskId, AttemptId AttemptId), TaskProgress> progresses = [];
 
     private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlyList<CapabilityDefinition> Capabilities, bool IsIdle, Channel<ProviderServerMessage> Outbound);
 

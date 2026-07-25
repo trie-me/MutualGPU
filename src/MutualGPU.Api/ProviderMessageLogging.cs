@@ -1,3 +1,4 @@
+using MutualGPU.Application;
 using MutualGPU.Domain;
 using MutualGPU.Protocol;
 
@@ -5,6 +6,25 @@ namespace MutualGPU.Api;
 
 internal static class ProviderMessageLogging
 {
+    public static void Progress(
+        ILogger logger,
+        string transport,
+        ExecutionUnitId executionUnitId,
+        string taskId,
+        string attemptId,
+        ulong sequence,
+        ProviderProgressDisposition disposition)
+    {
+        logger.LogInformation(
+            "provider_progress_disposition {Transport} {ExecutionUnitId} {TaskId} {AttemptId} {Disposition} {Sequence}",
+            transport,
+            executionUnitId.Value,
+            taskId,
+            attemptId,
+            disposition,
+            sequence);
+    }
+
     public static void Accepted(ILogger logger, ExecutionUnitId executionUnitId, ProviderMessage message)
     {
         var identity = message.BodyCase switch
@@ -25,5 +45,17 @@ internal static class ProviderMessageLogging
             identity.TaskId,
             identity.AttemptId,
             executionUnitId.Value);
+    }
+
+    public static void Failed(ILogger logger, string transport, ExecutionUnitId executionUnitId, TaskFailed failed)
+    {
+        logger.LogWarning(
+            "provider_assignment_failed {Transport} {ExecutionUnitId} {TaskId} {AttemptId} {Step} {Reason}",
+            transport,
+            executionUnitId.Value,
+            failed.TaskId,
+            failed.AttemptId,
+            failed.Step,
+            failed.Reason);
     }
 }

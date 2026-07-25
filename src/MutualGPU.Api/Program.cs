@@ -68,6 +68,8 @@ if (s3 is not null)
     builder.Services.AddSingleton<AwsS3ObjectStore>();
     builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<AwsS3ObjectStore>());
     builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<AwsS3ObjectStore>());
+    builder.Services.AddSingleton<AwsS3BrowserObjectCorsPolicy>();
+    builder.Services.AddSingleton<IBrowserObjectCorsPolicy>(static services => services.GetRequiredService<AwsS3BrowserObjectCorsPolicy>());
 }
 else if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
 {
@@ -80,6 +82,11 @@ else
     builder.Services.AddSingleton<InMemoryObjectStore>();
     builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<InMemoryObjectStore>());
     builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<InMemoryObjectStore>());
+}
+
+if (s3 is null)
+{
+    builder.Services.AddSingleton<IBrowserObjectCorsPolicy, NoOpBrowserObjectCorsPolicy>();
 }
 
 if (providerKeyS3 is not null)
@@ -134,6 +141,10 @@ builder.Services.AddSingleton<MutualGpuTelemetry>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
 builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
+builder.Services.AddSingleton(services => new BrowserObjectCorsSynchronizer(
+    providerCorsOrigins,
+    services.GetRequiredService<IPartnerResourceRegistry>(),
+    services.GetRequiredService<IBrowserObjectCorsPolicy>()));
 builder.Services.AddSingleton(services => new AdminAccessService(
     builder.Configuration["MutualGPU:Admin:MasterPassword"],
     services.GetRequiredService<TimeProvider>()));
@@ -173,6 +184,7 @@ if (Boolean.TryParse(builder.Configuration["NetCats:FiberDiagnostics:Enabled"], 
 var app = builder.Build();
 var partnerResources = app.Services.GetRequiredService<IPartnerResourceRegistry>();
 await partnerResources.InitializeAsync(CancellationToken.None);
+await app.Services.GetRequiredService<BrowserObjectCorsSynchronizer>().SynchronizeAsync(CancellationToken.None);
 app.UseExceptionHandler();
 app.UseForwardedHeaders();
 app.UseHsts();
@@ -191,7 +203,7 @@ app.Use(async (context, next) =>
 });
 app.UseCors(policy => policy
     .SetIsOriginAllowed(origin => IsTrustedBrowserOrigin(origin, providerCorsOrigins, partnerResources))
-    .WithMethods("GET", "POST")
+    .WithMethods("GET", "POST", "DELETE")
     .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256")
     .AllowCredentials());
 app.Use(async (context, next) =>

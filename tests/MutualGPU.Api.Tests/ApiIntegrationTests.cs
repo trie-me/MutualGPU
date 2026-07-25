@@ -142,8 +142,12 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     public async Task Partner_resource_requests_require_an_explicit_origin_and_admin_approval_whitelists_it()
     {
         const string adminPassword = "partner-resource-admin-password-32-bytes";
+        var browserObjectCors = new RecordingBrowserObjectCorsPolicy();
         using var adminFactory = factory.WithWebHostBuilder(builder =>
-            builder.UseSetting("MutualGPU:Admin:MasterPassword", adminPassword));
+        {
+            builder.UseSetting("MutualGPU:Admin:MasterPassword", adminPassword);
+            builder.ConfigureServices(services => services.AddSingleton<IBrowserObjectCorsPolicy>(browserObjectCors));
+        });
         using var client = adminFactory.CreateClient(new WebApplicationFactoryClientOptions
         {
             BaseAddress = new Uri("https://localhost"),
@@ -180,6 +184,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.True(approved.IsSuccessStatusCode);
         var approvedRequest = await approved.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
         Assert.NotNull(approvedRequest?.ProcessedAt);
+        Assert.Contains(browserObjectCors.LastOrigins, origin => origin == "https://provider.example");
+        Assert.Contains(browserObjectCors.LastOrigins, origin => origin == request.Origin);
 
         using var approvedPartners = await client.GetAsync("/admin/api/partner-resources/approved");
         var activePartners = await approvedPartners.Content.ReadFromJsonAsync<PartnerResourceRequestDto[]>();
@@ -204,6 +210,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.True(revoked.IsSuccessStatusCode);
         var revokedRequest = await revoked.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
         Assert.NotNull(revokedRequest?.RevokedAt);
+        Assert.Equal(["https://provider.example"], browserObjectCors.LastOrigins);
 
         using var revokedCapabilityRequest = new HttpRequestMessage(HttpMethod.Get, "/api/capabilities/");
         revokedCapabilityRequest.Headers.Add("Origin", request.Origin);
@@ -337,6 +344,21 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
 
         Assert.True(response.IsSuccessStatusCode);
         Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+    }
+
+    [Fact]
+    public async Task Configured_browser_provider_origin_can_preflight_requestor_task_cancellation()
+    {
+        using var client = CreateHttpsClient();
+        using var request = new HttpRequestMessage(HttpMethod.Options, "/api/tasks/00000000-0000-0000-0000-000000000000");
+        request.Headers.Add("Origin", "https://provider.example");
+        request.Headers.Add("Access-Control-Request-Method", "DELETE");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+        Assert.Contains("DELETE", response.Headers.GetValues("Access-Control-Allow-Methods").Single(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1085,5 +1107,23 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal(WebSocketMessageType.Binary, result.MessageType);
         Assert.True(result.EndOfMessage);
         return ServerMessage.Parser.ParseFrom(buffer, 0, result.Count);
+    }
+
+    private sealed class RecordingBrowserObjectCorsPolicy : IBrowserObjectCorsPolicy
+    {
+        private readonly object gate = new();
+        private IReadOnlyList<string> lastOrigins = [];
+
+        public IReadOnlyList<string> LastOrigins
+        {
+            get { lock (gate) return lastOrigins; }
+        }
+
+        public Task SynchronizeAsync(IReadOnlyCollection<string> allowedOrigins, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (gate) lastOrigins = allowedOrigins.Order(StringComparer.Ordinal).ToArray();
+            return Task.CompletedTask;
+        }
     }
 }

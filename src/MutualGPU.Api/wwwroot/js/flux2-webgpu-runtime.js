@@ -1,7 +1,7 @@
 const MODEL_ID = "black-forest-labs/FLUX.2-klein-4B";
 const MODEL_REVISION = "e7b7dc27f91deacad38e78976d1f2b499d76a294";
-const MODEL_REPOSITORY = "trie-me/flux2-klein-4b-webgpu";
-const DEFAULT_MODEL_BASE_URL = `https://huggingface.co/${MODEL_REPOSITORY}/resolve/main`;
+const MODEL_REPOSITORY = "KatzenStuff/flux-2-klein-4b-webgpu";
+const DEFAULT_MODEL_BASE_URL = `https://huggingface.co/${MODEL_REPOSITORY}/resolve/main/models/klein-4b`;
 const MODEL_BASE_URL = String(
   globalThis.MUTUALGPU_FLUX2_WEBGPU_MODEL_BASE_URL ?? DEFAULT_MODEL_BASE_URL
 ).replace(/\/+$/, "");
@@ -9,6 +9,7 @@ const ORT_MODULE_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist
 const ORT_WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
 const TRANSFORMERS_MODULE_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1";
 const PIPELINE_MANIFEST_URL = `${MODEL_BASE_URL}/pipeline-1024/manifest.json`;
+const RUNTIME_BUILD = "20260725-klein-fp16-diagnostics-1";
 const TOKEN_COUNT = 512;
 const TOKEN_EMBEDDING_WIDTH = 7680;
 const MASK_64 = (1n << 64n) - 1n;
@@ -26,18 +27,23 @@ export function loadFlux2WebGpuRuntime({ onStatus = () => {} } = {}) {
 
 async function initialize(onStatus) {
   if (!navigator.gpu) throw new Error("WebGPU is unavailable.");
+  onStatus(`FLUX.2 runtime diagnostic build ${RUNTIME_BUILD}; ${browserEnvironmentSummary()}.`);
   onStatus("Inspecting the high-performance WebGPU adapter.");
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU did not return an adapter.");
 
   onStatus("Loading the FLUX.2 Klein 4B model manifests from Hugging Face.");
-  const pipelineManifest = await fetchJson(PIPELINE_MANIFEST_URL);
+  const pipelineLoaded = await fetchJson(PIPELINE_MANIFEST_URL);
+  const pipelineManifest = resolveManifestUrls(pipelineLoaded.value, pipelineLoaded.url);
   assertPipelineManifest(pipelineManifest);
-  const [textManifest, transformerManifest, vaeManifest] = await Promise.all([
+  const [textLoaded, transformerLoaded, vaeLoaded] = await Promise.all([
     fetchJson(resolveModelUrl(pipelineManifest.textEncoderManifestUrl)),
     fetchJson(resolveModelUrl(pipelineManifest.transformerManifestUrl)),
     fetchJson(resolveModelUrl(pipelineManifest.vaeManifestUrl))
   ]);
+  const textManifest = resolveManifestUrls(textLoaded.value, textLoaded.url);
+  const transformerManifest = resolveManifestUrls(transformerLoaded.value, transformerLoaded.url);
+  const vaeManifest = resolveManifestUrls(vaeLoaded.value, vaeLoaded.url);
   assertComponentManifest(textManifest, "text-encoder");
   assertComponentManifest(transformerManifest, "transformer");
   assertComponentManifest(vaeManifest, "vae-decoder");
@@ -85,6 +91,27 @@ function createRuntime(state) {
   let promptCache = null;
   let busy = false;
   let aborted = false;
+  let observedWebGpuDevice = null;
+  let lastDeviceLoss = null;
+  let activeStage = "idle";
+
+  function stage(name, onStatus, message) {
+    activeStage = name;
+    if (message) onStatus(message);
+  }
+
+  function observeWebGpuDevice(onStatus) {
+    const device = state.ort.env?.webgpu?.device;
+    if (!device || device === observedWebGpuDevice || !device.lost) return;
+    observedWebGpuDevice = device;
+    void device.lost.then(info => {
+      lastDeviceLoss = {
+        reason: String(info?.reason || "unknown"),
+        message: shortText(info?.message || "no message")
+      };
+      onStatus(`WebGPU device lost: ${lastDeviceLoss.reason}; ${lastDeviceLoss.message}.`);
+    }).catch(() => {});
+  }
 
   async function releaseImagePipeline() {
     const releases = transformerSessions.map(session => session.release());
@@ -112,13 +139,18 @@ function createRuntime(state) {
     throwIfAborted(aborted);
     onStatus("Tokenizing the prompt for the FLUX.2 Qwen encoder.");
     const { inputIds, causalPaddingMask } = tokenizePrompt(state.tokenizer, normalized);
-    const graph = await fetchBuffer(state.textManifest.graph, onStatus);
+    stage("text_encoder_graph_download", onStatus, "Downloading the Qwen prompt-encoder graph.");
+    const graph = await fetchBuffer(state.textManifest.graph, onStatus, "Qwen prompt-encoder graph");
     throwIfAborted(aborted);
-    onStatus("Loading the Qwen prompt encoder on WebGPU.");
-    const session = await createSession(state.ort, graph, state.textManifest.externalData);
+    stage("text_encoder_session_create", onStatus, "Creating the Qwen prompt-encoder WebGPU session.");
+    const session = await createSession(state.ort, graph, state.textManifest.externalData, false, "NCHW", {
+      label: "Qwen prompt encoder",
+      onStatus
+    });
+    observeWebGpuDevice(onStatus);
     try {
       throwIfAborted(aborted);
-      onStatus("Encoding the prompt on WebGPU.");
+      stage("text_encoder_run", onStatus, "Encoding the prompt on WebGPU.");
       const inputIdsTensor = new state.ort.Tensor("int64", inputIds, [1, TOKEN_COUNT]);
       const maskTensor = new state.ort.Tensor(
         "bool",
@@ -151,23 +183,29 @@ function createRuntime(state) {
     onStatus("Loading four FP16 transformer partitions on WebGPU.");
     for (const part of state.transformerManifest.parts) {
       throwIfAborted(aborted);
-      const graph = await fetchBuffer(part.graph, onStatus);
+      const partLabel = `transformer partition ${part.index + 1} of ${state.transformerManifest.parts.length}`;
+      stage(`transformer_part_${part.index + 1}_graph_download`, onStatus, `Downloading ${partLabel} graph.`);
+      const graph = await fetchBuffer(part.graph, onStatus, `${partLabel} graph`);
+      stage(`transformer_part_${part.index + 1}_session_create`, onStatus, `Creating the ${partLabel} WebGPU session.`);
       transformerSessions.push(await createSession(
         state.ort,
         graph,
         part.externalData,
-        part.index < state.transformerManifest.parts.length - 1
+        part.index < state.transformerManifest.parts.length - 1,
+        "NCHW",
+        { label: partLabel, onStatus }
       ));
+      observeWebGpuDevice(onStatus);
       onStatus(`Loaded transformer partition ${part.index + 1} of ${state.transformerManifest.parts.length}.`);
     }
 
     const [rotaryCosBuffer, rotarySinBuffer, meanBuffer, standardDeviationBuffer, vaeGraph] =
       await Promise.all([
-        fetchBuffer(state.transformerManifest.inputs.rotaryCos, onStatus),
-        fetchBuffer(state.transformerManifest.inputs.rotarySin, onStatus),
-        fetchBuffer(state.pipelineManifest.latent.bnMean, onStatus),
-        fetchBuffer(state.pipelineManifest.latent.bnStandardDeviation, onStatus),
-        fetchBuffer(state.vaeManifest.graph, onStatus)
+        fetchBuffer(state.transformerManifest.inputs.rotaryCos, onStatus, "rotary cosine input"),
+        fetchBuffer(state.transformerManifest.inputs.rotarySin, onStatus, "rotary sine input"),
+        fetchBuffer(state.pipelineManifest.latent.bnMean, onStatus, "latent normalization mean"),
+        fetchBuffer(state.pipelineManifest.latent.bnStandardDeviation, onStatus, "latent normalization standard deviation"),
+        fetchBuffer(state.vaeManifest.graph, onStatus, "VAE decoder graph")
       ]);
     throwIfAborted(aborted);
     rotaryCos = new state.ort.Tensor(
@@ -182,8 +220,12 @@ function createRuntime(state) {
     );
     bnMean = new Float32Array(meanBuffer);
     bnStandardDeviation = new Float32Array(standardDeviationBuffer);
-    onStatus("Loading the FP16 VAE decoder on WebGPU.");
-    vaeSession = await createSession(state.ort, vaeGraph, [], false, "NHWC");
+    stage("vae_session_create", onStatus, "Creating the FP16 VAE decoder WebGPU session.");
+    vaeSession = await createSession(state.ort, vaeGraph, [], false, "NHWC", {
+      label: "FP16 VAE decoder",
+      onStatus
+    });
+    observeWebGpuDevice(onStatus);
   }
 
   async function generate({
@@ -208,8 +250,10 @@ function createRuntime(state) {
     const started = performance.now();
     const stepTimes = [];
     try {
+      stage("prompt_encode", onStatus, "Starting FLUX.2 browser inference diagnostics.");
       const promptBits = await encodePrompt(prompt, onStatus);
       throwIfAborted(aborted);
+      stage("image_pipeline_load", onStatus, "Preparing the FLUX.2 transformer and VAE pipeline.");
       await loadImagePipeline(onStatus);
       throwIfAborted(aborted);
 
@@ -226,7 +270,7 @@ function createRuntime(state) {
         for (let step = 0; step < state.pipelineManifest.steps; step += 1) {
           throwIfAborted(aborted);
           const stepStarted = performance.now();
-          onStatus(`Denoising on WebGPU — step ${step + 1} of ${state.pipelineManifest.steps}.`);
+          stage(`denoise_step_${step + 1}`, onStatus, `Denoising on WebGPU — step ${step + 1} of ${state.pipelineManifest.steps}.`);
           const timestep = makeFloat16Tensor(
             state.ort,
             Uint16Array.of(numberToHalf(state.pipelineManifest.scheduler.modelTimesteps[step])),
@@ -288,7 +332,7 @@ function createRuntime(state) {
         }
 
         throwIfAborted(aborted);
-        onStatus("Decoding the final latents with the FP16 VAE on WebGPU.");
+        stage("vae_run", onStatus, "Decoding the final latents with the FP16 VAE on WebGPU.");
         const vaeInput = unpackForVae(
           latentBits,
           state.pipelineManifest,
@@ -335,6 +379,15 @@ function createRuntime(state) {
       } finally {
         promptTensor.dispose();
       }
+    } catch (error) {
+      throw withRuntimeDiagnostic(error, {
+        build: RUNTIME_BUILD,
+        stage: activeStage,
+        elapsedMs: Math.round(performance.now() - started),
+        environment: browserEnvironmentSummary(),
+        memory: memorySummary(),
+        deviceLoss: lastDeviceLoss
+      });
     } finally {
       busy = false;
     }
@@ -374,21 +427,57 @@ function assertComponentManifest(manifest, component) {
 }
 
 async function fetchJson(url) {
-  const response = await fetch(url, { credentials: "omit", cache: "default" });
+  // Preserve the requested manifest URL. Hugging Face redirects raw files to a
+  // blob CDN whose URL is not a usable base for sibling manifest resources.
+  const requestedUrl = new URL(String(url), window.location.href).toString();
+  const response = await fetch(requestedUrl, { credentials: "omit", cache: "default" });
   if (!response.ok) throw new Error(`Model manifest download failed (${response.status}).`);
-  return response.json();
+  return { value: await response.json(), url: requestedUrl };
 }
 
-async function fetchBuffer(item, onStatus = () => {}) {
-  const url = resolveModelUrl(item.url);
-  onStatus(`Fetching ${humanBytes(item.byteLength)} model artifact.`);
-  const response = await fetch(url, { credentials: "omit", cache: "default" });
-  if (!response.ok) throw new Error(`Model artifact download failed (${response.status}).`);
-  const data = await response.arrayBuffer();
-  if (data.byteLength !== item.byteLength) {
-    throw new Error(`Model artifact length mismatch: expected ${item.byteLength}, received ${data.byteLength}.`);
+function resolveManifestUrls(value, manifestUrl) {
+  if (Array.isArray(value)) {
+    return value.map(item => resolveManifestUrls(item, manifestUrl));
   }
-  return data;
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (typeof item === "string" && (key === "url" || key.endsWith("ManifestUrl"))) {
+      return [key, new URL(item, manifestUrl).toString()];
+    }
+    return [key, resolveManifestUrls(item, manifestUrl)];
+  }));
+}
+
+async function fetchBuffer(item, onStatus = () => {}, label = "model artifact") {
+  const url = resolveModelUrl(item.url);
+  const started = performance.now();
+  let response;
+  onStatus(`Fetching ${humanBytes(item.byteLength)} ${label}.`);
+  try {
+    response = await fetch(url, { credentials: "omit", cache: "default" });
+    const responseLength = response.headers.get("content-length");
+    const source = safeUrlHost(response.url || url);
+    onStatus(`Received ${label} response: HTTP ${response.status} from ${source}; content-length ${responseLength || "not supplied"}.`);
+    if (!response.ok) throw new Error(`Model artifact download failed (${response.status}).`);
+    const data = await response.arrayBuffer();
+    if (data.byteLength !== item.byteLength) {
+      throw new Error(`Model artifact length mismatch: expected ${item.byteLength}, received ${data.byteLength}.`);
+    }
+    onStatus(`Verified ${label}: ${humanBytes(data.byteLength)} in ${formatDuration(performance.now() - started)}.`);
+    return data;
+  } catch (error) {
+    throw withRuntimeDiagnostic(error, {
+      stage: "artifact_download",
+      artifact: label,
+      expectedBytes: item.byteLength,
+      receivedBytes: response ? Number(response.headers.get("content-length")) || null : null,
+      responseStatus: response?.status ?? null,
+      source: safeUrlHost(response?.url || url),
+      elapsedMs: Math.round(performance.now() - started),
+      environment: browserEnvironmentSummary(),
+      memory: memorySummary()
+    });
+  }
 }
 
 function resolveModelUrl(url) {
@@ -406,21 +495,38 @@ async function createSession(
   graph,
   externalData = [],
   keepOutputsOnGpu = false,
-  preferredLayout = "NCHW"
+  preferredLayout = "NCHW",
+  { label = "ONNX graph", onStatus = () => {} } = {}
 ) {
-  return ort.InferenceSession.create(graph, {
-    executionProviders: [{
-      name: "webgpu",
-      preferredLayout,
-      validationMode: "basic"
-    }],
-    externalData: externalData.map(file => ({
-      path: file.path,
-      data: resolveModelUrl(file.url)
-    })),
-    graphOptimizationLevel: "all",
-    ...(keepOutputsOnGpu ? { preferredOutputLocation: "gpu-buffer" } : {})
-  });
+  const started = performance.now();
+  onStatus(`Creating ${label} WebGPU session from ${humanBytes(graph.byteLength)} graph; ${externalData.length} external data file${externalData.length === 1 ? "" : "s"}; ${memorySummary()}.`);
+  try {
+    const session = await ort.InferenceSession.create(graph, {
+      executionProviders: [{
+        name: "webgpu",
+        preferredLayout,
+        validationMode: "basic"
+      }],
+      externalData: externalData.map(file => ({
+        path: file.path,
+        data: resolveModelUrl(file.url)
+      })),
+      graphOptimizationLevel: "all",
+      ...(keepOutputsOnGpu ? { preferredOutputLocation: "gpu-buffer" } : {})
+    });
+    onStatus(`Created ${label} WebGPU session in ${formatDuration(performance.now() - started)}; ${memorySummary()}.`);
+    return session;
+  } catch (error) {
+    throw withRuntimeDiagnostic(error, {
+      stage: "webgpu_session_create",
+      component: label,
+      graphBytes: graph.byteLength,
+      externalDataFiles: externalData.length,
+      elapsedMs: Math.round(performance.now() - started),
+      environment: browserEnvironmentSummary(),
+      memory: memorySummary()
+    });
+  }
 }
 
 function tokenizePrompt(tokenizer, prompt) {
@@ -603,6 +709,48 @@ function numberToHalf(value) {
     if (exponent >= 31) return sign | 0x7c00;
   }
   return sign | (exponent << 10) | (fraction >>> 13);
+}
+
+function withRuntimeDiagnostic(error, update) {
+  const wrapped = error instanceof Error ? error : new Error(String(error || "Unknown FLUX.2 runtime failure."));
+  const existing = wrapped.flux2Diagnostic || {};
+  wrapped.flux2Diagnostic = {
+    ...update,
+    ...existing,
+    stage: existing.stage || update.stage || "unknown",
+    errorName: existing.errorName || wrapped.name || "Error",
+    errorMessage: existing.errorMessage || shortText(wrapped.message || "runtime error")
+  };
+  return wrapped;
+}
+
+function browserEnvironmentSummary() {
+  return [
+    `origin=${location.origin}`,
+    `secure=${Boolean(globalThis.isSecureContext)}`,
+    `isolated=${Boolean(globalThis.crossOriginIsolated)}`,
+    `deviceMemory=${navigator.deviceMemory ?? "unknown"}GiB`
+  ].join(", ");
+}
+
+function memorySummary() {
+  const memory = performance.memory;
+  if (!memory) return "JS heap telemetry unavailable";
+  return `JS heap used ${humanBytes(memory.usedJSHeapSize)} of ${humanBytes(memory.jsHeapSizeLimit)} (total ${humanBytes(memory.totalJSHeapSize)})`;
+}
+
+function safeUrlHost(value) {
+  try { return new URL(value, location.href).host || "same origin"; }
+  catch { return "unavailable"; }
+}
+
+function formatDuration(milliseconds) {
+  return `${(milliseconds / 1000).toFixed(milliseconds >= 10_000 ? 1 : 2)}s`;
+}
+
+function shortText(value, maximum = 280) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maximum ? `${text.slice(0, maximum - 1)}…` : text;
 }
 
 function product(values) {

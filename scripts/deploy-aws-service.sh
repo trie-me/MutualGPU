@@ -58,6 +58,7 @@ aws_cli cloudformation deploy \
     "FoundationStackName=${foundation_stack}" \
     "ImageUri=${repository_uri}@${image_digest}" \
     "CertificateArn=${certificate_arn}" \
+    "PublicApiHost=${domain}" \
     "DeploymentSecretArn=${secret_arn}" \
     "ProviderCorsOrigin0=${provider_cors_origin_0}" \
     "ProviderCorsOrigin1=${provider_cors_origin_1}" \
@@ -66,5 +67,5 @@ aws_cli cloudformation deploy \
 
 https_url="$(aws_cli cloudformation describe-stacks --stack-name "$service_stack" --query "Stacks[0].Outputs[?OutputKey=='HttpsUrl'].OutputValue | [0]" --output text)"
 echo "Deployed ${repository_uri}@${image_digest}"
-echo "ALB endpoint: ${https_url}"
+echo "Public API endpoint: ${https_url}"
 echo "Point ${domain} at the ALB using the output hostname, then use https://${domain}."

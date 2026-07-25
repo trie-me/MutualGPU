@@ -68,7 +68,7 @@ export class BrowserWebSocketTransport {
     const handshake = new Promise((resolve, reject) => { resolveConnected = resolve; rejectConnected = reject; });
     const disconnect = error => {
       if (!connected) rejectConnected?.(error);
-      this.#reportDisconnect(error);
+      this.#reportDisconnect(socket, error);
     };
 
     socket.onmessage = event => {
@@ -134,6 +134,7 @@ export class BrowserWebSocketTransport {
   }
 
   #request(waiters, body) {
+    if (waiters.length > 0) return Promise.reject(new Error("Concurrent MutualGPU browser control requests are not supported."));
     return new Promise((resolve, reject) => {
       const waiter = { resolve, reject };
       waiters.push(waiter);
@@ -147,8 +148,8 @@ export class BrowserWebSocketTransport {
     });
   }
 
-  #reportDisconnect(error) {
-    if (this.#disconnectReported) return;
+  #reportDisconnect(socket, error) {
+    if (socket !== this.#socket || this.#disconnectReported) return;
     this.#disconnectReported = true;
     this.#socket = null;
     this.#rejectPending(error);

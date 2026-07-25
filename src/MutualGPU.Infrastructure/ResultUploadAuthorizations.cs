@@ -9,6 +9,7 @@ public sealed class ResultUploadAuthorizations : IResultUploadAuthorizations, IS
     private readonly object gate = new();
     private readonly Dictionary<string, Authorization> authorizations = [];
     private readonly Dictionary<string, StagedResult> staged = [];
+    private readonly HashSet<string> completed = [];
 
     public ResultUploadAuthorization Issue(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, DateTimeOffset now)
     {
@@ -35,6 +36,16 @@ public sealed class ResultUploadAuthorizations : IResultUploadAuthorizations, IS
     public bool TryTake(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt, out StagedResult result)
     {
         lock (gate) return staged.Remove(Key(unitId, taskId, attemptId, handle, receipt), out result!);
+    }
+
+    public void MarkCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt)
+    {
+        lock (gate) completed.Add(Key(unitId, taskId, attemptId, handle, receipt));
+    }
+
+    public bool IsCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt)
+    {
+        lock (gate) return completed.Contains(Key(unitId, taskId, attemptId, handle, receipt));
     }
 
     private static string Key(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt) => $"{unitId.Value:N}/{taskId.Value:N}/{attemptId.Value:N}/{handle}/{receipt}";
