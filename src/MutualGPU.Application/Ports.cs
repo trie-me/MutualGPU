@@ -96,7 +96,7 @@ public sealed record PartnerResourceRequest(
 
 public interface IStartupRecovery
 {
-    Task<int> RecoverAsync(CancellationToken cancellationToken);
+    Task<int> RecoverAsync(DateTimeOffset processStartedAt, CancellationToken cancellationToken);
 }
 
 public interface IEnrollmentStartupRecovery
@@ -215,4 +215,7 @@ public interface IProviderProgress
 public interface IApplicationEventSink
 {
     void TriggerScheduler();
+
+    /// <summary>Publishes a coalesced requestor-facing task-state change.</summary>
+    void TaskChanged(RequestorId requestorId) { }
 }

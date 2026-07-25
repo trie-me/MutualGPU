@@ -1,5 +1,5 @@
-import { BrowserWebSocketTransport, ProviderClient } from "/js/mutualgpu-provider-sdk.js?v=20260725-klein-fp16-3";
-import { loadFlux2WebGpuRuntime } from "/js/flux2-webgpu-runtime.js?v=20260725-klein-fp16-3";
+import { BrowserWebSocketTransport, ProviderClient } from "/js/mutualgpu-provider-sdk.js?v=20260725-klein-fp16-5";
+import { loadFlux2WebGpuRuntime } from "/js/flux2-webgpu-runtime.js?v=20260725-klein-fp16-5";
 
 const SESSION_KEY = "mutualgpu.provider.enrollment";
 const CAPABILITIES = {
@@ -170,8 +170,7 @@ async function start() {
     if (!navigator.gpu) throw new Error("WebGPU is unavailable");
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
     if (!adapter) throw new Error("No compatible adapter returned");
-    const device = await adapter.requestDevice();
-    device.destroy();
+    log("High-performance WebGPU adapter is available.");
     if (stopped) return;
     setStep("webgpu", "done", "Ready");
     $("#gpu-status").textContent = "Ready";

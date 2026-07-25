@@ -135,10 +135,15 @@ builder.Services.AddSingleton<IProviderProgress>(static services => services.Get
 builder.Services.AddSingleton<ResultUploadAuthorizations>();
 builder.Services.AddSingleton<IResultUploadAuthorizations>(static services => services.GetRequiredService<ResultUploadAuthorizations>());
 builder.Services.AddSingleton<IStagedResults>(static services => services.GetRequiredService<ResultUploadAuthorizations>());
+builder.Services.AddSingleton<TaskUpdateHub>();
 builder.Services.AddSingleton<SchedulerSignal>();
 builder.Services.AddSingleton<IApplicationEventSink>(static services => services.GetRequiredService<SchedulerSignal>());
 builder.Services.AddSingleton<MutualGpuTelemetry>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton(services => new RequestorDiagnostics(
+    builder.Configuration["MutualGPU:RequestorDiagnostics:IpHashKey"]
+        ?? builder.Configuration["MutualGPU:Admin:MasterPassword"],
+    services.GetRequiredService<ILogger<RequestorDiagnostics>>()));
 builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
 builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
 builder.Services.AddSingleton(services => new BrowserObjectCorsSynchronizer(
@@ -280,6 +285,7 @@ capabilities.MapGet("/", MutualGpuEndpoints.ListCapabilities);
 var tasks = app.MapGroup("/api/tasks");
 tasks.MapPost("/", MutualGpuEndpoints.SubmitTask);
 tasks.MapGet("/", MutualGpuEndpoints.ListTasks);
+tasks.MapGet("/events", MutualGpuEndpoints.StreamTaskEvents);
 tasks.MapGet("/{taskId:guid}", MutualGpuEndpoints.GetTask);
 tasks.MapDelete("/{taskId:guid}", MutualGpuEndpoints.CancelTask);
 tasks.MapPost("/{taskId:guid}/reevaluate", MutualGpuEndpoints.ReevaluateTask);

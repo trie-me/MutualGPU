@@ -28,7 +28,7 @@ export function loadFlux2WebGpuRuntime({ onStatus = () => {} } = {}) {
 async function initialize(onStatus) {
   if (!navigator.gpu) throw new Error("WebGPU is unavailable.");
   onStatus(`FLUX.2 runtime diagnostic build ${RUNTIME_BUILD}; ${browserEnvironmentSummary()}.`);
-  onStatus("Inspecting the high-performance WebGPU adapter.");
+  onStatus("Checking that WebGPU has a high-performance adapter.");
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU did not return an adapter.");
 

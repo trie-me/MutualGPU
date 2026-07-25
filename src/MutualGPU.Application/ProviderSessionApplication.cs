@@ -33,13 +33,22 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
             assignments.Remove(unitId, taskId, attemptId);
             progress.Remove(taskId, attemptId);
             stagedResults.MarkCompleted(unitId, taskId, attemptId, handle, receipt);
+            events.TaskChanged(task.RequestorId);
             events.TriggerScheduler();
             return true;
         }
         catch (DomainRuleViolation) { return false; }
     });
 
-    public ProviderProgressDisposition ReportProgress(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress update) => progress.Report(unitId, taskId, attemptId, handle, update);
+    public ProviderProgressDisposition ReportProgress(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, TaskProgress update)
+    {
+        var disposition = progress.Report(unitId, taskId, attemptId, handle, update);
+        if (disposition is ProviderProgressDisposition.Accepted && assignments.TryGet(unitId, taskId, attemptId, handle, out var task))
+        {
+            events.TaskChanged(task.RequestorId);
+        }
+        return disposition;
+    }
 
     public Latent<int> Disconnect(ExecutionUnitId unitId) => Latent<int>.Delay(() =>
     {
@@ -82,6 +91,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
                 progress.Remove(active.Task.Id, active.Attempt.Id);
+                events.TaskChanged(active.Task.RequestorId);
                 changed++;
             }
             catch (DomainRuleViolation) { }
@@ -102,6 +112,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(unitId, active.Task.Id, active.Attempt.Id);
                 progress.Remove(active.Task.Id, active.Attempt.Id);
+                events.TaskChanged(active.Task.RequestorId);
                 changed++;
             }
             catch (DomainRuleViolation) { }
@@ -121,6 +132,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                 await tasks.SaveAsync(active.Task, cancellationToken).ConfigureAwait(false);
                 assignments.Remove(active.ExecutionUnitId, active.Task.Id, active.Attempt.Id);
                 progress.Remove(active.Task.Id, active.Attempt.Id);
+                events.TaskChanged(active.Task.RequestorId);
                 changed = true;
             }
             catch (DomainRuleViolation)
@@ -146,6 +158,7 @@ public sealed class ProviderSessionApplication(ITaskRepository tasks, IProviderA
                     assignments.Remove(unitId, taskId, attemptId);
                     progress.Remove(taskId, attemptId);
                 }
+                events.TaskChanged(task.RequestorId);
                 events.TriggerScheduler();
                 return true;
             }

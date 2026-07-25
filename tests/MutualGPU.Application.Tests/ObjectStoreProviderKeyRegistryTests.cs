@@ -40,4 +40,44 @@ public sealed class ObjectStoreProviderKeyRegistryTests
 
         Assert.Equal(2, observed.Count);
     }
+
+    [Fact]
+    public async Task Authentication_caches_the_digest_needed_to_load_the_execution_unit()
+    {
+        var inner = new InMemoryObjectStore();
+        var keys = new MutualGpuObjectKeys();
+        var provisioner = new ObjectStoreProviderKeyRegistry(inner, keys);
+        var executionUnitId = MutualGPU.Domain.ExecutionUnitId.New();
+        const string providerKey = "provider-key";
+        await provisioner.ProvisionAsync(executionUnitId, providerKey, CancellationToken.None);
+        var store = new CountingObjectStore(inner);
+        var registry = new ObjectStoreProviderKeyRegistry(store, keys);
+
+        Assert.Equal(executionUnitId, await registry.AuthenticateAsync(providerKey, CancellationToken.None));
+        Assert.Equal(keys.ProviderDigest(providerKey), await registry.GetProviderKeyDigestAsync(executionUnitId, CancellationToken.None));
+        Assert.Equal(0, store.ListCount);
+    }
+
+    private sealed class CountingObjectStore(IObjectStore inner) : IObjectStore
+    {
+        public int ListCount { get; private set; }
+
+        public Task<ObjectRead?> GetAsync(ObjectKey key, CancellationToken cancellationToken) =>
+            inner.GetAsync(key, cancellationToken);
+
+        public Task PutAsync(ObjectKey key, Stream content, ObjectWriteConditions conditions, CancellationToken cancellationToken) =>
+            inner.PutAsync(key, content, conditions, cancellationToken);
+
+        public Task DeleteAsync(ObjectKey key, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(key, cancellationToken);
+
+        public IAsyncEnumerable<ObjectEntry> ListAsync(ObjectPrefix prefix, CancellationToken cancellationToken)
+        {
+            ListCount++;
+            return inner.ListAsync(prefix, cancellationToken);
+        }
+
+        public Task<Uri> CreateDownloadUrlAsync(ObjectKey key, TimeSpan lifetime, CancellationToken cancellationToken) =>
+            inner.CreateDownloadUrlAsync(key, lifetime, cancellationToken);
+    }
 }

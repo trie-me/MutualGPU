@@ -59,7 +59,7 @@ public sealed class SchedulerHostedService(SchedulerApplication scheduler, Provi
     }
 }
 
-public sealed class SchedulerSignal : IApplicationEventSink
+public sealed class SchedulerSignal(TaskUpdateHub taskUpdates) : IApplicationEventSink
 {
     private readonly Channel<byte> signals = Channel.CreateBounded<byte>(new BoundedChannelOptions(1)
     {
@@ -69,6 +69,8 @@ public sealed class SchedulerSignal : IApplicationEventSink
     });
 
     public void TriggerScheduler() => signals.Writer.TryWrite(0);
+
+    public void TaskChanged(MutualGPU.Domain.RequestorId requestorId) => taskUpdates.Publish(requestorId);
 
     public ValueTask<byte> WaitAsync(CancellationToken cancellationToken) => signals.Reader.ReadAsync(cancellationToken);
 }

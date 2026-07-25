@@ -135,7 +135,7 @@ public sealed class ObjectStoreTaskRepository(
         return tasks.OrderByDescending(static task => task.CreatedAt).ToArray();
     }
 
-    public async Task<int> RecoverAsync(CancellationToken cancellationToken)
+    public async Task<int> RecoverAsync(DateTimeOffset processStartedAt, CancellationToken cancellationToken)
     {
         var ids = new HashSet<(RequestorId RequestorId, TaskId TaskId)>();
         await foreach (var entry in store.ListAsync(new ObjectPrefix("mutualgpu/v3/requestors"), cancellationToken).ConfigureAwait(false))
@@ -155,7 +155,11 @@ public sealed class ObjectStoreTaskRepository(
             var task = await GetAsync(requestorId, taskId, cancellationToken).ConfigureAwait(false);
             var active = task?.Attempts.LastOrDefault(attempt => attempt.State is AttemptState.Assigned or AttemptState.Accepted or AttemptState.Disconnected);
             if (task is null) continue;
-            if (active is not null)
+            // Recovery runs in the background while the new process is already
+            // serving. Only an attempt assigned before this process started can
+            // have been orphaned by the restart; touching a newer attempt would
+            // revoke live work created while the catalogue scan was in flight.
+            if (active is not null && active.AssignedAt <= processStartedAt)
             {
                 task.Requeue(active.Id, active.Handle, AttemptState.Revoked, "restart_recovery", "The service restarted while this task was active.");
                 await SaveAsync(task, cancellationToken).ConfigureAwait(false);

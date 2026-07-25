@@ -8,7 +8,8 @@ public sealed class SchedulerApplication(
     IQueuedTaskReader queue,
     IProviderPresence presence,
     ITaskRepository tasks,
-    IProviderAssignments assignments)
+    IProviderAssignments assignments,
+    IApplicationEventSink? events = null)
 {
     public Latent<int> Evaluate(DateTimeOffset now) => Latent<int>.DelayAsync(async cancellationToken =>
     {
@@ -19,6 +20,7 @@ public sealed class SchedulerApplication(
             if (candidate is null) continue;
             var attempt = task.Assign(AttemptId.New(), candidate.ExecutionUnitId, NewHandle(), now);
             await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
+            events?.TaskChanged(task.RequestorId);
             assignments.Track(candidate.ExecutionUnitId, task, attempt);
             var input = task.Parameters.Image is { } image
                 ? new ProviderInputAssignment(
@@ -33,6 +35,7 @@ public sealed class SchedulerApplication(
             {
                 task.Requeue(attempt.Id, attempt.Handle, AttemptState.Revoked, "delivery_failed", "The provider connection closed before the task could be delivered.");
                 await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
+                events?.TaskChanged(task.RequestorId);
                 assignments.Remove(candidate.ExecutionUnitId, task.Id, attempt.Id);
                 continue;
             }

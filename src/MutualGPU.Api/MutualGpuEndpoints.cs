@@ -21,7 +21,7 @@ public static class MutualGpuEndpoints
                 item.Capability.Inputs.Select(input => new CapabilityInputDto(input.Key, input.Type.ToString(), input.Required, input.Label, input.Description, input.Default, input.Minimum, input.Maximum, input.AllowedValues, input.ContentTypes)).ToArray())).ToArray());
     }
 
-    public static async Task<IResult> SubmitTask(HttpContext context, TaskSubmissionApplication submission, ICapabilityReader capabilities, IObjectStore store, MutualGPU.Infrastructure.MutualGpuObjectKeys keys, MutualGpuTelemetry telemetry, CancellationToken cancellationToken)
+    public static async Task<IResult> SubmitTask(HttpContext context, TaskSubmissionApplication submission, ICapabilityReader capabilities, IObjectStore store, MutualGPU.Infrastructure.MutualGpuObjectKeys keys, MutualGpuTelemetry telemetry, RequestorDiagnostics diagnostics, CancellationToken cancellationToken)
     {
         using var activity = telemetry.Activities.StartActivity("mutualgpu.requestor.submit");
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
@@ -100,6 +100,10 @@ public static class MutualGpuEndpoints
         if (pendingImage is not null && result is not SubmitTaskResult.Created { CreatedNow: true })
         {
             await store.DeleteAsync(keys.TaskInput(requestorId, taskId, pendingImage.ArtifactId, pendingImage.Extension), cancellationToken).ConfigureAwait(false);
+        }
+        if (result is SubmitTaskResult.Created submitted)
+        {
+            diagnostics.TaskOperation(context, requestorId, submitted.Task.Id, submitted.CreatedNow ? "submitted" : "submission_replayed");
         }
         return result switch
         {
@@ -188,6 +192,31 @@ public static class MutualGpuEndpoints
         return TypedResults.Ok(tasks.Select(task => ToDto(task, progress.Get(task.TaskId))).ToArray());
     }
 
+    public static async Task StreamTaskEvents(HttpContext context, TaskUpdateHub updates, CancellationToken cancellationToken)
+    {
+        if (!RequestorIdentity.TryGet(context, out var requestorId))
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        await using var subscription = updates.Subscribe(requestorId);
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-store, private";
+        context.Response.Headers["X-Accel-Buffering"] = "no";
+        await context.Response.StartAsync(cancellationToken).ConfigureAwait(false);
+        await context.Response.WriteAsync("event: ready\ndata: {}\n\n", cancellationToken).ConfigureAwait(false);
+        await context.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await subscription.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (subscription.Reader.TryRead(out _)) { }
+            await context.Response.WriteAsync("event: tasks-changed\ndata: {}\n\n", cancellationToken).ConfigureAwait(false);
+            await context.Response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     public static async Task<IResult> GetTask(HttpContext context, Guid taskId, ITaskRepository tasks, IProviderProgress progress, CancellationToken cancellationToken)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
@@ -195,17 +224,18 @@ public static class MutualGpuEndpoints
         return task is null ? TypedResults.NotFound() : TypedResults.Ok(ToDto(task, progress.Get(task.Id)));
     }
 
-    public static async Task<IResult> ReevaluateTask(HttpContext context, Guid taskId, ITaskRepository tasks, IApplicationEventSink events, CancellationToken cancellationToken)
+    public static async Task<IResult> ReevaluateTask(HttpContext context, Guid taskId, ITaskRepository tasks, IApplicationEventSink events, RequestorDiagnostics diagnostics, CancellationToken cancellationToken)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
         var task = await tasks.GetAsync(requestorId, new TaskId(taskId), cancellationToken).ConfigureAwait(false);
         if (task is null) return TypedResults.NotFound();
         if (task.Status is not MutualGPU.Domain.TaskStatus.Running) return Problem("task_not_running", StatusCodes.Status409Conflict);
         events.TriggerScheduler();
+        diagnostics.TaskOperation(context, requestorId, task.Id, "reevaluation_requested");
         return TypedResults.Accepted($"/api/tasks/{taskId:D}");
     }
 
-    public static async Task<IResult> CancelTask(HttpContext context, Guid taskId, ITaskRepository tasks, IProviderAssignments assignments, IProviderProgress progress, IApplicationEventSink events, CancellationToken cancellationToken)
+    public static async Task<IResult> CancelTask(HttpContext context, Guid taskId, ITaskRepository tasks, IProviderAssignments assignments, IProviderProgress progress, IApplicationEventSink events, RequestorDiagnostics diagnostics, CancellationToken cancellationToken)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
         var task = await tasks.GetAsync(requestorId, new TaskId(taskId), cancellationToken).ConfigureAwait(false);
@@ -222,7 +252,9 @@ public static class MutualGpuEndpoints
             assignments.Remove(active.ExecutionUnitId, task.Id, active.Id);
         }
         if (active is not null) progress.Remove(task.Id, active.Id);
+        events.TaskChanged(requestorId);
         events.TriggerScheduler();
+        diagnostics.TaskOperation(context, requestorId, task.Id, "cancelled");
         return TypedResults.NoContent();
     }
 

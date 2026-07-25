@@ -99,6 +99,7 @@ public sealed class TaskSubmissionApplication(
         var task = new TaskRequest(command.TaskId ?? MutualGPU.Domain.TaskId.New(), command.RequestorId, capability, command.Resources,
             new TaskParameters(command.Scalars, command.Image, command.IdempotencyKey, command.ImageContentType, command.ImageExtension, command.ImageLength, command.ImageSha256), command.SubmittedAt);
         await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
+        events.TaskChanged(command.RequestorId);
         events.TriggerScheduler();
         return new SubmitTaskResult.Created(task);
     });

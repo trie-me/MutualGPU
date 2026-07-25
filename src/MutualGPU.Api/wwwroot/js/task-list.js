@@ -7,20 +7,52 @@ const statusCopy = Object.freeze({
 });
 
 const resultDescriptors = new Map();
+const resultViews = new WeakMap();
 
 function resultDescriptorFor(task, fetchImpl) {
-  if (!resultDescriptors.has(task.taskId)) {
-    const descriptor = fetchImpl(`/api/tasks/${task.taskId}/result`, { cache: 'no-store' })
+  const now = Date.now();
+  const cached = resultDescriptors.get(task.taskId);
+  if (!cached || cached.attemptCount !== task.attemptCount || cached.expiresAt <= now) {
+    const entry = {
+      attemptCount: task.attemptCount,
+      expiresAt: now + 60_000,
+      promise: null,
+    };
+    entry.promise = fetchImpl(`/api/tasks/${task.taskId}/result`, { cache: 'no-store' })
       .then(response => {
         if (response.ok === false) throw new Error(`Result is unavailable (HTTP ${response.status}).`);
         return response.json();
       })
-      .finally(() => {
-        if (resultDescriptors.get(task.taskId) === descriptor) resultDescriptors.delete(task.taskId);
+      .then(descriptor => {
+        entry.expiresAt = descriptorExpiry(descriptor, now);
+        return descriptor;
+      })
+      .catch(error => {
+        if (resultDescriptors.get(task.taskId) === entry) resultDescriptors.delete(task.taskId);
+        throw error;
       });
-    resultDescriptors.set(task.taskId, descriptor);
+    resultDescriptors.set(task.taskId, entry);
   }
-  return resultDescriptors.get(task.taskId);
+  return resultDescriptors.get(task.taskId).promise;
+}
+
+function descriptorExpiry(descriptor, now) {
+  const artifactExpiries = (descriptor.artifacts || [])
+    .map(artifact => Date.parse(artifact.expiresAt || ''))
+    .filter(Number.isFinite);
+  const earliest = artifactExpiries.length ? Math.min(...artifactExpiries) : now + 5 * 60_000;
+  return Math.max(now + 1_000, earliest - 30_000);
+}
+
+function resultViewSignature(task) {
+  return [
+    task.status,
+    task.attemptCount,
+    task.capabilityName,
+    task.failureStep || '',
+    task.failureReason || '',
+    JSON.stringify(task.resources || {})
+  ].join('|');
 }
 
 function appendResultPreview(article, actions, document, task, artifact) {
@@ -72,8 +104,11 @@ export function renderTaskList(container, tasks, {
   onChanged = async () => {},
 } = {}) {
   const document = container.ownerDocument;
-  container.replaceChildren();
+  const retainedViews = resultViews.get(container) || new Map();
+  const nextViews = new Map();
   if (!tasks.length) {
+    resultViews.set(container, nextViews);
+    container.replaceChildren();
     const empty = document.createElement('div'); empty.className = 'task-list__empty';
     const title = document.createElement('strong'); title.textContent = 'Nothing on the reading list yet.';
     const copy = document.createElement('span'); copy.textContent = 'Create a task and its matching, progress, and result will appear here.';
@@ -81,7 +116,15 @@ export function renderTaskList(container, tasks, {
     return;
   }
 
+  const articles = [];
   for (const task of tasks) {
+    const signature = task.canRetrieveResult ? resultViewSignature(task) : null;
+    const retained = signature ? retainedViews.get(task.taskId) : null;
+    if (retained?.signature === signature) {
+      nextViews.set(task.taskId, retained);
+      articles.push(retained.article);
+      continue;
+    }
     const presentation = presentationFor(task);
     const article = document.createElement('article'); article.className = 'task-list__item';
     const title = document.createElement('button'); title.type = 'button'; title.className = 'task-list__title';
@@ -131,6 +174,9 @@ export function renderTaskList(container, tasks, {
       actions.append(result);
     }
     article.append(title, details, actions);
-    container.append(article);
+    if (signature) nextViews.set(task.taskId, { signature, article });
+    articles.push(article);
   }
+  resultViews.set(container, nextViews);
+  container.replaceChildren(...articles);
 }

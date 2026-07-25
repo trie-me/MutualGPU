@@ -2,7 +2,7 @@ import { renderResourceGrid } from './resource-grid.js';
 import { createFiberDiagnosticsOverlay } from './fiber-tree-overlay.js?v=20260721-sharedcompute3';
 import { createScalarPayload } from './capability-form.js';
 import { reconcileCatalogueSelection } from './capability-catalogue.js';
-import { renderTaskList } from './task-list.js?v=20260723-result-preview2';
+import { renderTaskList } from './task-list.js?v=20260725-result-preview3';
 
 const select = document.querySelector('#capability-select');
 const refreshCapabilitiesButton = document.querySelector('#refresh-capabilities');
@@ -15,6 +15,8 @@ let catalogue = [];
 let selectedResources = null;
 let sort = { computeDescending: false, memoryDescending: true };
 let catalogueRefreshInFlight = false;
+let taskRenderInFlight = false;
+let taskRenderQueued = false;
 
 function control(input) {
   const label = document.createElement('label'); label.textContent = input.label;
@@ -128,11 +130,30 @@ async function requestCatalogueRefresh({ initial = false } = {}) {
 }
 
 async function renderTasks() {
+  if (taskRenderInFlight) {
+    taskRenderQueued = true;
+    return;
+  }
+  taskRenderInFlight = true;
   try {
-    const response = await fetch('/api/tasks/');
-    if (!response.ok) { taskList.textContent = 'Your tasks are taking a quiet moment. Refresh to try again.'; return; }
-    renderTaskList(taskList, await response.json(), { onChanged: renderTasks });
-  } catch { taskList.textContent = 'Your tasks are taking a quiet moment. Refresh to try again.'; }
+    do {
+      taskRenderQueued = false;
+      try {
+        const response = await fetch('/api/tasks/', { cache: 'no-store' });
+        if (!response.ok) { taskList.textContent = 'Your tasks are taking a quiet moment. Refresh to try again.'; continue; }
+        renderTaskList(taskList, await response.json(), { onChanged: renderTasks });
+      } catch { taskList.textContent = 'Your tasks are taking a quiet moment. Refresh to try again.'; }
+    } while (taskRenderQueued);
+  } finally {
+    taskRenderInFlight = false;
+  }
+}
+
+function streamTaskChanges() {
+  const events = new EventSource('/api/tasks/events');
+  events.addEventListener('ready', () => { void renderTasks(); });
+  events.addEventListener('tasks-changed', () => { void renderTasks(); });
+  window.addEventListener('pagehide', () => events.close(), { once: true });
 }
 
 async function submissionError(response) {
@@ -162,7 +183,7 @@ form.addEventListener('submit', async event => {
 });
 void requestCatalogueRefresh({ initial: true });
 void renderTasks();
-setInterval(() => { void renderTasks(); }, 2000);
+streamTaskChanges();
 refreshCapabilitiesButton.addEventListener('click', () => { void requestCatalogueRefresh(); });
 document.querySelector('#refresh-tasks').addEventListener('click', () => { void renderTasks(); });
 

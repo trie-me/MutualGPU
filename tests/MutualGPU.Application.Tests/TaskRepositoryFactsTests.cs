@@ -68,13 +68,36 @@ public sealed class TaskRepositoryFactsTests
         task.Accept(attempt.Id, attempt.Handle, DateTimeOffset.UtcNow);
         await repository.SaveAsync(task, CancellationToken.None);
 
-        var recovered = await repository.RecoverAsync(CancellationToken.None);
+        var recovered = await repository.RecoverAsync(attempt.AssignedAt.AddTicks(1), CancellationToken.None);
         var hydrated = await repository.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
 
         Assert.Equal(1, recovered);
         Assert.Equal(MutualGPU.Domain.TaskStatus.Queued, hydrated!.Status);
         Assert.Equal(AttemptState.Revoked, hydrated.Attempts.Single().State);
         Assert.Equal("restart_recovery", hydrated.Attempts.Single().FailureStep);
+    }
+
+    [Fact]
+    public async Task Startup_recovery_does_not_revoke_an_attempt_assigned_by_the_current_process()
+    {
+        var store = new InMemoryObjectStore();
+        var keys = new MutualGpuObjectKeys();
+        var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
+        var processStartedAt = DateTimeOffset.UtcNow;
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), processStartedAt.AddMinutes(-1));
+        await repository.SaveAsync(task, CancellationToken.None);
+        var attempt = task.Assign(AttemptId.New(), ExecutionUnitId.New(), "opaque-handle", processStartedAt.AddSeconds(1));
+        task.Accept(attempt.Id, attempt.Handle, processStartedAt.AddSeconds(2));
+        await repository.SaveAsync(task, CancellationToken.None);
+
+        var recovered = await repository.RecoverAsync(processStartedAt, CancellationToken.None);
+        var hydrated = await repository.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
+
+        Assert.Equal(0, recovered);
+        Assert.Equal(MutualGPU.Domain.TaskStatus.Running, hydrated!.Status);
+        Assert.Equal(AttemptState.Accepted, hydrated.Attempts.Single().State);
+        Assert.Null(hydrated.Attempts.Single().FailureStep);
     }
 
     [Fact]
@@ -91,7 +114,7 @@ public sealed class TaskRepositoryFactsTests
         await store.DeleteAsync(marker, CancellationToken.None);
         await store.DeleteAsync(keys.TaskSummaryProjection(task.RequestorId), CancellationToken.None);
 
-        var recovered = await repository.RecoverAsync(CancellationToken.None);
+        var recovered = await repository.RecoverAsync(DateTimeOffset.UtcNow, CancellationToken.None);
         var queued = await repository.GetQueuedAsync(CancellationToken.None);
         var summaries = await repository.ListSummariesAsync(task.RequestorId, CancellationToken.None);
 
@@ -128,7 +151,7 @@ public sealed class TaskRepositoryFactsTests
             await store.PutAsync(marker, content, ObjectWriteConditions.IfNotExists, CancellationToken.None);
         }
 
-        await repository.RecoverAsync(CancellationToken.None);
+        await repository.RecoverAsync(DateTimeOffset.UtcNow, CancellationToken.None);
         await using var remaining = await store.GetAsync(marker, CancellationToken.None);
 
         Assert.Null(remaining);

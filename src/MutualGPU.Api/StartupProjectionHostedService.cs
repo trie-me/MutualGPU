@@ -18,6 +18,7 @@ public sealed class StartupProjectionHostedService(
     IStartupRecovery recovery,
     StartupProjectionState state,
     IApplicationEventSink events,
+    TimeProvider timeProvider,
     MutualGpuFiberOwner fibers,
     ILogger<StartupProjectionHostedService> logger) : IHostedService
 {
@@ -25,12 +26,13 @@ public sealed class StartupProjectionHostedService(
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
+        var processStartedAt = timeProvider.GetUtcNow();
         // A healthy object store is the only prerequisite for serving requests:
         // repositories read durable state directly. Reconciliation is deliberately
         // background work, because it can scan the provisioned-provider catalogue.
         // Do not hold readiness (or the ALB) behind that scan.
         _ = EstablishReadinessAsync(cancellationToken);
-        startupRecovery = RecoverAsync(cancellationToken);
+        startupRecovery = RecoverAsync(processStartedAt, cancellationToken);
         return Task.CompletedTask;
     }
 
@@ -51,12 +53,12 @@ public sealed class StartupProjectionHostedService(
         }
     }
 
-    private async Task RecoverAsync(CancellationToken cancellationToken)
+    private async Task RecoverAsync(DateTimeOffset processStartedAt, CancellationToken cancellationToken)
     {
         var fiber = fibers.Startup.Start(Latent<int>.DelayAsync(async token =>
         {
             await enrollments.RecoverAsync(token).ConfigureAwait(false);
-            await recovery.RecoverAsync(token).ConfigureAwait(false);
+            await recovery.RecoverAsync(processStartedAt, token).ConfigureAwait(false);
             return 0;
         }), new FiberDescriptor("startup-projection"));
         var outcome = await fiber.JoinAsync().ConfigureAwait(false);

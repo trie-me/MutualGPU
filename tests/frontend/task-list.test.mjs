@@ -66,9 +66,36 @@ test('polled tasks render status, reevaluation, and result download behavior in 
   assert.deepEqual(requests, [
     { url: '/api/tasks/complete/result', init: { cache: 'no-store' } },
     { url: '/api/tasks/running/reevaluate', init: { method: 'POST' } },
-    { url: '/api/tasks/complete/result', init: { cache: 'no-store' } },
   ]);
-  assert.deepEqual(opened, [['https://objects.example/result-2.zip', '_blank', 'noopener']]);
+  assert.deepEqual(opened, [['https://objects.example/result-1.zip', '_blank', 'noopener']]);
+});
+
+test('completed previews retain their DOM node and descriptor across task polling ticks', async () => {
+  const document = new Document();
+  const container = new Element(document, 'div');
+  const requests = [];
+  const task = {
+    taskId: 'stable-preview', capabilityName: 'FLUX.2', status: 'Completed', attemptCount: 1,
+    canReevaluate: false, canRetrieveResult: true,
+  };
+  const fetchImpl = async (url, init) => {
+    requests.push({ url, init });
+    return { json: async () => ({ artifacts: [
+      { name: 'result', downloadUrl: 'https://objects.example/result.zip', expiresAt: '2030-01-01T00:00:00.000Z' },
+      { name: 'preview', downloadUrl: 'https://objects.example/preview.png', expiresAt: '2030-01-01T00:00:00.000Z' },
+    ] }) };
+  };
+
+  renderTaskList(container, [task], { fetchImpl });
+  await new Promise(resolve => setImmediate(resolve));
+  const firstArticle = container.children[0];
+  const firstPreview = firstArticle.children[2];
+  renderTaskList(container, [{ ...task }], { fetchImpl });
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(container.children[0], firstArticle);
+  assert.equal(container.children[0].children[2], firstPreview);
+  assert.deepEqual(requests, [{ url: '/api/tasks/stable-preview/result', init: { cache: 'no-store' } }]);
 });
 
 test('an empty poll result explains where newly queued work will appear', () => {

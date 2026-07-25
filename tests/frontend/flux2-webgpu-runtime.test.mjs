@@ -36,6 +36,9 @@ test("browser runtime pins and validates the replacement Hugging Face model", as
   assert.match(runtime, /resolve\/main\/models\/klein-4b/);
   assert.match(runtime, /onnxruntime-web@1\.27\.0/);
   assert.match(runtime, /RUNTIME_BUILD = "20260725-klein-fp16-diagnostics-1"/);
+  assert.match(runtime, /requestAdapter\(\{ powerPreference: "high-performance" \}\)/);
+  assert.doesNotMatch(runtime, /ort\.env\.webgpu\.adapter/);
+  assert.doesNotMatch(runtime, /ort\.env\.webgpu\.powerPreference/);
   assert.match(runtime, /pipeline-1024\/manifest\.json/);
   assert.match(runtime, /transformerManifest\.parts\?\.length !== 4/);
   assert.match(runtime, /vaeManifest\.dtype !== "float16"/);
@@ -45,6 +48,15 @@ test("browser runtime pins and validates the replacement Hugging Face model", as
   assert.doesNotMatch(runtime, /trie-me\/flux2-klein-4b-webgpu/);
   assert.doesNotMatch(runtime, /custom-lowbit-webgpu/);
   assert.doesNotMatch(runtime, /enableFusedTransformer/);
+});
+
+test("browser host mirrors the working smoke test's adapter-only WebGPU preflight", async () => {
+  const host = await readFile(new URL("js/host-compute.js", root), "utf8");
+
+  assert.match(host, /requestAdapter\(\{ powerPreference: "high-performance" \}\)/);
+  assert.doesNotMatch(host, /shader-f16/);
+  assert.doesNotMatch(host, /requestDevice\(/);
+  assert.match(host, /klein-fp16-5/);
 });
 
 test("browser provider records the precise FLUX.2 download and WebGPU-session failure stage", async () => {

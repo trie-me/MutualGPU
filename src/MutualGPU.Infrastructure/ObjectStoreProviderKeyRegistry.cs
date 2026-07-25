@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using MutualGPU.Application;
@@ -12,6 +13,7 @@ namespace MutualGPU.Infrastructure;
 public sealed class ObjectStoreProviderKeyRegistry(IObjectStore store, MutualGpuObjectKeys keys) : IExecutionUnitKeyRegistry
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private readonly ConcurrentDictionary<ExecutionUnitId, string> providerDigests = [];
 
     public async Task ProvisionAsync(ExecutionUnitId executionUnitId, string presharedKey, CancellationToken cancellationToken)
     {
@@ -25,10 +27,12 @@ public sealed class ObjectStoreProviderKeyRegistry(IObjectStore store, MutualGpu
             throw new ArgumentException("A preshared key is required.", nameof(presharedKey));
         }
 
+        var providerDigest = keys.ProviderDigest(presharedKey);
         await using var content = new MemoryStream();
         await JsonSerializer.SerializeAsync(content, new ProviderKeyBinding(executionUnitId), JsonOptions, cancellationToken).ConfigureAwait(false);
         content.Position = 0;
         await store.PutAsync(keys.ProviderKey(presharedKey), content, ObjectWriteConditions.IfNotExists, cancellationToken).ConfigureAwait(false);
+        providerDigests[executionUnitId] = providerDigest;
     }
 
     public async Task<ExecutionUnitId?> AuthenticateAsync(string? presharedKey, CancellationToken cancellationToken)
@@ -38,14 +42,16 @@ public sealed class ObjectStoreProviderKeyRegistry(IObjectStore store, MutualGpu
             return null;
         }
 
+        var providerDigest = keys.ProviderDigest(presharedKey);
         var binding = await ReadAsync(keys.ProviderKey(presharedKey), cancellationToken).ConfigureAwait(false);
-        return binding is null || binding.ExecutionUnitId.Value == Guid.Empty
-            ? null
-            : binding.ExecutionUnitId;
+        if (binding is null || binding.ExecutionUnitId.Value == Guid.Empty) return null;
+        providerDigests[binding.ExecutionUnitId] = providerDigest;
+        return binding.ExecutionUnitId;
     }
 
     public async Task<string?> GetProviderKeyDigestAsync(ExecutionUnitId executionUnitId, CancellationToken cancellationToken)
     {
+        if (providerDigests.TryGetValue(executionUnitId, out var cached)) return cached;
         await foreach (var entry in store.ListAsync(keys.ProviderKeys(), cancellationToken).ConfigureAwait(false))
         {
             if (!entry.Key.Value.EndsWith(".json", StringComparison.Ordinal))
@@ -59,7 +65,9 @@ public sealed class ObjectStoreProviderKeyRegistry(IObjectStore store, MutualGpu
                 continue;
             }
 
-            return Path.GetFileNameWithoutExtension(entry.Key.Value);
+            var providerDigest = Path.GetFileNameWithoutExtension(entry.Key.Value);
+            providerDigests.TryAdd(executionUnitId, providerDigest);
+            return providerDigest;
         }
 
         return null;
@@ -83,6 +91,7 @@ public sealed class ObjectStoreProviderKeyRegistry(IObjectStore store, MutualGpu
                 continue;
             }
 
+            providerDigests.TryAdd(binding.ExecutionUnitId, Path.GetFileNameWithoutExtension(entry.Key.Value));
             yield return binding.ExecutionUnitId;
         }
     }
