@@ -55,7 +55,11 @@ The Development host uses an in-memory object store when `MutualGPU:Backblaze` i
 
 `ProviderCorsOrigins` is the explicit allow-list for Chrome provider HTTP enrollment and result uploads. Leave it empty when no browser provider is used; it does not permit arbitrary origins.
 
-The hosted **Contribute Compute** dialog explains how a browser provider can offer spare WebGPU capacity. Its **Get a key** action issues a fresh provider password through the durable registry, shows it once, and tells the contributor to save it before starting their provider. The app does not attempt to enroll or connect the browser itself; the durable registry stores only the credential binding and digest.
+The hosted **Offer compute** page at `/offer-compute.html` can mint a provider key and start a tab-scoped Chrome WebGPU provider. The provider advertises the full, unquantized FP16 `black-forest-labs/FLUX.2-klein-4B` text-to-image product at its pinned revision, fixed to the validated 1024×1024 four-step pipeline. Closing the hosting tab or clicking **Disconnect hosting** ends the provider session.
+
+The browser model defaults to `trie-me/flux2-klein-4b-webgpu` on Hugging Face. That repository must contain the contents of the conversion project's `public/models/klein-4b` directory at its root, plus the pinned Klein tokenizer files at the repository root. The runtime rejects mismatched model identities, revisions, component types, partition counts, and VAE precision before enrollment. A deployment can replace the artifact origin before loading the module by setting `globalThis.MUTUALGPU_FLUX2_WEBGPU_MODEL_BASE_URL`; the default remains the pinned Hugging Face repository.
+
+The first assignment downloads the Qwen encoder, four transformer partitions, and FP16 VAE. To stay within the 16 GiB target, the host encodes the prompt and releases Qwen before it loads the image pipeline. Transformer sessions remain resident for repeated generation with the same prompt; a different prompt switches back through the prompt-encoder phase.
 
 MutualGPU rejects plaintext HTTP in every environment. For local development, install the .NET development certificate once and run an HTTPS listener:
 

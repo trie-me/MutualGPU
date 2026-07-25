@@ -93,9 +93,11 @@ for attempt in $(seq 1 60); do
     exit 1
   fi
 
-  if curl --http1.1 --fail --silent "$api_url/health/ready" >/dev/null 2>&1; then
-    # Ensure readiness belongs to the process started above rather than a host
-    # that won a port race between the preflight and Kestrel binding.
+  if grep --fixed-strings --quiet "Now listening on: $api_url" "$api_log" &&
+    curl --http1.1 --fail --silent "$api_url/health/ready" >/dev/null 2>&1; then
+    # Do not mistake a process that was already releasing the port for the API
+    # we just started. The listener message comes from this invocation's log,
+    # so the child must have claimed the HTTPS endpoint before readiness wins.
     sleep 0.1
     if ! kill -0 "$api_pid" 2>/dev/null; then
       echo "MutualGPU API stopped during startup:" >&2

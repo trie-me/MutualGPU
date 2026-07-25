@@ -22,7 +22,7 @@ export function loadConfig(environment = process.env) {
   return Object.freeze({
     apiUrl,
     providerKey,
-    capabilityName: environment.MUTUALGPU_FLUX2_CAPABILITY ?? "flux2-klein-4b",
+    capabilityPrefix: environment.MUTUALGPU_FLUX2_CAPABILITY ?? "flux2-klein-4b",
     machineTier,
     computeTier,
     memoryGiB,
@@ -44,38 +44,56 @@ export function buildEnrollment(config) {
       tier: config.machineTier,
       specifications: { computeTier: config.computeTier, memoryGiB: config.memoryGiB }
     },
-    capabilities: [{
-      name: config.capabilityName,
-      description: "Generates one PNG image with a locally hosted FLUX.2 pipeline.",
-      inputs: [
-        { key: "prompt", type: "String", required: true, label: "Prompt", description: "Text describing the image to generate.", displayOrder: 0 },
-        { key: "num_inference_steps", type: "Integer", required: false, label: "Inference steps", default: "4", minimum: 1, maximum: 50, displayOrder: 1 },
-        { key: "guidance_scale", type: "Number", required: false, label: "Guidance scale", default: "7", minimum: 0, maximum: 20, displayOrder: 2 },
-        { key: "width", type: "Integer", required: false, label: "Width", default: "1024", minimum: 256, maximum: 1024, displayOrder: 3 },
-        { key: "height", type: "Integer", required: false, label: "Height", default: "1024", minimum: 256, maximum: 1024, displayOrder: 4 },
-        { key: "seed", type: "Integer", required: false, label: "Seed", description: "Optional deterministic seed. A random seed is chosen when omitted.", minimum: 0, maximum: 2147483647, displayOrder: 5 }
-      ],
-      output: {
-        hasThumbnail: true,
-        hasPreview: true,
-        hasMetadata: true,
-        hasLogs: true,
-        previewContentTypes: ["image/png"]
-      }
-    }]
+    capabilities: [
+      capability(`${config.capabilityPrefix}-text-to-image`, "Generates one PNG image from a text prompt."),
+      capability(`${config.capabilityPrefix}-image-to-image`, "Edits one PNG, JPEG, or WebP reference image from a text prompt.", true)
+    ]
   };
 }
 
 export function parseGenerationRequest(scalars = {}, chooseSeed = () => randomInt(0, 2147483648)) {
   const prompt = text(scalars.prompt, "prompt", { required: true, maximumLength: 2000 });
-  const steps = scalarInteger(scalars.num_inference_steps ?? "4", "num_inference_steps", 1, 50);
-  const guidanceScale = scalarNumber(scalars.guidance_scale ?? "7", "guidance_scale", 0, 20);
+  const steps = scalarInteger(scalars.num_inference_steps ?? "4", "num_inference_steps", 1, 100);
+  const guidanceScale = 1;
   const width = scalarInteger(scalars.width ?? "1024", "width", 256, 1024);
   const height = scalarInteger(scalars.height ?? "1024", "height", 256, 1024);
   if (width % 8 !== 0 || height % 8 !== 0) throw new AssignmentValidationError("width and height must be divisible by 8");
   if (width * height > 1024 * 1024) throw new AssignmentValidationError("the requested image contains too many pixels");
   const seed = scalars.seed == null || scalars.seed === "" ? chooseSeed() : scalarInteger(scalars.seed, "seed", 0, 2147483647);
   return Object.freeze({ prompt, steps, guidanceScale, width, height, seed });
+}
+
+function capability(name, description, requiresImage = false) {
+  const inputs = fluxInputs();
+  if (requiresImage) {
+    inputs.push({
+      key: "image", type: "Image", required: true, label: "Reference image",
+      description: "One source image to edit.", contentTypes: ["image/png", "image/jpeg", "image/webp"], displayOrder: 6
+    });
+  }
+  return {
+    name,
+    description,
+    inputs,
+    output: {
+      hasThumbnail: true,
+      hasPreview: true,
+      hasMetadata: true,
+      hasLogs: true,
+      previewContentTypes: ["image/png"],
+      metadataSchema: "{\"type\":\"object\"}"
+    }
+  };
+}
+
+function fluxInputs() {
+  return [
+    { key: "prompt", type: "String", required: true, label: "Prompt", description: "Text describing the image to generate or edit.", displayOrder: 0 },
+    { key: "num_inference_steps", type: "Integer", required: false, label: "Inference steps", description: "The distilled FLUX.2 [klein] default is four steps.", default: "4", minimum: 1, maximum: 100, displayOrder: 1 },
+    { key: "width", type: "Integer", required: false, label: "Width", description: "256–1024 pixels, divisible by 8.", default: "1024", minimum: 256, maximum: 1024, displayOrder: 2 },
+    { key: "height", type: "Integer", required: false, label: "Height", description: "256–1024 pixels, divisible by 8.", default: "1024", minimum: 256, maximum: 1024, displayOrder: 3 },
+    { key: "seed", type: "Integer", required: false, label: "Seed", description: "Optional deterministic seed. A random seed is chosen when omitted.", minimum: 0, maximum: 2147483647, displayOrder: 4 }
+  ];
 }
 
 function required(environment, name) {

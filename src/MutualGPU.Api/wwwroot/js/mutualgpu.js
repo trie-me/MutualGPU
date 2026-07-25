@@ -14,14 +14,7 @@ const taskList = document.querySelector('#task-list');
 let catalogue = [];
 let selectedResources = null;
 let sort = { computeDescending: false, memoryDescending: true };
-let webGpuKey = null;
 let catalogueRefreshInFlight = false;
-
-const webGpuDialog = document.querySelector('#webgpu-enrollment-dialog');
-const webGpuStatus = document.querySelector('#webgpu-enrollment-status');
-const webGpuKeyPanel = document.querySelector('#webgpu-enrollment-key-panel');
-const webGpuKeyDisplay = document.querySelector('#webgpu-enrollment-key');
-const webGpuNewButton = document.querySelector('#webgpu-new-enrollment');
 
 function control(input) {
   const label = document.createElement('label'); label.textContent = input.label;
@@ -172,41 +165,6 @@ void renderTasks();
 setInterval(() => { void renderTasks(); }, 2000);
 refreshCapabilitiesButton.addEventListener('click', () => { void requestCatalogueRefresh(); });
 document.querySelector('#refresh-tasks').addEventListener('click', () => { void renderTasks(); });
-
-function openWebGpuEnrollment() {
-  webGpuStatus.textContent = webGpuKey ? 'Save the provider password before starting your browser provider.' : '';
-  webGpuDialog.showModal();
-}
-
-document.querySelector('#webgpu-enrollment-toggle').addEventListener('click', openWebGpuEnrollment);
-document.querySelector('#hero-contribute').addEventListener('click', openWebGpuEnrollment);
-document.querySelector('#community-contribute').addEventListener('click', openWebGpuEnrollment);
-document.querySelector('#webgpu-enrollment-close').addEventListener('click', () => webGpuDialog.close());
-document.querySelector('#webgpu-enrollment-copy').addEventListener('click', async () => {
-  if (!webGpuKey) return;
-  try { await navigator.clipboard.writeText(webGpuKey); webGpuStatus.textContent = 'Provider password copied. Keep it safe, then start your browser provider.'; }
-  catch { webGpuStatus.textContent = 'Copy was blocked. Select the key text and save it manually.'; }
-});
-webGpuNewButton.addEventListener('click', () => { void createWebGpuEnrollment(); });
-
-async function createWebGpuEnrollment() {
-  webGpuNewButton.disabled = true;
-  webGpuStatus.textContent = 'Creating a fresh provider password…';
-  try {
-    const response = await fetch('/api/webgpu-enrollments', { method: 'POST' });
-    if (!response.ok) throw new Error(`A provider key could not be issued (HTTP ${response.status}).`);
-    const issued = await response.json();
-    if (!issued?.providerKey) throw new Error('The server did not return a provider password.');
-    webGpuKey = issued.providerKey;
-    webGpuKeyDisplay.textContent = webGpuKey;
-    webGpuKeyPanel.hidden = false;
-    webGpuStatus.textContent = 'Provider password created. Copy and save it before starting your browser provider.';
-  } catch (error) {
-    webGpuStatus.textContent = error instanceof Error ? error.message : 'A provider password could not be created.';
-  } finally {
-    webGpuNewButton.disabled = false;
-  }
-}
 
 async function enableDiagnosticsWhenAvailable() {
   const toggle = document.querySelector('#fiber-toggle');

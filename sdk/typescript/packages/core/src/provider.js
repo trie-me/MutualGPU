@@ -35,9 +35,12 @@ export class ProviderClient {
     const {
       reconnectDelay = attempt => Math.min(1_000 * 2 ** (attempt - 1), 30_000),
       connectionLifecycle = transport.connectionLifecycle,
-      now = Date.now,
-      scheduleTimeout = globalThis.setTimeout,
-      cancelTimeout = globalThis.clearTimeout
+      // Browser timer methods are Web IDL operations. Keeping a detached method
+      // reference makes some browsers throw "Illegal invocation" immediately
+      // after the WSS handshake, when the lifecycle timer is scheduled.
+      now = () => Date.now(),
+      scheduleTimeout = (callback, delay) => globalThis.setTimeout(callback, delay),
+      cancelTimeout = timer => globalThis.clearTimeout(timer)
     } = options;
     this.#transport = transport;
     this.#reconnectDelay = reconnectDelay;

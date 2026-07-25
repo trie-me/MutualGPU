@@ -38,6 +38,31 @@ test("browser SDK enrolls then completes the WSS connection handshake in Chromiu
   }
 }, { timeout: 30_000 });
 
+test("served browser SDK enrolls then completes the WSS connection handshake in Chromium", async () => {
+  assert.ok(existsSync(browserExecutable),
+    `Chromium was not found at ${browserExecutable}. Set MUTUALGPU_BROWSER_EXECUTABLE to a Chromium or Chrome executable.`);
+
+  const browser = await chromium.launch({ executablePath: browserExecutable, headless: true });
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await context.newPage();
+  try
+  {
+    await page.goto(apiBaseUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(async ({ key, definition }) => {
+      const { BrowserWebSocketTransport, ProviderClient } = await import("/js/mutualgpu-provider-sdk.js");
+      const provider = new ProviderClient(new BrowserWebSocketTransport(location.origin, key));
+      await provider.enroll(definition);
+      await provider.connect(async () => {});
+      provider.close();
+    }, { key: providerKey, definition: canonicalDefinition() });
+  }
+  finally
+  {
+    await context.close();
+    await browser.close();
+  }
+}, { timeout: 30_000 });
+
 async function buildBrowserSdkBundle()
 {
   const result = await build({

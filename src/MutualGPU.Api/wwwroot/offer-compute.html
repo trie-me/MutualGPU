@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Offer compute · MutualGPU</title>
+  <link rel="stylesheet" href="/css/site.css">
+  <link rel="stylesheet" href="/css/mutualgpu.css">
+  <link rel="stylesheet" href="/css/offer-compute.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/"><img class="brand-mark" src="/images/mutualgpu-shared-compute.png" alt="">MutualGPU</a>
+    <p class="site-tagline">Shared compute. Limitless possibilities.</p>
+    <div class="header-actions"><a class="header-link" href="/">Back to tasks</a></div>
+  </header>
+  <main class="provider-page">
+    <a class="provider-back" href="/">← Back to MutualGPU</a>
+    <section class="provider-title">
+      <div>
+        <p class="eyebrow">GPU Provider</p>
+        <h1>Offer compute</h1>
+        <p>Put this browser’s available GPU to work for the network. WebGPU is required to begin.</p>
+      </div>
+      <div id="webgpu-state" class="provider-state"><i></i><span>Checking WebGPU</span></div>
+    </section>
+    <div class="provider-layout">
+      <section class="provider-card" aria-labelledby="capabilities-title">
+        <div class="provider-card__heading">
+          <div><h2 id="capabilities-title">Available capability</h2><p>Offer the validated browser-native FLUX.2 pipeline.</p></div>
+          <span id="capability-count" class="provider-count">0 selected</span>
+        </div>
+        <div id="capabilities">
+          <label class="provider-capability">
+            <input type="checkbox" value="flux2-klein-4b-text-to-image" checked>
+            <span><h3>FLUX.2 [klein] 4B · text to image</h3><p>Create a 1024×1024 PNG in four steps with the full, unquantized FP16 model.</p></span>
+            <span class="provider-requirement">WebGPU · 16 GiB</span>
+          </label>
+        </div>
+        <div class="provider-hardware" aria-labelledby="hardware-title">
+          <div><h3 id="hardware-title">Hardware offered</h3><p>Choose the memory you are making available. It should meet the stated requirements for every model you select.</p></div>
+          <label for="memory-gib">Available memory
+            <select id="memory-gib" name="memoryGiB">
+              <option value="16" selected>16 GiB</option>
+              <option value="24">24 GiB</option>
+              <option value="32">32 GiB</option>
+              <option value="48">48 GiB</option>
+            </select>
+          </label>
+        </div>
+        <p id="webgpu-block" class="provider-note provider-error" hidden role="alert"></p>
+      </section>
+      <aside class="provider-card">
+        <div class="provider-enrollment">
+          <h2>Provider enrollment</h2>
+          <p>Provide your access key. If you don’t have one, mint a new one below.</p>
+          <label class="provider-identifier-label" for="provider-identifier">Access key
+            <input id="provider-identifier" type="text" autocomplete="off" spellcheck="false" placeholder="Paste your access key">
+          </label>
+          <button id="mint-provider-identifier" class="provider-secondary" type="button" disabled>Mint a new access key</button>
+          <section id="provider-identifier-panel" class="provider-save-notice" hidden aria-live="polite">
+            <strong>Save this access key now.</strong>
+            <span>It is shown once. Copy it somewhere safe for future use.</span>
+            <button id="copy-provider-identifier" type="button">Copy access key</button>
+          </section>
+          <button id="start-hosting" type="button" disabled>Start hosting in a new tab <span aria-hidden="true">↗</span></button>
+          <p id="enrollment-status" class="provider-enrollment-status" role="status" aria-live="polite">Checking browser support…</p>
+        </div>
+      </aside>
+    </div>
+  </main>
+  <script type="module" src="/js/offer-compute.js?v=20260723-host-wss2"></script>
+</body>
+</html>

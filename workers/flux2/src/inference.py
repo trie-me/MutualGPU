@@ -11,6 +11,7 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 PIPELINE: Any = None
 SAFETY_CHECKER: Any = None
@@ -147,6 +148,22 @@ def encode_preview(image: Any) -> bytes:
     return encoded.getvalue()
 
 
+def load_reference_image(url: str) -> Any:
+    if not url.startswith("https://"):
+        raise RuntimeError("FLUX.2 reference image URL must use HTTPS")
+    try:
+        from PIL import Image
+        with urlopen(url, timeout=30) as response:
+            data = response.read(20 * 1024 * 1024 + 1)
+        if len(data) > 20 * 1024 * 1024:
+            raise RuntimeError("FLUX.2 reference image exceeds 20 MiB")
+        image = Image.open(BytesIO(data))
+        image.load()
+        return image.convert("RGB")
+    except Exception as error:
+        raise RuntimeError("FLUX.2 reference image could not be loaded") from error
+
+
 def generate(request: dict[str, Any]) -> None:
     identifier = str(request["id"])
     output_directory = Path(request["outputDirectory"])
@@ -175,14 +192,19 @@ def generate(request: dict[str, Any]) -> None:
         return callback_kwargs
 
     generator = TORCH.Generator(device="cpu").manual_seed(int(request["seed"]))
+    pipeline_args = {
+        "prompt": request["prompt"],
+        "num_inference_steps": steps,
+        "guidance_scale": float(request["guidanceScale"]),
+        "width": int(request["width"]),
+        "height": int(request["height"]),
+        "generator": generator,
+        "callback_on_step_end": progress,
+    }
+    if request.get("inputUrl"):
+        pipeline_args["image"] = load_reference_image(str(request["inputUrl"]))
     result = pipeline(
-        prompt=request["prompt"],
-        num_inference_steps=steps,
-        guidance_scale=float(request["guidanceScale"]),
-        width=int(request["width"]),
-        height=int(request["height"]),
-        generator=generator,
-        callback_on_step_end=progress,
+        **pipeline_args,
     )
     image = result.images[0]
     if image_is_inappropriate(image):
@@ -208,6 +230,7 @@ def generate(request: dict[str, Any]) -> None:
         "durationMs": duration_ms,
         "preview": {"contentType": "image/png", "maximumDimension": PREVIEW_MAX_DIMENSION},
         "safetyCheckerApplied": True,
+        "operation": "image-to-image" if request.get("inputUrl") else "text-to-image",
     }
     metadata_path = output_directory / "metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")

@@ -221,6 +221,30 @@ test("browser provider recycles a one-day-old connection as soon as it is idle",
   client.close();
 });
 
+test("browser lifecycle scheduling keeps the browser timer receiver", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  let scheduled = false;
+  globalThis.setTimeout = function (callback, delay) {
+    assert.equal(this, globalThis, "browser timer methods must be invoked on globalThis");
+    scheduled = true;
+    return originalSetTimeout.call(globalThis, callback, delay);
+  };
+
+  const client = new ProviderClient({
+    connectionLifecycle: { idleRecycleAfterMs: 100, maximumConnectionAgeMs: 600 },
+    connect: async () => {},
+    close: () => {}
+  });
+
+  try {
+    await client.connect(async () => {});
+    assert.equal(scheduled, true);
+  } finally {
+    client.close();
+    globalThis.setTimeout = originalSetTimeout;
+  }
+});
+
 test("six-day connection recycling drains a saturated provider before reconnecting", async () => {
   const clock = createLifecycleClock();
   const handles = [];

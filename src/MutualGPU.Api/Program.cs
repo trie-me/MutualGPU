@@ -190,15 +190,13 @@ app.Use(async (context, next) =>
     await next(context);
 });
 app.UseCors(policy => policy
-    .SetIsOriginAllowed(origin =>
-        providerCorsOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase) ||
-        partnerResources.IsApprovedOrigin(origin))
+    .SetIsOriginAllowed(origin => IsTrustedBrowserOrigin(origin, providerCorsOrigins, partnerResources))
     .WithMethods("GET", "POST")
     .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256")
     .AllowCredentials());
 app.Use(async (context, next) =>
 {
-    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://api.producthunt.com https://mutualgpu-data.s3.us-east-1.amazonaws.com; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' https://api.producthunt.com https://mutualgpu-data.s3.us-east-1.amazonaws.com; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";
@@ -214,7 +212,7 @@ app.Use(async (context, next) =>
 {
     if (IsUnsafeMethod(context.Request.Method) &&
         context.Request.Path.StartsWithSegments("/api/tasks") &&
-        !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins))
+        !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins, partnerResources))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return;
@@ -289,13 +287,24 @@ if (demoForestSimulationsEnabled)
 
 app.Run();
 
-static bool IsTrustedBrowserWriteOrigin(HttpContext context, IReadOnlyCollection<string> allowedOrigins)
+static bool IsTrustedBrowserWriteOrigin(
+    HttpContext context,
+    IReadOnlyCollection<string> allowedOrigins,
+    IPartnerResourceRegistry partnerResources)
 {
     var origin = context.Request.Headers.Origin.ToString();
     if (String.IsNullOrWhiteSpace(origin)) return true;
     return IsSameOrigin(context) ||
-        allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase);
+        IsTrustedBrowserOrigin(origin, allowedOrigins, partnerResources);
 }
+
+static bool IsTrustedBrowserOrigin(
+    string? origin,
+    IReadOnlyCollection<string> allowedOrigins,
+    IPartnerResourceRegistry partnerResources) =>
+    !String.IsNullOrWhiteSpace(origin) &&
+    (allowedOrigins.Contains(origin, StringComparer.OrdinalIgnoreCase) ||
+        partnerResources.IsApprovedOrigin(origin));
 
 static bool IsSameOrigin(HttpContext context)
 {

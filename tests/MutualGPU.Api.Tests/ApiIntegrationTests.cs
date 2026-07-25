@@ -46,7 +46,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         var openApi = await client.GetAsync("/openapi/v1.json");
         using var insecureClient = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("http://localhost") });
         var insecureHealth = await insecureClient.GetAsync("/health/live");
-        var page = await client.GetStringAsync("/");
+        using var pageResponse = await client.GetAsync("/");
+        var page = await pageResponse.Content.ReadAsStringAsync();
         var snapshot = await client.GetAsync("/_netcats/fibers/snapshot");
 
         Assert.True(health.IsSuccessStatusCode);
@@ -59,12 +60,20 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("/css/fiber-tree-overlay.css", page, StringComparison.Ordinal);
         Assert.Contains("class=\"layout\"", page, StringComparison.Ordinal);
         Assert.Contains("fiber-overlay", page, StringComparison.Ordinal);
-        Assert.Contains("webgpu-enrollment-toggle", page, StringComparison.Ordinal);
-        Assert.Contains("webgpu-enrollment-key", page, StringComparison.Ordinal);
+        Assert.Contains("href=\"/offer-compute.html\"", page, StringComparison.Ordinal);
         Assert.Contains("Offer one useful unit, straight from Chrome.", page, StringComparison.Ordinal);
-        Assert.Contains("https://yosun-triposplat-webgpu-demo.static.hf.space/e2e-web#provider-panel", page, StringComparison.Ordinal);
+        Assert.Contains("Open provider setup", page, StringComparison.Ordinal);
         Assert.Contains("partner-integration", page, StringComparison.Ordinal);
         Assert.Contains("partner-resource-form.js", page, StringComparison.Ordinal);
+        var contentSecurityPolicy = Assert.Single(pageResponse.Headers.GetValues("Content-Security-Policy"));
+        Assert.Contains("script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.Contains("https://huggingface.co", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.Contains("https://*.xethub.hf.co", contentSecurityPolicy, StringComparison.Ordinal);
+        var offerCompute = await client.GetStringAsync("/offer-compute.html");
+        var hostCompute = await client.GetStringAsync("/host-compute.html");
+        Assert.Contains("flux2-klein-4b-text-to-image", offerCompute, StringComparison.Ordinal);
+        Assert.DoesNotContain("flux2-klein-4b-image-to-image", offerCompute, StringComparison.Ordinal);
+        Assert.Contains("host-compute.js", hostCompute, StringComparison.Ordinal);
         Assert.True(snapshot.IsSuccessStatusCode);
         Assert.Contains("roots", await snapshot.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
     }
@@ -182,6 +191,15 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.True(capabilityResponse.IsSuccessStatusCode);
         Assert.Equal(request.Origin, capabilityResponse.Headers.GetValues("Access-Control-Allow-Origin").Single());
 
+        using var approvedWriteRequest = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        approvedWriteRequest.Headers.Add("Origin", request.Origin);
+        using var approvedWriteResponse = await client.SendAsync(approvedWriteRequest);
+        Assert.NotEqual(System.Net.HttpStatusCode.Forbidden, approvedWriteResponse.StatusCode);
+        Assert.Equal(request.Origin, approvedWriteResponse.Headers.GetValues("Access-Control-Allow-Origin").Single());
+
         using var revoked = await client.PostAsync($"/admin/api/partner-resources/{request.Id:D}/revoke", null);
         Assert.True(revoked.IsSuccessStatusCode);
         var revokedRequest = await revoked.Content.ReadFromJsonAsync<PartnerResourceRequestDto>();
@@ -192,6 +210,15 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var revokedCapabilityResponse = await client.SendAsync(revokedCapabilityRequest);
         Assert.True(revokedCapabilityResponse.IsSuccessStatusCode);
         Assert.False(revokedCapabilityResponse.Headers.TryGetValues("Access-Control-Allow-Origin", out _));
+
+        using var revokedWriteRequest = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        revokedWriteRequest.Headers.Add("Origin", request.Origin);
+        using var revokedWriteResponse = await client.SendAsync(revokedWriteRequest);
+        Assert.Equal(System.Net.HttpStatusCode.Forbidden, revokedWriteResponse.StatusCode);
+        Assert.False(revokedWriteResponse.Headers.TryGetValues("Access-Control-Allow-Origin", out _));
 
         using var approvedAfterRevocation = await client.GetAsync("/admin/api/partner-resources/approved");
         var activeAfterRevocation = await approvedAfterRevocation.Content.ReadFromJsonAsync<PartnerResourceRequestDto[]>();

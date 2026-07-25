@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Hosting compute · MutualGPU</title>
+  <link rel="stylesheet" href="/css/site.css">
+  <link rel="stylesheet" href="/css/mutualgpu.css">
+  <link rel="stylesheet" href="/css/offer-compute.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/"><img class="brand-mark" src="/images/mutualgpu-shared-compute.png" alt="">MutualGPU</a>
+    <p class="site-tagline">Shared compute. Limitless possibilities.</p>
+    <div class="header-actions"><a class="header-link" href="/offer-compute.html">Provider setup</a></div>
+  </header>
+  <main class="provider-page">
+    <a class="provider-back" href="/offer-compute.html">← Back to Offer compute</a>
+    <section class="provider-title">
+      <div><p class="eyebrow">Provider session</p><h1>Starting compute host</h1><p>This tab enrolls the selected capabilities and keeps this browser ready to host work.</p></div>
+      <div id="host-badge" class="provider-state"><i></i><span>Starting host</span></div>
+    </section>
+    <aside class="provider-session-warning" role="note"><strong>To end your session, click Disconnect or close this tab.</strong></aside>
+    <div class="host-grid">
+      <div>
+        <section class="provider-card">
+          <div class="provider-card__heading"><div><h2>Hosting process</h2><p>Live progress from this hosting session.</p></div><span id="progress-count" class="provider-count">0 / 5</span></div>
+          <ol class="host-steps">
+            <li id="passcode" class="host-step"><span class="host-mark">1</span><span><h3>Load provider identifier</h3><p>Use the identifier you minted or provided for this host.</p></span><span class="host-step-state">Waiting</span></li>
+            <li id="webgpu" class="host-step"><span class="host-mark">2</span><span><h3>Initialize WebGPU</h3><p>Request an adapter and device before advertising work.</p></span><span class="host-step-state">Waiting</span></li>
+            <li id="register" class="host-step"><span class="host-mark">3</span><span><h3>Enroll selected capabilities</h3><p>Send the complete provider contract to MutualGPU.</p></span><span class="host-step-state">Waiting</span></li>
+            <li id="host" class="host-step"><span class="host-mark">4</span><span><h3>Open provider connection</h3><p>Open the secure connection that receives compatible work.</p></span><span class="host-step-state">Waiting</span></li>
+            <li id="ready" class="host-step"><span class="host-mark">5</span><span><h3>Wait for compatible work</h3><p>Process 1024×1024 FLUX.2 text-to-image assignments while connected.</p></span><span class="host-step-state">Waiting</span></li>
+          </ol>
+        </section>
+        <section class="provider-card provider-card--spaced">
+          <div class="provider-card__heading"><div><h2>Work &amp; progress terminal</h2><p>Live enrollment, connection, and work events.</p></div><span class="provider-count">LIVE</span></div>
+          <div id="terminal" class="provider-terminal" role="log" aria-live="polite"></div>
+        </section>
+      </div>
+      <aside class="provider-card">
+        <div class="provider-host-summary">
+          <h2 id="summary-title">Preparing host</h2><p id="summary-copy">Checking this browser before work is offered.</p>
+          <div class="provider-key-values"><div><span>Selected</span><strong id="selected">—</strong></div><div><span>WebGPU</span><strong id="gpu-status">Checking</strong></div><div><span>Host state</span><strong id="host-status">Starting</strong></div><div><span>Active work</span><strong id="active-work">None</strong></div></div>
+          <button id="disconnect" type="button" disabled>Disconnect hosting</button>
+          <p id="disconnect-copy" class="provider-enrollment-status">Disconnect is available once a provider session opens.</p>
+        </div>
+        <div class="provider-disconnect-warning"><strong>Closing this tab or browser will disconnect your server.</strong><br>This host process only exists while this tab remains open.</div>
+      </aside>
+    </div>
+  </main>
+  <script type="module" src="/js/host-compute.js?v=20260725-klein-fp16-1"></script>
+</body>
+</html>

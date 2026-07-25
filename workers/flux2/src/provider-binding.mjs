@@ -24,7 +24,12 @@ export function createTaskHandler({ runtime, logger = console, chooseSeed, activ
     await task.accept();
     activity.state = "accepted";
     activity.lastEventAt = new Date();
-    logger.info?.(`[task ${task.taskId}] accepted; starting GPU inference.`);
+    if (task.input?.url) {
+      request = { ...request, inputUrl: task.input.url };
+      logger.info?.(`[task ${task.taskId}] accepted; downloading one reference image for FLUX.2 editing.`);
+    } else {
+      logger.info?.(`[task ${task.taskId}] accepted; starting FLUX.2 text-to-image inference.`);
+    }
     await progress.flush({ phase: "prepare", percent: 1, message: "Preparing the FLUX.2 pipeline." });
     let generated;
     try {
