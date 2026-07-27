@@ -58,6 +58,37 @@ public sealed class SchedulerApplicationTests
     }
 
     [Fact]
+    public async Task Scheduler_persists_provider_session_and_protected_network_on_the_attempt()
+    {
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var task = NewTask(capability, ResourceTier.Small, DateTimeOffset.UtcNow);
+        var sessionId = Guid.CreateVersion7();
+        var candidate = Candidate(ExecutionUnitId.New(), capability.Id, ResourceTier.Small) with
+        {
+            SessionId = sessionId,
+            IpHash = "0123456789abcdef0123456789abcdef",
+            IpClassAB = "203.0.*.*",
+            ProviderName = "Copper Badger",
+            Transport = "wss",
+        };
+        var presence = new FakePresence(candidate);
+        var scheduler = new SchedulerApplication(
+            new FakeQueue(task),
+            presence,
+            new FakeTasks(),
+            new FakeAssignments(presence));
+
+        await scheduler.Evaluate(DateTimeOffset.UtcNow).RunAsync(CancellationToken.None);
+
+        var attempt = Assert.Single(task.Attempts);
+        Assert.Equal(sessionId, attempt.ProviderSessionId);
+        Assert.Equal(candidate.IpHash, attempt.ProviderIpHash);
+        Assert.Equal("203.0.*.*", attempt.ProviderIpClassAB);
+        Assert.Equal("Copper Badger", attempt.ProviderName);
+        Assert.Equal("wss", attempt.ProviderTransport);
+    }
+
+    [Fact]
     public async Task Older_matching_work_is_assigned_first_and_preserves_specialist_capacity()
     {
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");

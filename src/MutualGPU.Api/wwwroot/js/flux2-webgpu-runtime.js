@@ -1,36 +1,39 @@
 const MODEL_ID = "black-forest-labs/FLUX.2-klein-4B";
 const MODEL_REVISION = "e7b7dc27f91deacad38e78976d1f2b499d76a294";
 const MODEL_REPOSITORY = "KatzenStuff/flux-2-klein-4b-webgpu";
-const DEFAULT_MODEL_BASE_URL = `https://huggingface.co/${MODEL_REPOSITORY}/resolve/main/models/klein-4b`;
+const ARTIFACT_REVISION = "2cd85d938ff8afb954661262c12c6d10676a20e1";
+const DEFAULT_MODEL_BASE_URL = `https://huggingface.co/${MODEL_REPOSITORY}/resolve/${ARTIFACT_REVISION}/models/klein-4b`;
 const MODEL_BASE_URL = String(
   globalThis.MUTUALGPU_FLUX2_WEBGPU_MODEL_BASE_URL ?? DEFAULT_MODEL_BASE_URL
 ).replace(/\/+$/, "");
-const ORT_MODULE_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.webgpu.min.mjs";
-const ORT_WASM_BASE_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
+const ORT_MODULE_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.webgpu.bundle.min.mjs";
 const TRANSFORMERS_MODULE_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1";
 const PIPELINE_MANIFEST_URL = `${MODEL_BASE_URL}/pipeline-1024/manifest.json`;
-const RUNTIME_BUILD = "20260725-klein-fp16-diagnostics-1";
+const RUNTIME_BUILD = "20260726-klein-fp16-adapter-4";
+const MODEL_CACHE_NAME = `mutualgpu-flux2-klein-4b-${ARTIFACT_REVISION}-v1`;
+const MODEL_CACHE_WORKER_URL = `/model-cache-worker.js?v=${encodeURIComponent(MODEL_CACHE_NAME)}`;
 const TOKEN_COUNT = 512;
 const TOKEN_EMBEDDING_WIDTH = 7680;
 const MASK_64 = (1n << 64n) - 1n;
 const UINT32_SCALE = 1 / 0x1_0000_0000;
 
 let runtimePromise;
+let sessionCreationTail = Promise.resolve();
+let sessionCreationsQueued = 0;
 
-export function loadFlux2WebGpuRuntime({ onStatus = () => {} } = {}) {
-  runtimePromise ??= initialize(onStatus).catch(error => {
+export function loadFlux2WebGpuRuntime({ adapter, onStatus = () => {} } = {}) {
+  runtimePromise ??= initialize(adapter, onStatus).catch(error => {
     runtimePromise = null;
     throw error;
   });
   return runtimePromise;
 }
 
-async function initialize(onStatus) {
+async function initialize(requestedAdapter, onStatus) {
   if (!navigator.gpu) throw new Error("WebGPU is unavailable.");
   onStatus(`FLUX.2 runtime diagnostic build ${RUNTIME_BUILD}; ${browserEnvironmentSummary()}.`);
-  onStatus("Checking that WebGPU has a high-performance adapter.");
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-  if (!adapter) throw new Error("WebGPU did not return an adapter.");
+  await initializeModelCache(onStatus);
+  const { adapter } = await selectF16Adapter(requestedAdapter, onStatus);
 
   onStatus("Loading the FLUX.2 Klein 4B model manifests from Hugging Face.");
   const pipelineLoaded = await fetchJson(PIPELINE_MANIFEST_URL);
@@ -60,12 +63,16 @@ async function initialize(onStatus) {
     import(TRANSFORMERS_MODULE_URL)
   ]);
   ort.env.wasm.numThreads = 1;
-  ort.env.wasm.wasmPaths = ORT_WASM_BASE_URL;
+  // Pin ORT to the adapter we checked. Otherwise it can request a second,
+  // different adapter on a dual-GPU system.
+  ort.env.webgpu.adapter = adapter;
   transformers.env.allowLocalModels = false;
   transformers.env.allowRemoteModels = true;
+  transformers.env.useBrowserCache = true;
+  transformers.env.cacheKey = `${MODEL_CACHE_NAME}-tokenizer`;
   const tokenizer = await transformers.AutoTokenizer.from_pretrained(MODEL_REPOSITORY, {
     local_files_only: false,
-    revision: "main"
+    revision: ARTIFACT_REVISION
   });
 
   onStatus("FLUX.2 Klein 4B manifests and browser runtimes are ready.");
@@ -79,6 +86,56 @@ async function initialize(onStatus) {
     tokenizer,
     onStatus
   });
+}
+
+async function selectF16Adapter(requestedAdapter, onStatus) {
+  const choices = requestedAdapter
+    ? [["caller-selected", requestedAdapter, null]]
+    : [
+      ["high-performance", null, { powerPreference: "high-performance" }],
+      ["default", null, undefined],
+      ["low-power", null, { powerPreference: "low-power" }]
+    ];
+  const diagnostics = [];
+
+  for (const [preference, suppliedAdapter, options] of choices) {
+    let adapter = suppliedAdapter;
+    try {
+      adapter ??= await navigator.gpu.requestAdapter(options);
+    } catch (error) {
+      diagnostics.push(`${preference}=request failed (${shortText(error?.message || "unknown error")})`);
+      continue;
+    }
+    if (!adapter) {
+      diagnostics.push(`${preference}=unavailable`);
+      continue;
+    }
+    const diagnostic = describeWebGpuAdapter(adapter);
+    onStatus(`WebGPU ${preference} candidate: ${diagnostic}.`);
+    if (adapter.features.has("shader-f16")) {
+      onStatus(`Selected ${preference} WebGPU adapter with shader-f16.`);
+      return { adapter, preference };
+    }
+    diagnostics.push(`${preference}=${diagnostic}`);
+  }
+
+  throw new Error(
+    "No Chrome WebGPU adapter exposed shader-f16 for the FP16 FLUX.2 model. " +
+    `Tried ${diagnostics.join("; ")}. Check chrome://gpu for a hardware WebGPU/Vulkan backend.`
+  );
+}
+
+function describeWebGpuAdapter(adapter) {
+  const info = adapter.info || {};
+  const identity = [
+    info.description && `description=${info.description}`,
+    info.vendor && `vendor=${info.vendor}`,
+    info.architecture && `architecture=${info.architecture}`,
+    info.device && `device=${info.device}`,
+    info.driver && `driver=${info.driver}`
+  ].filter(Boolean).join(", ") || "identity unavailable";
+  const features = [...adapter.features].sort();
+  return `${identity}; shader-f16=${features.includes("shader-f16")}; features=[${features.join(", ") || "none"}]`;
 }
 
 function createRuntime(state) {
@@ -430,7 +487,7 @@ async function fetchJson(url) {
   // Preserve the requested manifest URL. Hugging Face redirects raw files to a
   // blob CDN whose URL is not a usable base for sibling manifest resources.
   const requestedUrl = new URL(String(url), window.location.href).toString();
-  const response = await fetch(requestedUrl, { credentials: "omit", cache: "default" });
+  const response = await fetch(requestedUrl, { credentials: "omit", cache: "no-store" });
   if (!response.ok) throw new Error(`Model manifest download failed (${response.status}).`);
   return { value: await response.json(), url: requestedUrl };
 }
@@ -449,12 +506,14 @@ function resolveManifestUrls(value, manifestUrl) {
 }
 
 async function fetchBuffer(item, onStatus = () => {}, label = "model artifact") {
-  const url = resolveModelUrl(item.url);
+  const url = cacheableArtifactUrl(item);
   const started = performance.now();
   let response;
-  onStatus(`Fetching ${humanBytes(item.byteLength)} ${label}.`);
+  onStatus(`Caching ${humanBytes(item.byteLength)} ${label}.`);
   try {
-    response = await fetch(url, { credentials: "omit", cache: "default" });
+    const cacheState = await cacheModelArtifact(item, label);
+    onStatus(`${cacheState === "hit" ? "Using cached" : "Persisted"} ${label} (${humanBytes(item.byteLength)}).`);
+    response = await fetch(url, { credentials: "omit", cache: "no-store" });
     const responseLength = response.headers.get("content-length");
     const source = safeUrlHost(response.url || url);
     onStatus(`Received ${label} response: HTTP ${response.status} from ${source}; content-length ${responseLength || "not supplied"}.`);
@@ -490,6 +549,100 @@ function resolveModelUrl(url) {
   return `${MODEL_BASE_URL}/${path}${query}`;
 }
 
+function cacheableArtifactUrl(item) {
+  const url = new URL(resolveModelUrl(item.url));
+  url.searchParams.set("mutualgpu_bytes", String(item.byteLength));
+  return url.toString();
+}
+
+async function initializeModelCache(onStatus) {
+  if (!globalThis.isSecureContext || !("serviceWorker" in navigator) || !("caches" in globalThis)) {
+    throw withRuntimeDiagnostic(new Error("Persistent model caching requires Cache Storage and a controlling service worker in a secure browser context."), {
+      stage: "artifact_cache",
+      build: RUNTIME_BUILD,
+      environment: browserEnvironmentSummary()
+    });
+  }
+
+  onStatus(`Starting persistent FLUX.2 artifact cache ${MODEL_CACHE_NAME}.`);
+  const expectedWorkerUrl = new URL(MODEL_CACHE_WORKER_URL, location.href).toString();
+  const registration = await navigator.serviceWorker.register(MODEL_CACHE_WORKER_URL, {
+    scope: "/",
+    type: "module"
+  });
+  await navigator.serviceWorker.ready;
+  if (navigator.serviceWorker.controller?.scriptURL !== expectedWorkerUrl) {
+    await waitForServiceWorkerController(expectedWorkerUrl);
+  }
+  if (navigator.serviceWorker.controller?.scriptURL !== expectedWorkerUrl) {
+    throw withRuntimeDiagnostic(new Error("The FLUX.2 model cache worker did not take control of this page."), {
+      stage: "artifact_cache",
+      build: RUNTIME_BUILD,
+      environment: browserEnvironmentSummary()
+    });
+  }
+
+  const storage = navigator.storage;
+  let persistent = false;
+  if (storage?.persisted) persistent = await storage.persisted();
+  if (!persistent && storage?.persist) persistent = await storage.persist();
+  const estimate = storage?.estimate ? await storage.estimate() : {};
+  const quota = Number(estimate?.quota);
+  const usage = Number(estimate?.usage);
+  onStatus(
+    `Persistent model cache ready (${persistent ? "storage persistence granted" : "browser-managed persistence"}; ` +
+    `${Number.isFinite(usage) ? humanBytes(usage) : "unknown usage"} of ${Number.isFinite(quota) ? humanBytes(quota) : "unknown quota"} used).`
+  );
+  return registration;
+}
+
+function waitForServiceWorkerController(expectedWorkerUrl) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      navigator.serviceWorker.removeEventListener("controllerchange", changed);
+      reject(new Error("Timed out while activating the FLUX.2 model cache worker."));
+    }, 10_000);
+    function changed() {
+      if (navigator.serviceWorker.controller?.scriptURL !== expectedWorkerUrl) return;
+      clearTimeout(timeout);
+      navigator.serviceWorker.removeEventListener("controllerchange", changed);
+      resolve();
+    }
+    navigator.serviceWorker.addEventListener("controllerchange", changed);
+  });
+}
+
+async function cacheModelArtifact(item, label) {
+  const url = new URL(cacheableArtifactUrl(item));
+  url.searchParams.set("mutualgpu_cache_only", "1");
+  let response;
+  try {
+    response = await fetch(url, { credentials: "omit", cache: "no-store" });
+  } catch (error) {
+    throw withRuntimeDiagnostic(error, {
+      stage: "artifact_cache",
+      artifact: label,
+      expectedBytes: item.byteLength,
+      source: safeUrlHost(url),
+      environment: browserEnvironmentSummary(),
+      memory: memorySummary()
+    });
+  }
+  if (!response.ok) {
+    const detail = shortText(await response.text(), 180);
+    throw withRuntimeDiagnostic(new Error(`The browser could not persist ${label} (${response.status}${detail ? `: ${detail}` : ""}).`), {
+      stage: "artifact_cache",
+      artifact: label,
+      expectedBytes: item.byteLength,
+      responseStatus: response.status,
+      source: safeUrlHost(url),
+      environment: browserEnvironmentSummary(),
+      memory: memorySummary()
+    });
+  }
+  return response.headers.get("x-mutualgpu-cache") === "hit" ? "hit" : "stored";
+}
+
 async function createSession(
   ort,
   graph,
@@ -499,23 +652,23 @@ async function createSession(
   { label = "ONNX graph", onStatus = () => {} } = {}
 ) {
   const started = performance.now();
-  onStatus(`Creating ${label} WebGPU session from ${humanBytes(graph.byteLength)} graph; ${externalData.length} external data file${externalData.length === 1 ? "" : "s"}; ${memorySummary()}.`);
   try {
-    const session = await ort.InferenceSession.create(graph, {
-      executionProviders: [{
-        name: "webgpu",
-        preferredLayout,
-        validationMode: "basic"
-      }],
-      externalData: externalData.map(file => ({
-        path: file.path,
-        data: resolveModelUrl(file.url)
-      })),
-      graphOptimizationLevel: "all",
-      ...(keepOutputsOnGpu ? { preferredOutputLocation: "gpu-buffer" } : {})
-    });
-    onStatus(`Created ${label} WebGPU session in ${formatDuration(performance.now() - started)}; ${memorySummary()}.`);
-    return session;
+    return await serializeSessionCreation(async () => {
+      const preparedExternalData = await prepareExternalData(externalData, label, onStatus);
+      onStatus(`Creating ${label} WebGPU session from ${humanBytes(graph.byteLength)} graph; ${preparedExternalData.length} cache-backed external data file${preparedExternalData.length === 1 ? "" : "s"}; ${memorySummary()}.`);
+      const session = await ort.InferenceSession.create(graph, {
+        executionProviders: [{
+          name: "webgpu",
+          preferredLayout,
+          validationMode: "basic"
+        }],
+        externalData: preparedExternalData,
+        graphOptimizationLevel: "all",
+        ...(keepOutputsOnGpu ? { preferredOutputLocation: "gpu-buffer" } : {})
+      });
+      onStatus(`Created ${label} WebGPU session in ${formatDuration(performance.now() - started)}; ${memorySummary()}.`);
+      return session;
+    }, onStatus);
   } catch (error) {
     throw withRuntimeDiagnostic(error, {
       stage: "webgpu_session_create",
@@ -527,6 +680,58 @@ async function createSession(
       memory: memorySummary()
     });
   }
+}
+
+async function serializeSessionCreation(operation, onStatus) {
+  const predecessor = sessionCreationTail.catch(() => {});
+  let release;
+  sessionCreationTail = new Promise(resolve => { release = resolve; });
+  const queued = sessionCreationsQueued > 0;
+  sessionCreationsQueued += 1;
+  if (queued) {
+    onStatus("Waiting for the previous ONNX Runtime WebGPU session operation to finish.");
+  }
+  await predecessor;
+  try {
+    return await operation();
+  } finally {
+    sessionCreationsQueued -= 1;
+    release();
+  }
+}
+
+async function prepareExternalData(files, label, onStatus) {
+  if (!files.length) return [];
+  const totalBytes = files.reduce((total, file) => total + file.byteLength, 0);
+  const loaded = new Array(files.length);
+  let nextIndex = 0;
+  let completed = 0;
+  let failed = false;
+  const parallelDownloads = Math.min(4, files.length);
+  onStatus(`Caching ${files.length} ${label} weight files (${humanBytes(totalBytes)}) with ${parallelDownloads} bounded transfers.`);
+
+  async function worker() {
+    while (!failed && nextIndex < files.length) {
+      const index = nextIndex++;
+      const file = files[index];
+      try {
+        await cacheModelArtifact(file, `${label} weight ${index + 1} of ${files.length}`);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+      loaded[index] = { path: file.path, data: cacheableArtifactUrl(file) };
+      completed += 1;
+      if (completed === files.length || completed % 16 === 0) {
+        onStatus(`Cached ${completed} of ${files.length} ${label} weight files.`);
+      }
+    }
+  }
+
+  const results = await Promise.allSettled(Array.from({ length: parallelDownloads }, () => worker()));
+  const failure = results.find(result => result.status === "rejected");
+  if (failure) throw failure.reason;
+  return loaded;
 }
 
 function tokenizePrompt(tokenizer, prompt) {

@@ -116,7 +116,12 @@ public sealed record ProviderCandidate(
     CapabilityId CapabilityId,
     ResourceTier Tier,
     MachineSpecifications Specifications,
-    bool IsIdle);
+    bool IsIdle,
+    Guid? SessionId = null,
+    string? IpHash = null,
+    string? IpClassAB = null,
+    string? ProviderName = null,
+    string? Transport = null);
 
 public sealed record ConnectedProviderCapability(
     ExecutionUnitId ExecutionUnitId,

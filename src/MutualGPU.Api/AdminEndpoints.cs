@@ -57,6 +57,7 @@ public static class AdminEndpoints
 
         var taskRequests = await tasks.GetAllAsync(cancellationToken).ConfigureAwait(false);
         var diagnostics = connections.Snapshot();
+        var sessions = MergeSessions(diagnostics.Sessions, taskRequests);
         var transactions = taskRequests.Select(static task => new AdminTransactionDto(
             task.Id.Value,
             task.RequestorId.Value,
@@ -66,33 +67,131 @@ public static class AdminEndpoints
             task.Resources.ComputeTier.ToString(),
             task.Resources.MemoryGiB,
             task.AssignmentCount,
-            task.Result is not null)).ToArray();
-        var assignments = taskRequests.SelectMany(task => task.Attempts.Select(attempt => new AdminAssignmentDto(
-            task.Id.Value,
-            attempt.Id.Value,
-            diagnostics.AssignmentSessions.GetValueOrDefault(attempt.Id.Value),
-            attempt.ExecutionUnitId.Value,
-            task.Capability.Name,
-            attempt.State.ToString().ToLowerInvariant(),
-            attempt.AssignedAt,
-            attempt.AcceptedAt,
-            attempt.DisconnectedAt,
-            SafeText(attempt.FailureStep),
-            SafeText(attempt.FailureReason)))).OrderByDescending(static attempt => attempt.AssignedAt).ToArray();
+            task.Result is not null,
+            task.Parameters.RequestorIpHash,
+            task.Parameters.RequestorIpClassAB)).ToArray();
+        var sessionsById = sessions.ToDictionary(static session => session.SessionId);
+        var assignments = taskRequests.SelectMany(task => task.Attempts.Select(attempt =>
+        {
+            var sessionId = attempt.ProviderSessionId ??
+                (diagnostics.AssignmentSessions.TryGetValue(attempt.Id.Value, out var retainedSessionId) ? retainedSessionId : null);
+            sessionsById.TryGetValue(sessionId ?? Guid.Empty, out var retainedSession);
+            return new AdminAssignmentDto(
+                task.Id.Value,
+                attempt.Id.Value,
+                sessionId,
+                attempt.ExecutionUnitId.Value,
+                task.Capability.Name,
+                attempt.State.ToString().ToLowerInvariant(),
+                attempt.AssignedAt,
+                attempt.AcceptedAt,
+                attempt.DisconnectedAt,
+                SafeText(attempt.FailureStep),
+                SafeText(attempt.FailureReason),
+                task.RequestorId.Value,
+                task.Parameters.RequestorIpHash,
+                task.Parameters.RequestorIpClassAB,
+                attempt.ProviderIpHash ?? retainedSession?.IpHash,
+                attempt.ProviderIpClassAB ?? retainedSession?.IpClassAB,
+                attempt.ProviderName ?? retainedSession?.ProviderName,
+                attempt.ProviderTransport ?? retainedSession?.Transport);
+        })).OrderByDescending(static attempt => attempt.AssignedAt).ToArray();
         var now = timeProvider.GetUtcNow();
         return Results.Ok(new AdminOverviewDto(
             now,
             new AdminOverviewSummaryDto(
                 diagnostics.Sessions.Count(static session => session.Status == "connected"),
-                diagnostics.Sessions.Count,
+                sessions.Count,
                 transactions.Length,
                 transactions.Count(static transaction => transaction.Status == "running"),
                 assignments.Length,
                 assignments.Count(static assignment => assignment.State is "failed" or "rejected" or "revoked")),
-            diagnostics.Sessions,
+            sessions,
             transactions,
             assignments));
     }
+
+    private static IReadOnlyList<AdminSessionSnapshot> MergeSessions(
+        IReadOnlyList<AdminSessionSnapshot> liveSessions,
+        IReadOnlyList<TaskRequest> tasks)
+    {
+        var retainedIds = liveSessions.Select(static session => session.SessionId).ToHashSet();
+        var historical = tasks
+            .SelectMany(task => task.Attempts.Select(attempt => (task, attempt)))
+            .Where(item => item.attempt.ProviderSessionId is { } sessionId && !retainedIds.Contains(sessionId))
+            .GroupBy(static item => item.attempt.ProviderSessionId!.Value)
+            .Select(static group => HistoricalSession(group.Key, group.ToArray()));
+        return liveSessions
+            .Concat(historical)
+            .OrderByDescending(static session => session.ConnectedAt)
+            .ToArray();
+    }
+
+    private static AdminSessionSnapshot HistoricalSession(
+        Guid sessionId,
+        IReadOnlyList<(TaskRequest task, TaskAttempt attempt)> assignments)
+    {
+        var first = assignments.OrderBy(static item => item.attempt.AssignedAt).First();
+        var events = assignments
+            .SelectMany(static item => HistoricalEvents(item.task, item.attempt))
+            .OrderBy(static item => item.OccurredAt)
+            .ToArray();
+        var closedAt = events.LastOrDefault()?.OccurredAt ?? first.attempt.AssignedAt;
+        return new AdminSessionSnapshot(
+            sessionId,
+            first.attempt.ExecutionUnitId.Value,
+            first.attempt.ProviderName,
+            first.attempt.ProviderTransport ?? "unknown",
+            null,
+            first.attempt.ProviderIpHash ?? "unknown",
+            first.attempt.ProviderIpClassAB ?? "unknown",
+            first.attempt.AssignedAt,
+            closedAt,
+            "disconnected",
+            "retained_from_assignment_facts",
+            assignments.Count,
+            new AdminSessionSummary(
+                events.Length,
+                assignments.Count,
+                assignments.Count(static item => item.attempt.AcceptedAt is not null),
+                assignments.Count(static item => item.attempt.State is AttemptState.Rejected),
+                assignments.Count(static item => item.attempt.State is AttemptState.Failed),
+                assignments.Count(static item => item.attempt.State is AttemptState.Completed),
+                0),
+            events);
+    }
+
+    private static IEnumerable<AdminSessionEvent> HistoricalEvents(TaskRequest task, TaskAttempt attempt)
+    {
+        yield return new AdminSessionEvent(
+            attempt.Id.Value,
+            attempt.AssignedAt,
+            "assignment_created",
+            "Task assigned to provider.",
+            task.Id.Value,
+            attempt.Id.Value);
+        if (attempt.State is AttemptState.Assigned) yield break;
+        var occurredAt = attempt.DisconnectedAt ?? attempt.AcceptedAt ?? attempt.AssignedAt;
+        yield return new AdminSessionEvent(
+            task.Id.Value,
+            occurredAt,
+            attempt.State.ToString().ToLowerInvariant(),
+            HistoricalEventDetail(attempt),
+            task.Id.Value,
+            attempt.Id.Value);
+    }
+
+    private static string HistoricalEventDetail(TaskAttempt attempt) => attempt.State switch
+    {
+        AttemptState.Accepted => "Provider accepted the assignment.",
+        AttemptState.Rejected => SafeText(attempt.FailureReason) ?? "Provider rejected the assignment.",
+        AttemptState.Disconnected => "Provider disconnected while the assignment was active.",
+        AttemptState.Revoked => SafeText(attempt.FailureReason) ?? "Assignment was revoked.",
+        AttemptState.Cancelled => SafeText(attempt.FailureReason) ?? "Assignment was cancelled.",
+        AttemptState.Completed => "Assignment completed.",
+        AttemptState.Failed => SafeText(attempt.FailureReason) ?? "Provider reported an assignment failure.",
+        _ => "Assignment state retained from durable task facts.",
+    };
 
     private static async Task<IResult> PendingPartnerResources(
         HttpContext context,
@@ -199,7 +298,9 @@ public sealed record AdminTransactionDto(
     string ComputeTier,
     int MemoryGiB,
     int AttemptCount,
-    bool HasResult);
+    bool HasResult,
+    string? RequestorIpHash,
+    string? RequestorIpClassAB);
 
 public sealed record AdminAssignmentDto(
     Guid TaskId,
@@ -212,4 +313,11 @@ public sealed record AdminAssignmentDto(
     DateTimeOffset? AcceptedAt,
     DateTimeOffset? DisconnectedAt,
     string? FailureStep,
-    string? FailureReason);
+    string? FailureReason,
+    Guid RequestorId,
+    string? RequestorIpHash,
+    string? RequestorIpClassAB,
+    string? ProviderIpHash,
+    string? ProviderIpClassAB,
+    string? ProviderName,
+    string? ProviderTransport);

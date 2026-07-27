@@ -5,9 +5,9 @@ using MutualGPU.Application;
 
 namespace MutualGPU.Infrastructure;
 
-/// <summary>Writes the authoritative CORS policy for direct browser reads of
-/// presigned objects in the application-data bucket. Provider-key storage never
-/// receives a browser CORS policy.</summary>
+/// <summary>Writes the authoritative all-origin CORS policy for direct browser
+/// reads of presigned objects in the application-data bucket. Provider-key
+/// storage never receives a browser CORS policy.</summary>
 public sealed class AwsS3BrowserObjectCorsPolicy : IBrowserObjectCorsPolicy
 {
     private readonly IAmazonS3 client;
@@ -27,17 +27,6 @@ public sealed class AwsS3BrowserObjectCorsPolicy : IBrowserObjectCorsPolicy
     public async Task SynchronizeAsync(IReadOnlyCollection<string> allowedOrigins, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(allowedOrigins);
-        var origins = allowedOrigins
-            .Where(static origin => !String.IsNullOrWhiteSpace(origin))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-
-        if (origins.Length is 0)
-        {
-            await client.DeleteCORSConfigurationAsync(bucketName, cancellationToken).ConfigureAwait(false);
-            return;
-        }
 
         await client.PutCORSConfigurationAsync(new PutCORSConfigurationRequest
         {
@@ -48,7 +37,7 @@ public sealed class AwsS3BrowserObjectCorsPolicy : IBrowserObjectCorsPolicy
                 [
                     new CORSRule
                     {
-                        AllowedOrigins = origins.ToList(),
+                        AllowedOrigins = ["*"],
                         AllowedMethods = ["GET", "HEAD"],
                         AllowedHeaders = ["*"],
                         ExposeHeaders = ["ETag"],

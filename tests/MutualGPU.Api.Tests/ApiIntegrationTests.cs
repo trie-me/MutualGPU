@@ -107,8 +107,27 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
 
         var capability = new CapabilityDefinition(CapabilityId.New(), "admin-diagnostics", [], new OutputDefinition(), "contract");
         var unit = new ExecutionUnit(ProviderId, new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
-        var attempt = task.Assign(AttemptId.New(), unit.Id, "must-not-be-returned", DateTimeOffset.UtcNow);
+        var task = new TaskRequest(
+            TaskId.New(),
+            RequestorId.New(),
+            capability,
+            ResourceTier.Automatic,
+            new TaskParameters(
+                new Dictionary<string, string>(),
+                null,
+                RequestorIpHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                RequestorIpClassAB: "198.51.*.*"),
+            DateTimeOffset.UtcNow);
+        var attempt = task.Assign(
+            AttemptId.New(),
+            unit.Id,
+            "must-not-be-returned",
+            DateTimeOffset.UtcNow,
+            Guid.CreateVersion7(),
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "203.0.*.*",
+            "Copper Badger · ABCD",
+            "test");
         await adminFactory.Services.GetRequiredService<ITaskRepository>().SaveAsync(task, CancellationToken.None);
         var connections = adminFactory.Services.GetRequiredService<ProviderConnectionRegistry>();
         connections.Connect(unit, "test", sourceIp: "203.0.113.42", providerName: "Copper Badger · ABCD");
@@ -122,6 +141,11 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains(unit.Id.Value.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Copper Badger · ABCD", body, StringComparison.Ordinal);
         Assert.Contains("203.0.113.42", body, StringComparison.Ordinal);
+        Assert.Contains("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", body, StringComparison.Ordinal);
+        Assert.Contains("198.51.*.*", body, StringComparison.Ordinal);
+        Assert.Contains("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", body, StringComparison.Ordinal);
+        Assert.Contains("203.0.*.*", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"sessionId\":\"00000000-0000-0000-0000-000000000000\"", body, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("assignment_created", body, StringComparison.Ordinal);
         Assert.DoesNotContain("must-not-be-returned", body, StringComparison.Ordinal);
         Assert.DoesNotContain(adminPassword, body, StringComparison.Ordinal);
@@ -216,7 +240,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         revokedCapabilityRequest.Headers.Add("Origin", request.Origin);
         using var revokedCapabilityResponse = await client.SendAsync(revokedCapabilityRequest);
         Assert.True(revokedCapabilityResponse.IsSuccessStatusCode);
-        Assert.False(revokedCapabilityResponse.Headers.TryGetValues("Access-Control-Allow-Origin", out _));
+        Assert.Equal(request.Origin, revokedCapabilityResponse.Headers.GetValues("Access-Control-Allow-Origin").Single());
 
         using var revokedWriteRequest = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
         {
@@ -225,7 +249,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         revokedWriteRequest.Headers.Add("Origin", request.Origin);
         using var revokedWriteResponse = await client.SendAsync(revokedWriteRequest);
         Assert.Equal(System.Net.HttpStatusCode.Forbidden, revokedWriteResponse.StatusCode);
-        Assert.False(revokedWriteResponse.Headers.TryGetValues("Access-Control-Allow-Origin", out _));
+        Assert.Equal(request.Origin, revokedWriteResponse.Headers.GetValues("Access-Control-Allow-Origin").Single());
 
         using var approvedAfterRevocation = await client.GetAsync("/admin/api/partner-resources/approved");
         var activeAfterRevocation = await approvedAfterRevocation.Content.ReadFromJsonAsync<PartnerResourceRequestDto[]>();
@@ -374,6 +398,21 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
         Assert.Equal("true", response.Headers.GetValues("Access-Control-Allow-Credentials").Single());
         Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+    }
+
+    [Fact]
+    public async Task Any_browser_origin_can_make_a_credentialed_capability_request()
+    {
+        const string arbitraryOrigin = "https://arbitrary.example";
+        using var client = CreateHttpsClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/capabilities/");
+        request.Headers.Add("Origin", arbitraryOrigin);
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.Equal(arbitraryOrigin, response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+        Assert.Equal("true", response.Headers.GetValues("Access-Control-Allow-Credentials").Single());
     }
 
     [Fact]

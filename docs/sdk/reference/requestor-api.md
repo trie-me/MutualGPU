@@ -26,7 +26,28 @@ Before the first API operation, the client performs one uncached credentialed `G
 
 `submitTask` sends JSON when `image` is omitted and multipart form data when passed a `Blob` or `File`. Keep scalar values as strings and echo the current capability contract hash.
 
-`cancelTask` is requestor-owned and terminal. For an assigned or running task, the API invalidates the attempt handle and sends the provider a cancellation control frame; the provider SDK aborts that task's `AbortSignal`. A `409 task_not_cancellable` means the task has already reached a terminal state.
+## Cancel a task
+
+```js
+try {
+  await requestor.cancelTask(task.taskId);
+  // The request has been durably marked Cancelled.
+} catch (error) {
+  if (error instanceof RequestorApiError && error.code === "task_not_cancellable") {
+    // It was already Completed, Cancelled, or Failed. Refresh before updating UI.
+    const current = await requestor.getTask(task.taskId);
+    console.info("Task is already terminal:", current.status);
+  } else {
+    throw error;
+  }
+}
+```
+
+`cancelTask(taskId)` returns `Promise<void>` after the API returns `204 No Content`. It only acts on a task owned by the browser's anonymous requestor cookie; a task that is absent or belongs to another requestor returns `404`.
+
+Cancellation is terminal and is committed before provider notification. A queued task is simply marked `Cancelled`. For an assigned or running task, the API invalidates the attempt handle, removes retained progress, and makes a best-effort cancellation control delivery to the provider. The provider SDK then aborts that exact assignment's `AbortSignal`. The client does not wait for handler cleanup or provider acknowledgement.
+
+`409 task_not_cancellable` means the task was already terminal (`Completed`, `Cancelled`, or `Failed`). Do not treat it as confirmation that a new cancellation succeeded; call `getTask(taskId)` to display the actual state. If the browser loses the response to a cancellation request, the outcome is similarly ambiguous—refresh with `getTask(taskId)` instead of assuming the provider kept running.
 
 Failures throw `RequestorApiError` with `status`, `code`, `problem`, and raw `body` properties. Result artifact download URLs are short-lived; request a fresh result descriptor after expiry.
 

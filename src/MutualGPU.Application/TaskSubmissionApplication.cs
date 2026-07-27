@@ -17,7 +17,9 @@ public sealed record SubmitTaskCommand(
     string? ImageContentType = null,
     string? ImageExtension = null,
     long? ImageLength = null,
-    string? ImageSha256 = null)
+    string? ImageSha256 = null,
+    string? RequestorIpHash = null,
+    string? RequestorIpClassAB = null)
 {
     public SubmitTaskCommand(
         RequestorId requestorId,
@@ -32,10 +34,12 @@ public sealed record SubmitTaskCommand(
         string? imageContentType = null,
         string? imageExtension = null,
         long? imageLength = null,
-        string? imageSha256 = null)
+        string? imageSha256 = null,
+        string? requestorIpHash = null,
+        string? requestorIpClassAB = null)
         : this(requestorId, capabilityId, contractHash, scalars, image,
             tier is ResourceTier.Automatic ? new MachineSpecifications(ResourceTier.Small, MachineSpecificationsPolicy.MinimumMemoryGiB) : new MachineSpecifications(tier, MachineSpecificationsPolicy.MinimumMemoryGiB),
-            submittedAt, idempotencyKey, taskId, imageContentType, imageExtension, imageLength, imageSha256)
+            submittedAt, idempotencyKey, taskId, imageContentType, imageExtension, imageLength, imageSha256, requestorIpHash, requestorIpClassAB)
     {
     }
 }
@@ -97,7 +101,17 @@ public sealed class TaskSubmissionApplication(
         }
 
         var task = new TaskRequest(command.TaskId ?? MutualGPU.Domain.TaskId.New(), command.RequestorId, capability, command.Resources,
-            new TaskParameters(command.Scalars, command.Image, command.IdempotencyKey, command.ImageContentType, command.ImageExtension, command.ImageLength, command.ImageSha256), command.SubmittedAt);
+            new TaskParameters(
+                command.Scalars,
+                command.Image,
+                command.IdempotencyKey,
+                command.ImageContentType,
+                command.ImageExtension,
+                command.ImageLength,
+                command.ImageSha256,
+                command.RequestorIpHash,
+                command.RequestorIpClassAB),
+            command.SubmittedAt);
         await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
         events.TaskChanged(command.RequestorId);
         events.TriggerScheduler();

@@ -38,7 +38,9 @@ public sealed record TaskParameters(
     string? ImageContentType = null,
     string? ImageExtension = null,
     long? ImageLength = null,
-    string? ImageSha256 = null);
+    string? ImageSha256 = null,
+    string? RequestorIpHash = null,
+    string? RequestorIpClassAB = null);
 
 public sealed record TaskAttempt(
     AttemptId Id,
@@ -49,7 +51,12 @@ public sealed record TaskAttempt(
     DateTimeOffset? AcceptedAt = null,
     string? FailureStep = null,
     string? FailureReason = null,
-    DateTimeOffset? DisconnectedAt = null);
+    DateTimeOffset? DisconnectedAt = null,
+    Guid? ProviderSessionId = null,
+    string? ProviderIpHash = null,
+    string? ProviderIpClassAB = null,
+    string? ProviderName = null,
+    string? ProviderTransport = null);
 
 public sealed record ResultArtifact(
     ArtifactId Id,
@@ -127,7 +134,16 @@ public sealed class TaskRequest
 
     public TaskResult? Result { get; private set; }
 
-    public TaskAttempt Assign(AttemptId attemptId, ExecutionUnitId executionUnitId, string handle, DateTimeOffset assignedAt)
+    public TaskAttempt Assign(
+        AttemptId attemptId,
+        ExecutionUnitId executionUnitId,
+        string handle,
+        DateTimeOffset assignedAt,
+        Guid? providerSessionId = null,
+        string? providerIpHash = null,
+        string? providerIpClassAB = null,
+        string? providerName = null,
+        string? providerTransport = null)
     {
         if (Status is not TaskStatus.Queued)
         {
@@ -144,7 +160,17 @@ public sealed class TaskRequest
             throw new DomainRuleViolation("task_handle_required", "An assignment handle is required.");
         }
 
-        var attempt = new TaskAttempt(attemptId, executionUnitId, handle, assignedAt, AttemptState.Assigned);
+        var attempt = new TaskAttempt(
+            attemptId,
+            executionUnitId,
+            handle,
+            assignedAt,
+            AttemptState.Assigned,
+            ProviderSessionId: providerSessionId,
+            ProviderIpHash: providerIpHash,
+            ProviderIpClassAB: providerIpClassAB,
+            ProviderName: providerName,
+            ProviderTransport: providerTransport);
         attempts.Add(attempt);
         Status = TaskStatus.Assigned;
         return attempt;

@@ -12,16 +12,43 @@ public sealed class TaskRepositoryFactsTests
         var keys = new MutualGpuObjectKeys();
         var repository = new ObjectStoreTaskRepository(store, keys, new RepositoryLockRegistry());
         var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
-        var task = new TaskRequest(TaskId.New(), RequestorId.New(), capability, ResourceTier.Automatic, new TaskParameters(new Dictionary<string, string>(), null), DateTimeOffset.UtcNow);
+        var task = new TaskRequest(
+            TaskId.New(),
+            RequestorId.New(),
+            capability,
+            ResourceTier.Automatic,
+            new TaskParameters(
+                new Dictionary<string, string>(),
+                null,
+                RequestorIpHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                RequestorIpClassAB: "198.51.*.*"),
+            DateTimeOffset.UtcNow);
 
         await repository.SaveAsync(task, CancellationToken.None);
-        task.Assign(AttemptId.New(), ExecutionUnitId.New(), "opaque-handle", DateTimeOffset.UtcNow);
+        var sessionId = Guid.CreateVersion7();
+        task.Assign(
+            AttemptId.New(),
+            ExecutionUnitId.New(),
+            "opaque-handle",
+            DateTimeOffset.UtcNow,
+            sessionId,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "203.0.*.*",
+            "Copper Badger",
+            "wss");
         await repository.SaveAsync(task, CancellationToken.None);
         var hydrated = await repository.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
 
         Assert.NotNull(hydrated);
         Assert.Equal(MutualGPU.Domain.TaskStatus.Assigned, hydrated.Status);
-        Assert.Single(hydrated.Attempts);
+        Assert.Equal("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", hydrated.Parameters.RequestorIpHash);
+        Assert.Equal("198.51.*.*", hydrated.Parameters.RequestorIpClassAB);
+        var hydratedAttempt = Assert.Single(hydrated.Attempts);
+        Assert.Equal(sessionId, hydratedAttempt.ProviderSessionId);
+        Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", hydratedAttempt.ProviderIpHash);
+        Assert.Equal("203.0.*.*", hydratedAttempt.ProviderIpClassAB);
+        Assert.Equal("Copper Badger", hydratedAttempt.ProviderName);
+        Assert.Equal("wss", hydratedAttempt.ProviderTransport);
         var facts = new List<string>();
         await foreach (var entry in store.ListAsync(keys.TaskFacts(task.RequestorId, task.Id), CancellationToken.None)) facts.Add(entry.Key.Value);
         Assert.Equal(2, facts.Count);

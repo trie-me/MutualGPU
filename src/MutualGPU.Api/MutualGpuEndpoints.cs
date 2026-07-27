@@ -68,6 +68,7 @@ public static class MutualGpuEndpoints
         }
 
         SubmitTaskResult result;
+        var requestorNetwork = diagnostics.Describe(context);
         try
         {
             result = await submission.Submit(new SubmitTaskCommand(
@@ -83,7 +84,9 @@ public static class MutualGpuEndpoints
                 pendingImage?.ContentType,
                 pendingImage?.Extension,
                 pendingImage?.Bytes.LongLength,
-                pendingImage?.Sha256)).RunAsync(cancellationToken).ConfigureAwait(false);
+                pendingImage?.Sha256,
+                requestorNetwork.IpHash,
+                requestorNetwork.IpClassAB)).RunAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -103,7 +106,12 @@ public static class MutualGpuEndpoints
         }
         if (result is SubmitTaskResult.Created submitted)
         {
-            diagnostics.TaskOperation(context, requestorId, submitted.Task.Id, submitted.CreatedNow ? "submitted" : "submission_replayed");
+            diagnostics.TaskOperation(
+                context,
+                requestorId,
+                submitted.Task.Id,
+                submitted.CreatedNow ? "submitted" : "submission_replayed",
+                requestorNetwork);
         }
         return result switch
         {

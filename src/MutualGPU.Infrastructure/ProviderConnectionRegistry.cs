@@ -13,10 +13,19 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     private readonly Dictionary<ExecutionUnitId, Connection> connections = [];
     private readonly Dictionary<Guid, MutableSession> sessions = [];
     private readonly Dictionary<AttemptId, Guid> assignmentSessions = [];
+    private readonly NetworkIdentityProtector networkIdentities;
     private readonly TimeProvider timeProvider;
 
-    public ProviderConnectionRegistry(TimeProvider? timeProvider = null) =>
-        this.timeProvider = timeProvider ?? TimeProvider.System;
+    public ProviderConnectionRegistry(TimeProvider? timeProvider = null)
+        : this(new NetworkIdentityProtector(null), timeProvider ?? TimeProvider.System)
+    {
+    }
+
+    public ProviderConnectionRegistry(NetworkIdentityProtector networkIdentities, TimeProvider timeProvider)
+    {
+        this.networkIdentities = networkIdentities;
+        this.timeProvider = timeProvider;
+    }
 
     public ProviderSessionLease Connect(ExecutionUnit unit, string transport = "unknown", bool isIdle = true, string? sourceIp = null, string? providerName = null)
     {
@@ -37,11 +46,14 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
             }
             connections[unit.Id] = new Connection(sessionId, unit.CurrentEnrollment.Machine, unit.CurrentEnrollment.Capabilities.ToArray(), isIdle, channel);
             var now = timeProvider.GetUtcNow();
+            var protectedNetwork = networkIdentities.Protect(sourceIp);
             var session = new MutableSession(
                 sessionId,
                 unit.Id,
                 String.IsNullOrWhiteSpace(transport) ? "unknown" : transport,
                 String.IsNullOrWhiteSpace(sourceIp) ? null : sourceIp.Trim(),
+                protectedNetwork.IpHash,
+                protectedNetwork.IpClassAB,
                 String.IsNullOrWhiteSpace(providerName) ? null : providerName.Trim(),
                 now);
             sessions[sessionId] = session;
@@ -111,7 +123,21 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
         lock (gate)
         {
             return connections.Where(pair => pair.Value.Capabilities.Any(capability => capability.Id == capabilityId))
-                .Select(pair => new ProviderCandidate(pair.Key, capabilityId, pair.Value.Machine.Tier, pair.Value.Machine.Specifications, pair.Value.IsIdle)).ToArray();
+                .Select(pair =>
+                {
+                    var session = sessions[pair.Value.SessionId];
+                    return new ProviderCandidate(
+                        pair.Key,
+                        capabilityId,
+                        pair.Value.Machine.Tier,
+                        pair.Value.Machine.Specifications,
+                        pair.Value.IsIdle,
+                        session.SessionId,
+                        session.IpHash,
+                        session.IpClassAB,
+                        session.ProviderName,
+                        session.Transport);
+                }).ToArray();
         }
     }
 
@@ -345,6 +371,8 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
             session.ProviderName,
             session.Transport,
             session.SourceIp,
+            session.IpHash,
+            session.IpClassAB,
             session.ConnectedAt,
             session.ClosedAt,
             isCurrent ? "connected" : "disconnected",
@@ -371,13 +399,23 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
 
     private sealed record Connection(Guid SessionId, MachineProfile Machine, IReadOnlyList<CapabilityDefinition> Capabilities, bool IsIdle, Channel<ProviderServerMessage> Outbound);
 
-    private sealed class MutableSession(Guid sessionId, ExecutionUnitId executionUnitId, string transport, string? sourceIp, string? providerName, DateTimeOffset connectedAt)
+    private sealed class MutableSession(
+        Guid sessionId,
+        ExecutionUnitId executionUnitId,
+        string transport,
+        string? sourceIp,
+        string ipHash,
+        string ipClassAB,
+        string? providerName,
+        DateTimeOffset connectedAt)
     {
         public Guid SessionId { get; } = sessionId;
         public ExecutionUnitId ExecutionUnitId { get; } = executionUnitId;
         public string? ProviderName { get; } = providerName;
         public string Transport { get; } = transport;
         public string? SourceIp { get; } = sourceIp;
+        public string IpHash { get; } = ipHash;
+        public string IpClassAB { get; } = ipClassAB;
         public DateTimeOffset ConnectedAt { get; } = connectedAt;
         public DateTimeOffset? ClosedAt { get; set; }
         public string? CloseReason { get; set; }
@@ -398,6 +436,8 @@ public sealed record AdminSessionSnapshot(
     string? ProviderName,
     string Transport,
     string? SourceIp,
+    string IpHash,
+    string IpClassAB,
     DateTimeOffset ConnectedAt,
     DateTimeOffset? ClosedAt,
     string Status,

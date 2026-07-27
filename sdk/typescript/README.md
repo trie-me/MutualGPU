@@ -36,6 +36,24 @@ const result = current.canRetrieveResult
   : null;
 ```
 
+### Cancel requestor work
+
+```js
+try {
+  await requestor.cancelTask(task.taskId);
+  // `cancelTask` resolves after the task is durably Cancelled.
+} catch (error) {
+  if (error.code === "task_not_cancellable") {
+    const current = await requestor.getTask(task.taskId);
+    // Render the terminal state that won the race.
+  } else {
+    throw error;
+  }
+}
+```
+
+Cancellation is available only to the browser session that owns the task. It is terminal: queued work stops immediately; an assigned or running attempt has its handle invalidated and receives a best-effort provider cancellation signal. The call returns `Promise<void>` on `204 No Content`; it does not wait for the provider's handler to stop. If completion, failure, or an earlier cancellation wins first, the client throws `RequestorApiError` with `status === 409` and `code === "task_not_cancellable"`. When a request or response is interrupted, fetch the task again rather than assuming the outcome.
+
 Cross-origin hosts must be present in `MutualGPU:ProviderCorsOrigins`. The API issues the requestor cookie as `HttpOnly; Secure; SameSite=None; Partitioned`; application code never reads or forwards the cookie itself. Partitioning keeps the anonymous session usable when ordinary third-party cookies are blocked while preventing it from being shared across unrelated top-level sites.
 
 After deploying the API build that accompanies an SDK release, run the required hosted release gate from an allowed browser origin:

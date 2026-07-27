@@ -71,7 +71,7 @@ function render() {
 }
 
 function renderSessions() {
-  const sessions = state.data.sessions.filter(item => matches(item.sessionId, item.executionUnitId, item.providerName, item.transport, item.sourceIp, item.status));
+  const sessions = state.data.sessions.filter(item => matches(item.sessionId, item.executionUnitId, item.providerName, item.transport, item.sourceIp, item.ipHash, item.ipClassAB, item.status));
   const providers = groupProviderSessions(sessions);
   el('session-count').textContent = `${providers.length} provider${providers.length === 1 ? '' : 's'} · ${sessions.length} session${sessions.length === 1 ? '' : 's'}`;
   replace(el('session-list'), providers.map(provider => {
@@ -82,7 +82,7 @@ function renderSessions() {
     const selected = provider.sessions.some(item => item.sessionId === state.selectedSession);
     const button = node('button', `session-card${selected ? ' active' : ''}`,
       node('span', `status-dot ${session.status}`),
-      node('span', '', node('strong', '', providerName(session)), node('small', '', `${shortId(session.executionUnitId)} · ${session.transport} · ${session.sourceIp || 'source unknown'} · ${assignmentCount} assignment${assignmentCount === 1 ? '' : 's'} · ${reconnectText}`)),
+      node('span', '', node('strong', '', providerName(session)), node('small', '', `${shortId(session.executionUnitId)} · ${session.transport} · ${session.sourceIp || session.ipClassAB || 'source unknown'} · ${assignmentCount} assignment${assignmentCount === 1 ? '' : 's'} · ${reconnectText}`)),
       node('time', '', age(session.connectedAt)));
     button.type = 'button';
     button.addEventListener('click', () => { state.selectedSession = session.sessionId; renderSessions(); });
@@ -93,7 +93,9 @@ function renderSessions() {
   const summary = selected.summary;
   const meta = node('div', 'detail-meta',
     metaItem('Provider', providerName(selected)), metaItem('Provider ID', selected.executionUnitId), metaItem('Transport', selected.transport),
-    metaItem('Source IP', selected.sourceIp || 'Unknown'),
+    metaItem('Source IP', selected.sourceIp || 'Not retained'),
+    metaItem('Network', selected.ipClassAB || 'Unknown'),
+    metaItem('IP hash', selected.ipHash || 'Unknown'),
     metaItem('Connected', formatDate(selected.connectedAt)), metaItem('Duration', duration(selected.connectedAt, selected.closedAt)));
   const stats = node('div', 'mini-stats',
     ...[['Events', summary.eventCount], ['Assigned', summary.assigned], ['Accepted', summary.accepted], ['Completed', summary.completed], ['Failed', summary.failed], ['Rejected', summary.rejected], ['Progress', summary.progressUpdates]].map(([label, value]) => node('span', '', `${label} ${value}`)));
@@ -119,27 +121,36 @@ function groupProviderSessions(sessions) {
 }
 
 function renderTransactions() {
-  const rows = state.data.transactions.filter(item => matches(item.taskId, item.requestorId, item.capability, item.status));
+  const rows = state.data.transactions.filter(item => matches(item.taskId, item.requestorId, item.requestorIpHash, item.requestorIpClassAB, item.capability, item.status));
   el('transaction-count').textContent = `${rows.length} shown`;
   replace(el('transactions-body'), rows.map(item => node('tr', '',
     node('td', '', node('code', '', shortId(item.taskId)), node('small', '', `requestor ${shortId(item.requestorId)}`)),
+    networkIdentity(item.requestorIpClassAB, item.requestorIpHash),
     node('td', '', item.capability), node('td', '', pill(item.status)), node('td', '', `${item.computeTier} · ${item.memoryGiB} GiB`),
     node('td', '', String(item.attemptCount)), node('td', '', item.hasResult ? 'Available' : '—'), node('td', '', formatDate(item.createdAt)))));
 }
 
 function renderAssignments() {
-  const rows = state.data.assignments.filter(item => matches(item.attemptId, item.taskId, item.executionUnitId, item.sessionId, providerNameFor(item.sessionId), sourceIpFor(item.sessionId), item.capability, item.state, item.failureStep, item.failureReason));
+  const rows = state.data.assignments.filter(item => matches(
+    item.attemptId, item.taskId, item.requestorId, item.requestorIpHash, item.requestorIpClassAB,
+    item.executionUnitId, item.sessionId, item.providerName, item.providerIpHash, item.providerIpClassAB,
+    item.capability, item.state, item.failureStep, item.failureReason));
   el('assignment-count').textContent = `${rows.length} shown`;
   replace(el('assignments-body'), rows.map(item => {
+    const retained = state.data.sessions.some(session => session.sessionId === item.sessionId);
     const session = node('button', 'quiet', item.sessionId ? shortId(item.sessionId) : 'not retained');
-    session.disabled = !item.sessionId;
-    if (item.sessionId) session.addEventListener('click', () => { state.selectedSession = item.sessionId; document.querySelector('[data-view="sessions"]').click(); });
+    session.disabled = !retained;
+    if (retained) session.addEventListener('click', () => { state.selectedSession = item.sessionId; document.querySelector('[data-view="sessions"]').click(); });
     const transition = item.disconnectedAt || item.acceptedAt;
     const outcome = item.failureStep || item.failureReason
       ? node('span', '', item.failureStep || 'Provider detail', item.failureReason ? node('small', '', item.failureReason) : null)
       : '—';
     return node('tr', '', node('td', '', node('code', '', shortId(item.attemptId))), node('td', '', item.capability, node('small', '', shortId(item.taskId))),
-      node('td', '', providerNameFor(item.sessionId) || shortId(item.executionUnitId), node('small', '', `${shortId(item.executionUnitId)} · ${sourceIpFor(item.sessionId) || 'source unknown'}`)), node('td', '', session), node('td', '', pill(item.state)), node('td', '', formatDate(item.assignedAt)),
+      networkIdentity(item.requestorIpClassAB, item.requestorIpHash, `requestor ${shortId(item.requestorId)}`),
+      node('td', '', item.providerName || providerNameFor(item.sessionId) || shortId(item.executionUnitId),
+        node('small', '', `${shortId(item.executionUnitId)} · ${item.providerTransport || 'transport unknown'}`),
+        networkIdentity(item.providerIpClassAB, item.providerIpHash)),
+      node('td', '', session), node('td', '', pill(item.state)), node('td', '', formatDate(item.assignedAt)),
       node('td', '', transition ? formatDate(transition) : '—'), node('td', '', outcome));
   }));
 }
@@ -194,6 +205,12 @@ function node(tag, className, ...children) {
 function replace(parent, children) { parent.replaceChildren(...children); }
 function pill(value) { return node('span', `pill ${value}`, value); }
 function metaItem(label, value) { return node('div', '', node('span', '', label), node('strong', '', value)); }
+function networkIdentity(segment, hash, prefix = '') {
+  const known = segment && segment !== 'unknown';
+  return node('span', '', prefix ? node('small', '', prefix) : null,
+    known ? segment : 'network unknown',
+    node('small', '', hash && hash !== 'unknown' ? `hash ${hash}` : 'hash unavailable'));
+}
 function matches(...values) { return !state.query || values.some(value => String(value ?? '').toLowerCase().includes(state.query)); }
 function providerName(session) { return session.providerName || shortId(session.executionUnitId); }
 function providerNameFor(sessionId) { const session = state.data?.sessions.find(item => item.sessionId === sessionId); return session ? providerName(session) : ''; }

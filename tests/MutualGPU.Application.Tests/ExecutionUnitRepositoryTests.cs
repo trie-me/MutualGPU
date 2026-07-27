@@ -181,6 +181,26 @@ public sealed class ExecutionUnitRepositoryTests
     }
 
     [Fact]
+    public void Provider_candidate_exposes_only_protected_network_identity_for_durable_assignment()
+    {
+        var registry = new ProviderConnectionRegistry(
+            new NetworkIdentityProtector("provider-network-test-key"),
+            TimeProvider.System);
+        var capability = new CapabilityDefinition(CapabilityId.New(), "splats", [], new OutputDefinition(), "hash");
+        var unit = new ExecutionUnit(ExecutionUnitId.New(), new EnrollmentDefinition(Machine(ResourceTier.Medium, ResourceTier.Medium, 16), [capability]));
+        var lease = registry.Connect(unit, "wss", sourceIp: "203.0.113.42", providerName: "Copper Badger");
+
+        var candidate = Assert.Single(registry.GetConnectedCandidates(capability.Id));
+
+        Assert.Equal(lease.SessionId, candidate.SessionId);
+        Assert.Matches("^[0-9a-f]{32}$", candidate.IpHash);
+        Assert.Equal("203.0.*.*", candidate.IpClassAB);
+        Assert.Equal("Copper Badger", candidate.ProviderName);
+        Assert.Equal("wss", candidate.Transport);
+        Assert.DoesNotContain("203.0.113.42", candidate.IpHash, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Result_upload_tokens_are_single_use_and_expire_after_fifteen_minutes()
     {
         var authorizations = new ResultUploadAuthorizations();

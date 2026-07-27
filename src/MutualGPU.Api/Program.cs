@@ -140,9 +140,11 @@ builder.Services.AddSingleton<SchedulerSignal>();
 builder.Services.AddSingleton<IApplicationEventSink>(static services => services.GetRequiredService<SchedulerSignal>());
 builder.Services.AddSingleton<MutualGpuTelemetry>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton(services => new RequestorDiagnostics(
+builder.Services.AddSingleton(services => new NetworkIdentityProtector(
     builder.Configuration["MutualGPU:RequestorDiagnostics:IpHashKey"]
-        ?? builder.Configuration["MutualGPU:Admin:MasterPassword"],
+        ?? builder.Configuration["MutualGPU:Admin:MasterPassword"]));
+builder.Services.AddSingleton(services => new RequestorDiagnostics(
+    services.GetRequiredService<NetworkIdentityProtector>(),
     services.GetRequiredService<ILogger<RequestorDiagnostics>>()));
 builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
 builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
@@ -207,7 +209,9 @@ app.Use(async (context, next) =>
     await next(context);
 });
 app.UseCors(policy => policy
-    .SetIsOriginAllowed(origin => IsTrustedBrowserOrigin(origin, providerCorsOrigins, partnerResources))
+    // Echo any supplied origin so credentialed browser requests can use the API
+    // from any domain. Unsafe task writes still pass through the CSRF origin check below.
+    .SetIsOriginAllowed(static origin => !String.IsNullOrWhiteSpace(origin))
     .WithMethods("GET", "POST", "DELETE")
     .WithHeaders("Authorization", "Content-Type", "X-MutualGPU-Task-Handle", "X-MutualGPU-Upload-Token", "X-MutualGPU-Sha256")
     .AllowCredentials());

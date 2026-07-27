@@ -1,5 +1,5 @@
-import { BrowserWebSocketTransport, ProviderClient } from "/js/mutualgpu-provider-sdk.js?v=20260725-klein-fp16-5";
-import { loadFlux2WebGpuRuntime } from "/js/flux2-webgpu-runtime.js?v=20260725-klein-fp16-5";
+import { BrowserWebSocketTransport, ProviderClient } from "/js/mutualgpu-provider-sdk.js?v=20260726-klein-fp16-cache-3";
+import { loadFlux2WebGpuRuntime } from "/js/flux2-webgpu-runtime.js?v=20260726-klein-fp16-adapter-4";
 
 const SESSION_KEY = "mutualgpu.provider.enrollment";
 const CAPABILITIES = {
@@ -76,6 +76,12 @@ function hardwareProfile(memoryGiB) {
 
 async function handleAssignment(task) {
   const abortInference = () => fluxRuntime?.abort();
+  let assignmentFailed = false;
+  $("#host-badge").className = "provider-state is-ready";
+  $("#host-badge").innerHTML = "<i></i><span>Provider connected</span>";
+  $("#host-status").textContent = "Connected in this tab";
+  $("#summary-title").textContent = "Assignment in progress";
+  $("#summary-copy").textContent = `Running assignment ${task.taskId} in this provider tab.`;
   $("#active-work").textContent = "Text-to-image task";
   log(`Assignment ${task.taskId} received.`);
   if (!fluxRuntime) {
@@ -113,22 +119,39 @@ async function handleAssignment(task) {
     });
     await task.complete(published.receipt);
     log(`Assignment ${task.taskId} completed.`);
+    $("#summary-title").textContent = "Assignment completed";
+    $("#summary-copy").textContent = `Assignment ${task.taskId} completed successfully; the provider remains connected.`;
   } catch (error) {
     if (task.signal?.aborted) {
       log(`Assignment ${task.taskId} was cancelled by the requestor.`, "warn");
       return;
     }
+    assignmentFailed = true;
     const failure = describeAssignmentFailure(error);
-    log(`Assignment ${task.taskId} failed [${failure.step}]: ${failure.reason}`, "error");
+    log(`Assignment ${task.taskId} failed [${failure.step}]: ${failure.diagnostic}`, "error");
+    $("#host-badge").className = "provider-state is-blocked";
+    $("#host-badge").innerHTML = "<i></i><span>Assignment needs attention</span>";
+    $("#host-status").textContent = "Connected · assignment failed";
+    $("#active-work").textContent = `Failed: ${failure.step}`;
+    $("#summary-title").textContent = "Assignment failed";
+    $("#summary-copy").textContent = failure.diagnostic;
     try {
       await task.reportProgress({ phase: "failed", percent: 45, message: failure.reason });
     } catch { }
     try { await task.fail(failure.step, failure.reason); } catch (reportError) {
       log(`Could not report assignment failure to MutualGPU: ${reportError?.message || "transport error"}.`, "warn");
     }
+    provider?.close();
+    provider = null;
+    fluxRuntime = null;
+    stopped = true;
+    $("#disconnect").disabled = true;
+    $("#host-status").textContent = "Disconnected · assignment failed";
+    $("#disconnect-copy").textContent = "Reload this tab before offering compute again; the failed WebGPU runtime will not accept retries.";
+    log("Provider disconnected after the runtime failure so retries cannot return to the same browser state.", "warn");
   } finally {
     task.signal?.removeEventListener("abort", abortInference);
-    $("#active-work").textContent = "Waiting for compatible work";
+    if (!assignmentFailed) $("#active-work").textContent = "Waiting for compatible work";
   }
 }
 
@@ -168,16 +191,14 @@ async function start() {
   setStep("webgpu", "running", "Initializing");
   try {
     if (!navigator.gpu) throw new Error("WebGPU is unavailable");
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
-    if (!adapter) throw new Error("No compatible adapter returned");
-    log("High-performance WebGPU adapter is available.");
+    log("Selecting a Chrome WebGPU adapter that exposes shader-f16 for the FP16 FLUX.2 model.");
+    log("The runtime will compare high-performance, default, and low-power adapter requests before enrollment.");
+    if (stopped) return;
+    log("Validating the FLUX.2 FP16 WebGPU manifests and persistent artifact cache before enrollment. The first assignment caches approximately 14.6 GiB of model assets.");
+    fluxRuntime = await loadFlux2WebGpuRuntime({ onStatus: log });
     if (stopped) return;
     setStep("webgpu", "done", "Ready");
     $("#gpu-status").textContent = "Ready";
-    log("WebGPU adapter and device initialized.");
-    log("Validating the FLUX.2 FP16 WebGPU manifests before enrollment. The first assignment downloads approximately 14.6 GiB of model assets.");
-    fluxRuntime = await loadFlux2WebGpuRuntime({ onStatus: log });
-    if (stopped) return;
     log("FLUX.2 FP16 WebGPU runtime is ready.");
   } catch (error) {
     fail("webgpu", `WebGPU initialization failed: ${error.message}`);
@@ -240,7 +261,8 @@ function integer(value, minimum, maximum, name) {
 function describeAssignmentFailure(error) {
   const diagnostic = error?.flux2Diagnostic;
   const stage = String(diagnostic?.stage || "inference");
-  const step = stage === "artifact_download" ? "model_download" :
+  const step = stage === "artifact_cache" ? "model_cache" :
+    stage === "artifact_download" ? "model_download" :
     stage === "webgpu_session_create" ? "webgpu_session_create" :
       diagnostic?.deviceLoss ? "webgpu_device_lost" : "inference";
   const details = [
@@ -256,7 +278,34 @@ function describeAssignmentFailure(error) {
     diagnostic?.deviceLoss ? `deviceLost=${diagnostic.deviceLoss.reason}:${diagnostic.deviceLoss.message}` : null,
     diagnostic?.errorName ? `${diagnostic.errorName}: ${diagnostic.errorMessage}` : (error?.message || "runtime error")
   ].filter(Boolean).join("; ");
-  return { step, reason: clipText(`FLUX.2 provider diagnostic: ${details}`, 1400) };
+  return {
+    step,
+    reason: publicAssignmentFailure(step, error),
+    diagnostic: clipText(`FLUX.2 provider diagnostic: ${details}`, 1400)
+  };
+}
+
+function publicAssignmentFailure(step, error) {
+  const message = String(error?.message || "");
+  if (/another WebGPU EP inference session is being created/i.test(message)) {
+    return "The provider WebGPU runtime was left unusable by an earlier model initialization failure.";
+  }
+  if (/shader-f16|requires f16/i.test(message)) {
+    return "The provider browser did not expose the FP16 WebGPU feature required by this model.";
+  }
+  if (step === "model_cache") {
+    return "The provider could not persist the FLUX.2 model assets in its browser cache.";
+  }
+  if (step === "model_download") {
+    return "The provider could not download the FLUX.2 model assets.";
+  }
+  if (step === "webgpu_session_create") {
+    return "The provider could not initialize the FLUX.2 WebGPU model.";
+  }
+  if (step === "webgpu_device_lost") {
+    return "The provider's WebGPU device was lost during FLUX.2 generation.";
+  }
+  return "FLUX.2 generation failed on the provider.";
 }
 
 function formatBytes(value) {

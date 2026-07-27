@@ -18,7 +18,16 @@ public sealed class SchedulerApplication(
         {
             var candidate = Scheduling.SelectCandidate(task, presence.GetConnectedCandidates(task.Capability.Id));
             if (candidate is null) continue;
-            var attempt = task.Assign(AttemptId.New(), candidate.ExecutionUnitId, NewHandle(), now);
+            var attempt = task.Assign(
+                AttemptId.New(),
+                candidate.ExecutionUnitId,
+                NewHandle(),
+                now,
+                candidate.SessionId,
+                candidate.IpHash,
+                candidate.IpClassAB,
+                candidate.ProviderName,
+                candidate.Transport);
             await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
             events?.TaskChanged(task.RequestorId);
             assignments.Track(candidate.ExecutionUnitId, task, attempt);
