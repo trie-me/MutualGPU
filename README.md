@@ -4,6 +4,9 @@ MutualGPU is a distributed WebGPU work exchange built on [NetCats](https://githu
 
 It includes the pure domain, canonical capability catalogue, cold enrollment/submission workflows, an AWS S3 data store and dedicated provider-key registry, gRPC and binary-WebSocket provider connection adapters, a process-local triggered scheduler, static requestor APIs, optional result artifacts, the additional capacity matrix, and Node.js/Chrome provider SDK packages.
 
+The independently deployed provider reconnect and certification harness lives
+in [MutualGPU.Providers.TestHarness](https://github.com/trie-me/MutualGPU.Providers.TestHarness).
+
 The Development in-memory object store is for local demonstration and in-process tests only. The current AWS deployment stores task data and artifacts in `mutualgpu-data` and provider-key bindings in `mutualgpu-preshared-keys`; the Backblaze adapter remains an optional configuration. The provider SDK supports Node.js and Chrome through a shared lifecycle and canonical Protobuf codec, with a native Node HTTPS/HTTP2 gRPC transport and Chrome WSS transport. Its fixture suite verifies the wire format against the .NET-generated contracts. Consumer setup and API behaviour are documented in the [provider SDK documentation](docs/sdk/README.md), and the target exchange behaviour is defined in [the specification](docs/08-mutualgpu-example-implementation.md).
 
 ## How Codex accelerated MutualGPU
