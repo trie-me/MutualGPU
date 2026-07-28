@@ -415,6 +415,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal("true", response.Headers.GetValues("Access-Control-Allow-Credentials").Single());
     }
 
+
     [Fact]
     public async Task Requestor_cookie_is_eligible_for_cross_site_credentialed_requests()
     {
