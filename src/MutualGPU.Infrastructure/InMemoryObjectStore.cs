@@ -5,12 +5,29 @@ namespace MutualGPU.Infrastructure;
 
 /// <summary>
 /// Development/test implementation of the object-store contract. Production registration
-/// always uses the Backblaze adapter; this exists so the demo host and in-process tests
+/// always uses AWS S3; this exists so the demo host and in-process tests
 /// remain runnable without credentials.
 /// </summary>
 public sealed class InMemoryObjectStore : IObjectStore, IObjectStoreHealth
 {
     private readonly ConcurrentDictionary<string, StoredObject> objects = new(StringComparer.Ordinal);
+    private readonly Uri? downloadBaseUri;
+
+    /// <summary>
+    /// A local HTTPS base URI makes development artifacts retrievable by a real
+    /// browser provider. Production always uses S3 presigned URLs instead.
+    /// </summary>
+    public InMemoryObjectStore(Uri? downloadBaseUri = null)
+    {
+        if (downloadBaseUri is not null && (!downloadBaseUri.IsAbsoluteUri || !StringComparer.OrdinalIgnoreCase.Equals(downloadBaseUri.Scheme, Uri.UriSchemeHttps)))
+        {
+            throw new ArgumentException("The local object download base URI must be absolute HTTPS.", nameof(downloadBaseUri));
+        }
+
+        this.downloadBaseUri = downloadBaseUri is null
+            ? null
+            : new Uri(downloadBaseUri.GetLeftPart(UriPartial.Authority).TrimEnd('/') + "/", UriKind.Absolute);
+    }
 
     public Task<ObjectRead?> GetAsync(ObjectKey key, CancellationToken cancellationToken)
     {
@@ -57,6 +74,11 @@ public sealed class InMemoryObjectStore : IObjectStore, IObjectStoreHealth
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!objects.ContainsKey(key.Value)) throw new FileNotFoundException("The requested object does not exist.", key.Value);
+        if (downloadBaseUri is not null)
+        {
+            var escapedKey = String.Join('/', key.Value.Split('/', StringSplitOptions.None).Select(Uri.EscapeDataString));
+            return Task.FromResult(new Uri(downloadBaseUri, $"_local/objects/{escapedKey}"));
+        }
         return Task.FromResult(new Uri($"https://example.invalid/mutualgpu/download/{Uri.EscapeDataString(key.Value)}?expires={DateTimeOffset.UtcNow.Add(lifetime):O}"));
     }
 

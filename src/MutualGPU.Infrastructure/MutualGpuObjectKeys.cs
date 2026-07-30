@@ -79,6 +79,9 @@ public sealed class MutualGpuObjectKeys
     public ObjectKey ResultLogs(RequestorId requestorId, TaskId taskId, AttemptId attemptId) =>
         new($"{Root}/requestors/{requestorId.Value:N}/tasks/{taskId.Value:N}/results/{attemptId.Value:N}/logs.txt");
 
+    public ObjectPrefix ResultArtifacts(RequestorId requestorId, TaskId taskId, AttemptId attemptId) =>
+        new($"{Root}/requestors/{requestorId.Value:N}/tasks/{taskId.Value:N}/results/{attemptId.Value:N}");
+
     public ObjectKey QueueMarker(CapabilityId capabilityId, MachineSpecifications resources, DateTimeOffset createdAt, TaskId taskId) =>
         new($"{Root}/queue/{capabilityId.Value:N}/{(int)resources.ComputeTier:D2}-{resources.MemoryGiB:D5}/{createdAt.UtcTicks:D19}-{taskId.Value:N}.json");
 

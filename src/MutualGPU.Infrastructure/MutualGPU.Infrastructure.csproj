@@ -6,5 +6,9 @@
     <ProjectReference Include="../MutualGPU.Domain/MutualGPU.Domain.csproj" />
     <ProjectReference Include="../MutualGPU.Application/MutualGPU.Application.csproj" />
     <PackageReference Include="AWSSDK.S3" />
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Postgres/Migrations/*.sql" />
   </ItemGroup>
 </Project>

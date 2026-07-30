@@ -35,6 +35,21 @@ public readonly record struct EnrollmentEventId(Guid Value)
     public static EnrollmentEventId New() => new(Guid.CreateVersion7());
 }
 
+public readonly record struct ResultUploadOperationId(Guid Value)
+{
+    public static ResultUploadOperationId New() => new(Guid.CreateVersion7());
+}
+
+public readonly record struct OperationId(Guid Value)
+{
+    public static OperationId New() => new(Guid.CreateVersion7());
+}
+
+public readonly record struct OperationEventId(Guid Value)
+{
+    public static OperationEventId New() => new(Guid.CreateVersion7());
+}
+
 public readonly record struct EnrollmentVersion(int Value)
 {
     public static EnrollmentVersion Initial => new(1);

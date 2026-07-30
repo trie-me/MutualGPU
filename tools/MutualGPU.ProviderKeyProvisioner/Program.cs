@@ -1,29 +1,45 @@
 using MutualGPU.Application;
+using MutualGPU.Domain;
 using MutualGPU.Infrastructure;
 
-var count = ParseCount(args);
-var options = new AwsS3ProviderKeyRegistryOptions(
-    RequiredEnvironmentVariable("MutualGPU__ProviderKeyS3__BucketName"),
-    Environment.GetEnvironmentVariable("MutualGPU__ProviderKeyS3__Region") ?? "us-east-1");
+var options = new PostgresOptions
+{
+    ConnectionString = Environment.GetEnvironmentVariable("MutualGPU__Postgres__ConnectionString"),
+    Host = Environment.GetEnvironmentVariable("MutualGPU__Postgres__Host"),
+    Port = Int32.TryParse(Environment.GetEnvironmentVariable("MutualGPU__Postgres__Port"), out var port) ? port : 5432,
+    Database = Environment.GetEnvironmentVariable("MutualGPU__Postgres__Database") ?? "mutualgpu",
+    Username = Environment.GetEnvironmentVariable("MutualGPU__Postgres__Username") ?? "mutualgpu",
+    Password = Environment.GetEnvironmentVariable("MutualGPU__Postgres__Password"),
+    RequireTls = Boolean.TryParse(Environment.GetEnvironmentVariable("MutualGPU__Postgres__RequireTls"), out var requireTls) && requireTls,
+};
 
-var registry = new AwsS3ProviderKeyRegistry(options, new MutualGpuObjectKeys());
+await using var dataSource = PostgresDataSourceFactory.Create(options);
+await new PostgresMigrator(dataSource).MigrateAsync(CancellationToken.None);
+var registry = new PostgresProviderCredentialRegistry(dataSource, new MutualGpuObjectKeys(), TimeProvider.System);
 var issuer = new ProviderKeyIssuer(registry);
 
-await issuer.IssueAsync(count, (issued, _) =>
+if (args is ["--count", var countValue] && Int32.TryParse(countValue, out var count) && count > 0)
 {
-    Console.WriteLine($"{issued.ExecutionUnitId.Value:D} {issued.PresharedKey}");
-    return Task.CompletedTask;
-}, CancellationToken.None);
-
-static int ParseCount(string[] arguments)
-{
-    if (arguments.Length != 2 || !StringComparer.Ordinal.Equals(arguments[0], "--count") || !Int32.TryParse(arguments[1], out var count) || count <= 0)
+    await issuer.IssueAsync(count, (issued, _) =>
     {
-        throw new ArgumentException("Usage: MutualGPU.ProviderKeyProvisioner --count <positive-integer>");
-    }
-
-    return count;
+        // A raw key is returned once to the operator and is never retained by PostgreSQL.
+        Console.WriteLine($"{issued.ExecutionUnitId.Value:D} {issued.PresharedKey}");
+        return Task.CompletedTask;
+    }, CancellationToken.None);
+    return;
 }
+
+if (args is ["--bind-environment"])
+{
+    var executionUnitId = new ExecutionUnitId(Guid.Parse(RequiredEnvironmentVariable("MUTUALGPU_EXECUTION_UNIT_ID")));
+    var presharedKey = RequiredEnvironmentVariable("MUTUALGPU_PROVIDER_KEY");
+    await registry.ProvisionAsync(executionUnitId, presharedKey, CancellationToken.None);
+    Console.WriteLine($"Bound execution unit {executionUnitId.Value:D}.");
+    return;
+}
+
+throw new ArgumentException(
+    "Usage: MutualGPU.ProviderKeyProvisioner --count <positive-integer> | --bind-environment");
 
 static string RequiredEnvironmentVariable(string name) => Environment.GetEnvironmentVariable(name) switch
 {

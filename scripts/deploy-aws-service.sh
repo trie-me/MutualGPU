@@ -15,9 +15,7 @@ secret_name="${MUTUALGPU_DEPLOYMENT_SECRET_NAME:-mutualgpu/deployment}"
 provider_cors_origin_0="${MUTUALGPU_PROVIDER_CORS_ORIGIN_0:-https://huggingface.co}"
 provider_cors_origin_1="${MUTUALGPU_PROVIDER_CORS_ORIGIN_1:-https://vercel.com}"
 provider_cors_origin_2="${MUTUALGPU_PROVIDER_CORS_ORIGIN_2:-https://yosun-triposplat-webgpu-demo.static.hf.space}"
-profile_args=()
-if [[ -n "${AWS_PROFILE:-}" ]]; then profile_args=(--profile "$AWS_PROFILE"); fi
-aws_cli() { aws "${profile_args[@]}" --region "$region" "$@"; }
+aws_cli() { aws --profile ai-quinn --region "$region" "$@"; }
 
 account_id="$(aws_cli sts get-caller-identity --query Account --output text)"
 repository_uri="${account_id}.dkr.ecr.${region}.amazonaws.com/mutualgpu-api"

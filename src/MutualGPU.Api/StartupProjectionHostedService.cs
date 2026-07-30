@@ -1,4 +1,5 @@
 using MutualGPU.Application;
+using MutualGPU.Infrastructure;
 using NetCats.Core;
 using NetCats.Runtime;
 
@@ -20,27 +21,33 @@ public sealed class StartupProjectionHostedService(
     IApplicationEventSink events,
     TimeProvider timeProvider,
     MutualGpuFiberOwner fibers,
-    ILogger<StartupProjectionHostedService> logger) : IHostedService
+    ILogger<StartupProjectionHostedService> logger,
+    IPostgresHealth? postgresHealth = null) : IHostedService
 {
     private Task? startupRecovery;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var processStartedAt = timeProvider.GetUtcNow();
-        // A healthy object store is the only prerequisite for serving requests:
-        // repositories read durable state directly. Reconciliation is deliberately
-        // background work, because it can scan the provisioned-provider catalogue.
-        // Do not hold readiness (or the ALB) behind that scan.
-        _ = EstablishReadinessAsync(cancellationToken);
-        startupRecovery = RecoverAsync(processStartedAt, cancellationToken);
+        // Both PostgreSQL and the artifact store are serving prerequisites.
+        // Expired-attempt reconciliation is deliberately background work; indexed
+        // database state, not an object-store projection scan, drives recovery.
+        startupRecovery = InitializeAsync(processStartedAt, cancellationToken);
         return Task.CompletedTask;
     }
 
-    private async Task EstablishReadinessAsync(CancellationToken cancellationToken)
+    private async Task InitializeAsync(
+        DateTimeOffset processStartedAt,
+        CancellationToken cancellationToken)
     {
         try
         {
             await storeHealth.CheckHealthAsync(cancellationToken).ConfigureAwait(false);
+            if (postgresHealth is not null)
+            {
+                await postgresHealth.CheckHealthAsync(cancellationToken).ConfigureAwait(false);
+            }
+            await RecoverAsync(processStartedAt, cancellationToken).ConfigureAwait(false);
             state.MarkReady();
             events.TriggerScheduler();
         }
@@ -49,7 +56,7 @@ public sealed class StartupProjectionHostedService(
         }
         catch (Exception error) when (!cancellationToken.IsCancellationRequested)
         {
-            logger.LogError(error, "MutualGPU S3 health check failed; readiness remains unavailable.");
+            logger.LogError(error, "MutualGPU storage readiness check failed; readiness remains unavailable.");
         }
     }
 
@@ -64,8 +71,9 @@ public sealed class StartupProjectionHostedService(
         var outcome = await fiber.JoinAsync().ConfigureAwait(false);
         if (outcome is Outcome<int>.Faulted faulted)
         {
-            logger.LogError(faulted.Error, "MutualGPU S3 startup recovery failed; readiness remains unavailable.");
-            return;
+            throw new InvalidOperationException(
+                "MutualGPU PostgreSQL startup recovery failed.",
+                faulted.Error);
         }
         if (outcome is Outcome<int>.Cancelled)
         {

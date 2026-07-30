@@ -1,7 +1,8 @@
 set shell := ["zsh", "-cu"]
 
 mutualgpu-test:
-    dotnet test NetCats.Examples.MutualGPU.slnx --disable-build-servers --verbosity minimal -m:1
+    docker compose -f compose.postgres.yaml up -d --wait
+    MUTUALGPU_TEST_POSTGRES="Host=localhost;Port=${MUTUALGPU_POSTGRES_PORT:-55432};Database=mutualgpu;Username=mutualgpu;Password=mutualgpu-local" dotnet test NetCats.Examples.MutualGPU.slnx --disable-build-servers --verbosity minimal -m:1
     node --test tests/frontend/*.test.mjs
     npm test --prefix sdk/typescript
 
@@ -13,6 +14,19 @@ mutualgpu-local-smoke:
 
 mutualgpu-local-demo:
     ./scripts/run-local-composition.sh demo
+
+mutualgpu-local-harness: mutualgpu-dev-cert
+    ./scripts/run-local-composition.sh harness
+
+mutualgpu-postgres-up:
+    docker compose -f compose.postgres.yaml up -d --wait
+
+mutualgpu-postgres-down:
+    docker compose -f compose.postgres.yaml down
+
+mutualgpu-postgres-reset:
+    docker compose -f compose.postgres.yaml down --volumes
+    docker compose -f compose.postgres.yaml up -d --wait
 
 # Interactively configure and run the real FLUX.2 provider.
 flux2-worker:

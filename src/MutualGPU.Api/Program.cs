@@ -1,6 +1,7 @@
 using NetCats.AspNetCore;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
+using System.Text.Json.Serialization;
 using MutualGPU.Api;
 using MutualGPU.Application;
 using MutualGPU.Domain;
@@ -10,6 +11,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddProblemDetails();
 builder.Services.AddOpenApi();
 builder.Services.AddGrpc();
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
 // Result parts have tighter per-part validation in ProviderResultEndpoints. These limits
 // bound the parser before it buffers a provider multipart request.
 builder.Services.Configure<FormOptions>(options =>
@@ -56,11 +59,37 @@ var providerKeys = providerCredentials
     .Where(static credential => Guid.TryParse(credential.ExecutionUnitId, out _) && !String.IsNullOrWhiteSpace(credential.PresharedKey))
     .ToDictionary(static credential => new ExecutionUnitId(Guid.Parse(credential.ExecutionUnitId)), static credential => credential.PresharedKey);
 var objectKeys = new MutualGpuObjectKeys();
-var providerKeyS3 = builder.Configuration.GetSection("MutualGPU:ProviderKeyS3").Get<AwsS3ProviderKeyRegistryOptions>();
 var s3 = builder.Configuration.GetSection("MutualGPU:S3").Get<AwsS3ObjectStoreOptions>();
+var localObjectDownloadBaseUrl = builder.Configuration["MutualGPU:Development:InMemoryObjectDownloadBaseUrl"];
+Uri? localObjectDownloadBaseUri = null;
+if (!String.IsNullOrWhiteSpace(localObjectDownloadBaseUrl))
+{
+    if (!Uri.TryCreate(localObjectDownloadBaseUrl, UriKind.Absolute, out localObjectDownloadBaseUri) ||
+        !StringComparer.OrdinalIgnoreCase.Equals(localObjectDownloadBaseUri.Scheme, Uri.UriSchemeHttps) ||
+        !String.IsNullOrEmpty(localObjectDownloadBaseUri.Query) ||
+        !String.IsNullOrEmpty(localObjectDownloadBaseUri.Fragment))
+    {
+        throw new InvalidOperationException("MutualGPU:Development:InMemoryObjectDownloadBaseUrl must be an absolute HTTPS URL without query or fragment.");
+    }
+    if (!builder.Environment.IsDevelopment() || s3 is not null)
+    {
+        throw new InvalidOperationException("MutualGPU:Development:InMemoryObjectDownloadBaseUrl is available only for the Development in-memory object store.");
+    }
+}
+var postgresConfigured = builder.Configuration.GetSection("MutualGPU:Postgres").Exists();
+var postgres = postgresConfigured
+    ? builder.Configuration.GetRequiredSection("MutualGPU:Postgres").Get<PostgresOptions>()
+        ?? throw new InvalidOperationException("MutualGPU PostgreSQL configuration is invalid.")
+    : null;
+var allowLegacyTestPersistence =
+    builder.Environment.IsDevelopment() &&
+    builder.Configuration.GetValue("MutualGPU:Testing:AllowLegacyObjectStorePersistence", false);
+if (postgres is null && !allowLegacyTestPersistence)
+{
+    throw new InvalidOperationException(
+        "MutualGPU requires PostgreSQL. The legacy object-store persistence path is available only through the explicit Development test opt-in.");
+}
 builder.Services.AddSingleton(objectKeys);
-builder.Services.AddSingleton<RepositoryLockRegistry>();
-builder.Services.AddSingleton<IEnrollmentGate>(static services => services.GetRequiredService<RepositoryLockRegistry>());
 if (s3 is not null)
 {
     s3.Validate();
@@ -71,15 +100,13 @@ if (s3 is not null)
     builder.Services.AddSingleton<AwsS3BrowserObjectCorsPolicy>();
     builder.Services.AddSingleton<IBrowserObjectCorsPolicy>(static services => services.GetRequiredService<AwsS3BrowserObjectCorsPolicy>());
 }
-else if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
-{
-    var backblaze = builder.Configuration.GetRequiredSection("MutualGPU:Backblaze").Get<BackblazeS3Options>()
-        ?? throw new InvalidOperationException("MutualGPU Backblaze configuration is invalid.");
-    builder.Services.AddMutualGpuBackblazeObjectStore(backblaze);
-}
 else
 {
-    builder.Services.AddSingleton<InMemoryObjectStore>();
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException("MutualGPU production requires MutualGPU:S3 artifact-storage configuration.");
+    }
+    builder.Services.AddSingleton(new InMemoryObjectStore(localObjectDownloadBaseUri));
     builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<InMemoryObjectStore>());
     builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<InMemoryObjectStore>());
 }
@@ -89,65 +116,99 @@ if (s3 is null)
     builder.Services.AddSingleton<IBrowserObjectCorsPolicy, NoOpBrowserObjectCorsPolicy>();
 }
 
-if (providerKeyS3 is not null)
+builder.Services.AddSingleton(TimeProvider.System);
+if (postgres is not null)
 {
-    providerKeyS3.Validate();
-    builder.Services.AddSingleton(providerKeyS3);
-    builder.Services.AddSingleton<AwsS3ProviderKeyRegistry>();
-    builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services => services.GetRequiredService<AwsS3ProviderKeyRegistry>());
-    builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<AwsS3ProviderKeyRegistry>());
-    builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<AwsS3ProviderKeyRegistry>());
-}
-else if (builder.Configuration.GetSection("MutualGPU:Backblaze").Exists())
-{
-    if (builder.Environment.IsProduction())
-    {
-        throw new InvalidOperationException("MutualGPU production requires MutualGPU:ProviderKeyS3 configuration.");
-    }
+    postgres.Validate(builder.Environment.IsProduction());
+    builder.Services.AddSingleton(postgres);
+    builder.Services.AddSingleton(_ => PostgresDataSourceFactory.Create(postgres));
+    builder.Services.AddSingleton<HandleCipher>();
+    builder.Services.AddSingleton<PostgresMigrator>();
+    builder.Services.AddSingleton<IPostgresHealth, PostgresHealth>();
+    builder.Services.AddSingleton<PostgresOperationUnitOfWork>();
+    builder.Services.AddSingleton<IOperationUnitOfWork>(static services =>
+        services.GetRequiredService<PostgresOperationUnitOfWork>());
 
-    builder.Services.AddSingleton<ObjectStoreProviderKeyRegistry>();
-    builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services => services.GetRequiredService<ObjectStoreProviderKeyRegistry>());
-    builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ObjectStoreProviderKeyRegistry>());
-    builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ObjectStoreProviderKeyRegistry>());
+    builder.Services.AddSingleton<PostgresProviderCredentialRegistry>();
+    builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services =>
+        services.GetRequiredService<PostgresProviderCredentialRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services =>
+        services.GetRequiredService<PostgresProviderCredentialRegistry>());
+    builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services =>
+        services.GetRequiredService<PostgresProviderCredentialRegistry>());
+
+    builder.Services.AddSingleton<PostgresExecutionUnitStore>();
+    builder.Services.AddSingleton<IExecutionUnitRepository>(static services =>
+        services.GetRequiredService<PostgresExecutionUnitStore>());
+    builder.Services.AddSingleton<ICapabilityReader>(static services =>
+        services.GetRequiredService<PostgresExecutionUnitStore>());
+    builder.Services.AddSingleton<IEnrollmentStartupRecovery>(static services =>
+        services.GetRequiredService<PostgresExecutionUnitStore>());
+
+    builder.Services.AddSingleton<PostgresTaskStore>();
+    builder.Services.AddSingleton<ITaskRepository>(static services =>
+        services.GetRequiredService<PostgresTaskStore>());
+    builder.Services.AddSingleton<ITaskSummaryReader>(static services =>
+        services.GetRequiredService<PostgresTaskStore>());
+    builder.Services.AddSingleton<IQueuedTaskReader>(static services =>
+        services.GetRequiredService<PostgresTaskStore>());
+    builder.Services.AddSingleton<IAdminTaskReader>(static services =>
+        services.GetRequiredService<PostgresTaskStore>());
+    builder.Services.AddSingleton<IStartupRecovery>(static services =>
+        services.GetRequiredService<PostgresTaskStore>());
+
+    builder.Services.AddSingleton<PostgresResultUploadStore>();
+    builder.Services.AddSingleton<IResultUploadAuthorizations>(static services =>
+        services.GetRequiredService<PostgresResultUploadStore>());
+    builder.Services.AddSingleton<IStagedResults>(static services =>
+        services.GetRequiredService<PostgresResultUploadStore>());
+
+    builder.Services.AddSingleton<PostgresPartnerResourceRegistry>();
+    builder.Services.AddSingleton<IPartnerResourceRegistry>(static services =>
+        services.GetRequiredService<PostgresPartnerResourceRegistry>());
 }
 else
 {
+    // Characterization tests exercise the pre-cutover behavior in process.
+    // No deployed or ordinary local service can select this path implicitly.
+    builder.Services.AddSingleton<RepositoryLockRegistry>();
+    builder.Services.AddSingleton<IEnrollmentGate>(static services =>
+        services.GetRequiredService<RepositoryLockRegistry>());
     builder.Services.AddSingleton(_ => new ConfiguredPresharedKeyRegistry(providerKeys, objectKeys));
     builder.Services.AddSingleton<IExecutionUnitKeyRegistry>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
     builder.Services.AddSingleton<IExecutionUnitKeyResolver>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
     builder.Services.AddSingleton<IExecutionUnitAuthenticator>(static services => services.GetRequiredService<ConfiguredPresharedKeyRegistry>());
+    builder.Services.AddSingleton<ObjectStoreExecutionUnitRepository>();
+    builder.Services.AddSingleton<IExecutionUnitRepository>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
+    builder.Services.AddSingleton<ICapabilityReader>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
+    builder.Services.AddSingleton<IEnrollmentStartupRecovery>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
+    builder.Services.AddSingleton<ObjectStoreTaskRepository>();
+    builder.Services.AddSingleton<ITaskRepository>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
+    builder.Services.AddSingleton<ITaskSummaryReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
+    builder.Services.AddSingleton<IQueuedTaskReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
+    builder.Services.AddSingleton<IAdminTaskReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
+    builder.Services.AddSingleton<IStartupRecovery>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
+    builder.Services.AddSingleton<ResultUploadAuthorizations>();
+    builder.Services.AddSingleton<IResultUploadAuthorizations>(static services => services.GetRequiredService<ResultUploadAuthorizations>());
+    builder.Services.AddSingleton<IStagedResults>(static services => services.GetRequiredService<ResultUploadAuthorizations>());
+    builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
+    builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
 }
 builder.Services.AddSingleton<ProviderKeyIssuer>();
-builder.Services.AddSingleton<ObjectStoreExecutionUnitRepository>();
-builder.Services.AddSingleton<IExecutionUnitRepository>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
-builder.Services.AddSingleton<ICapabilityReader>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
-builder.Services.AddSingleton<IEnrollmentStartupRecovery>(static services => services.GetRequiredService<ObjectStoreExecutionUnitRepository>());
-builder.Services.AddSingleton<ObjectStoreTaskRepository>();
-builder.Services.AddSingleton<ITaskRepository>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
-builder.Services.AddSingleton<ITaskSummaryReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
-builder.Services.AddSingleton<IQueuedTaskReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
-builder.Services.AddSingleton<IAdminTaskReader>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
-builder.Services.AddSingleton<IStartupRecovery>(static services => services.GetRequiredService<ObjectStoreTaskRepository>());
 builder.Services.AddSingleton<ProviderConnectionRegistry>();
 builder.Services.AddSingleton<IProviderPresence>(static services => services.GetRequiredService<ProviderConnectionRegistry>());
 builder.Services.AddSingleton<IProviderAssignments>(static services => services.GetRequiredService<ProviderConnectionRegistry>());
 builder.Services.AddSingleton<IProviderProgress>(static services => services.GetRequiredService<ProviderConnectionRegistry>());
-builder.Services.AddSingleton<ResultUploadAuthorizations>();
-builder.Services.AddSingleton<IResultUploadAuthorizations>(static services => services.GetRequiredService<ResultUploadAuthorizations>());
-builder.Services.AddSingleton<IStagedResults>(static services => services.GetRequiredService<ResultUploadAuthorizations>());
 builder.Services.AddSingleton<TaskUpdateHub>();
 builder.Services.AddSingleton<SchedulerSignal>();
 builder.Services.AddSingleton<IApplicationEventSink>(static services => services.GetRequiredService<SchedulerSignal>());
 builder.Services.AddSingleton<MutualGpuTelemetry>();
-builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton(services => new NetworkIdentityProtector(
     builder.Configuration["MutualGPU:RequestorDiagnostics:IpHashKey"]
         ?? builder.Configuration["MutualGPU:Admin:MasterPassword"]));
 builder.Services.AddSingleton(services => new RequestorDiagnostics(
     services.GetRequiredService<NetworkIdentityProtector>(),
     services.GetRequiredService<ILogger<RequestorDiagnostics>>()));
-builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
-builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
 builder.Services.AddSingleton(services => new BrowserObjectCorsSynchronizer(
     providerCorsOrigins,
     services.GetRequiredService<IPartnerResourceRegistry>(),
@@ -168,6 +229,11 @@ builder.Services.AddSingleton<DisconnectRecoveryService>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<DisconnectRecoveryService>());
 builder.Services.AddSingleton<StartupProjectionState>();
 builder.Services.AddHostedService<StartupProjectionHostedService>();
+if (postgres is not null)
+{
+    builder.Services.AddHostedService<PostgresOutboxDispatcher>();
+    builder.Services.AddHostedService<PostgresOrphanArtifactReconciler>();
+}
 
 // Diagnostics are not part of the normal request path. Enable explicitly with
 // NetCats__FiberDiagnostics__Enabled=true; no observer or projection is created otherwise.
@@ -189,6 +255,10 @@ if (Boolean.TryParse(builder.Configuration["NetCats:FiberDiagnostics:Enabled"], 
 }
 
 var app = builder.Build();
+if (postgres is not null)
+{
+    await app.Services.GetRequiredService<PostgresMigrator>().MigrateAsync(CancellationToken.None);
+}
 var partnerResources = app.Services.GetRequiredService<IPartnerResourceRegistry>();
 await partnerResources.InitializeAsync(CancellationToken.None);
 await app.Services.GetRequiredService<BrowserObjectCorsSynchronizer>().SynchronizeAsync(CancellationToken.None);
@@ -272,6 +342,10 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapOpenApi();
 app.MapAdmin();
+if (localObjectDownloadBaseUri is not null)
+{
+    app.MapGet("/_local/objects/{**key}", LocalDevelopmentObjectEndpoints.Download);
+}
 app.MapGet("/health/live", () => TypedResults.Ok(new { status = "healthy" }));
 app.MapGet("/health/ready", (StartupProjectionState state) => state.IsReady
     ? (IResult)TypedResults.Ok(new { status = "ready" })

@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: mutualgpu
+      POSTGRES_USER: mutualgpu
+      POSTGRES_PASSWORD: mutualgpu-local
+    ports:
+      - "${MUTUALGPU_POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mutualgpu -d mutualgpu"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - mutualgpu-postgres:/var/lib/postgresql
+
+volumes:
+  mutualgpu-postgres:

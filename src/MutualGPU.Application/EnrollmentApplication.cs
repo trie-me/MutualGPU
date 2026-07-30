@@ -12,11 +12,68 @@ public abstract record EnrollResult
     public sealed record Conflict(IReadOnlyList<CapabilityContractConflict> Conflicts) : EnrollResult;
 }
 
-public sealed class EnrollmentApplication(IExecutionUnitRepository repository, IApplicationEventSink events, IEnrollmentGate gate)
+public sealed class EnrollmentApplication(
+    IExecutionUnitRepository repository,
+    IApplicationEventSink events,
+    IEnrollmentGate? gate = null,
+    IOperationUnitOfWork? operations = null)
 {
     public Latent<EnrollResult> Enroll(EnrollCommand command) => Latent<EnrollResult>.DelayAsync(async cancellationToken =>
     {
         ArgumentNullException.ThrowIfNull(command);
+        if (operations is not null)
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    return await operations.ExecuteAsync<EnrollResult>(
+                        async (context, token) =>
+                        {
+                            var canonical = command.Capabilities.Select(Canonicalize).ToArray();
+                            var existingDefinitions = await context.Capabilities.GetAllAsync(token).ConfigureAwait(false);
+                            var resolved = canonical.Select(candidate =>
+                            {
+                                var existing = existingDefinitions.FirstOrDefault(existing =>
+                                    StringComparer.Ordinal.Equals(existing.Name, candidate.Name));
+                                if (existing is null) context.Capabilities.Add(candidate);
+                                return existing ?? candidate;
+                            }).ToArray();
+                            var enrollment = new EnrollmentDefinition(command.Machine, resolved);
+                            var unit = await context.ExecutionUnits
+                                .GetAsync(command.ExecutionUnitId, token)
+                                .ConfigureAwait(false);
+                            if (unit is null)
+                            {
+                                unit = new ExecutionUnit(command.ExecutionUnitId, enrollment);
+                                context.ExecutionUnits.Add(unit);
+                            }
+                            else
+                            {
+                                unit.ReplaceEnrollment(enrollment);
+                                context.ExecutionUnits.Update(unit);
+                            }
+
+                            context.Publish(OperationEvent.Scheduler(DateTimeOffset.UtcNow));
+                            return new EnrollResult.Enrolled(unit);
+                        },
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (CapabilityNameConflictException) when (attempt == 0)
+                {
+                }
+                catch (OptimisticConcurrencyException) when (attempt == 0)
+                {
+                }
+            }
+
+            throw new InvalidOperationException("Enrollment could not be committed after reloading canonical PostgreSQL state.");
+        }
+
+        if (gate is null)
+        {
+            throw new InvalidOperationException("A legacy enrollment gate is required when PostgreSQL operations are not configured.");
+        }
         await using var held = await gate.AcquireAsync(cancellationToken).ConfigureAwait(false);
         var canonical = command.Capabilities.Select(Canonicalize).ToArray();
         var existingDefinitions = await repository.GetCapabilitiesAsync(cancellationToken).ConfigureAwait(false);

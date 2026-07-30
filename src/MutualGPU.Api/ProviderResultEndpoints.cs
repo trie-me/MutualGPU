@@ -16,13 +16,15 @@ public static class ProviderResultEndpoints
     private const int MaximumLogBytes = 1024 * 1024;
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
-    public static async Task<IResult> IssueToken(Guid taskId, Guid attemptId, HttpContext context, IExecutionUnitAuthenticator authenticator, IProviderAssignments assignments, IResultUploadAuthorizations authorizations)
+    public static async Task<IResult> IssueToken(Guid taskId, Guid attemptId, HttpContext context, IExecutionUnitAuthenticator authenticator, IProviderAssignments assignments, IResultUploadAuthorizations authorizations, CancellationToken cancellationToken)
     {
         var task = new TaskId(taskId);
         var attempt = new AttemptId(attemptId);
         if ((await AuthenticateAsync(authenticator, context).ConfigureAwait(false)) is not { } unitId || !TryHandle(context, out var handle) ||
             !assignments.TryGet(unitId, task, attempt, handle, out var request) || !IsAccepted(request, attempt)) return TypedResults.Unauthorized();
-        var token = authorizations.Issue(unitId, task, attempt, handle, DateTimeOffset.UtcNow);
+        var token = await authorizations
+            .IssueAsync(unitId, task, attempt, handle, DateTimeOffset.UtcNow, cancellationToken)
+            .ConfigureAwait(false);
         return TypedResults.Ok(token);
     }
 
@@ -33,7 +35,9 @@ public static class ProviderResultEndpoints
         var attemptKey = new AttemptId(attemptId);
         if ((await AuthenticateAsync(authenticator, context).ConfigureAwait(false)) is not { } unitId || !TryHandle(context, out var handle) || !context.Request.Headers.TryGetValue("X-MutualGPU-Upload-Token", out var token) ||
             !assignments.TryGet(unitId, taskKey, attemptKey, handle, out var task) || !IsAccepted(task, attemptKey)) return TypedResults.Unauthorized();
-        if (!authorizations.TryConsume(unitId, taskKey, attemptKey, handle, token!, DateTimeOffset.UtcNow)) return TypedResults.Conflict(new { code = "upload_token_invalid" });
+        if (!await authorizations
+            .TryConsumeAsync(unitId, taskKey, attemptKey, handle, token!, DateTimeOffset.UtcNow, cancellationToken)
+            .ConfigureAwait(false)) return TypedResults.Conflict(new { code = "upload_token_invalid" });
         if (!context.Request.HasFormContentType) return await ResultValidationFailedAsync(session, unitId, taskKey, attemptKey, handle, "multipart_required", cancellationToken).ConfigureAwait(false);
         IFormCollection form;
         try { form = await context.Request.ReadFormAsync(cancellationToken).ConfigureAwait(false); }
@@ -69,7 +73,13 @@ public static class ProviderResultEndpoints
 
         var zip = await StoreAsync(resultBytes, "application/zip", keys.ResultZip(task.RequestorId, task.Id, attemptKey), store, cancellationToken).ConfigureAwait(false);
         var receipt = Guid.CreateVersion7().ToString("N");
-        staged.Stage(unitId, task.Id, attemptKey, handle, new StagedResult(receipt, new TaskResult(zip, thumbnail, preview, logs, metadata)));
+        await staged.StageAsync(
+            unitId,
+            task.Id,
+            attemptKey,
+            handle,
+            new StagedResult(receipt, new TaskResult(zip, thumbnail, preview, logs, metadata)),
+            cancellationToken).ConfigureAwait(false);
         diagnostics.RecordIgnoredResultParts(unitId, task.Id, attemptKey, ignoredParts.Select(static part => $"{part.Name} ({part.Reason})").ToArray());
         telemetry.UploadCompleted(zip.Length + (thumbnail?.Length ?? 0) + (preview?.Length ?? 0) + (logs?.Length ?? 0) + (metadata?.Length ?? 0));
         return TypedResults.Ok(new { receipt, sha256 = digest, ignoredParts });

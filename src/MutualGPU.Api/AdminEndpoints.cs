@@ -50,12 +50,27 @@ public static class AdminEndpoints
         IAdminTaskReader tasks,
         ProviderConnectionRegistry connections,
         TimeProvider timeProvider,
+        int? limit,
+        string? cursor,
         CancellationToken cancellationToken)
     {
         NoStore(context.Response);
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
 
-        var taskRequests = await tasks.GetAllAsync(cancellationToken).ConfigureAwait(false);
+        PageResult<TaskRequest> taskPage;
+        try
+        {
+            taskPage = await tasks.GetPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken).ConfigureAwait(false);
+        }
+        catch (ArgumentException)
+        {
+            return Results.BadRequest(new { code = "pagination_cursor_invalid" });
+        }
+        if (taskPage.NextCursor is not null)
+        {
+            context.Response.Headers["X-MutualGPU-Next-Cursor"] = taskPage.NextCursor;
+        }
+        var taskRequests = taskPage.Items;
         var diagnostics = connections.Snapshot();
         var sessions = MergeSessions(diagnostics.Sessions, taskRequests);
         var transactions = taskRequests.Select(static task => new AdminTransactionDto(
@@ -197,12 +212,25 @@ public static class AdminEndpoints
         HttpContext context,
         AdminAccessService access,
         IPartnerResourceRegistry registry,
+        int? limit,
+        string? cursor,
         CancellationToken cancellationToken)
     {
         NoStore(context.Response);
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
-        var requests = await registry.ListPendingAsync(cancellationToken).ConfigureAwait(false);
-        return Results.Ok(requests.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+        try
+        {
+            var requests = await registry
+                .ListPendingPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken)
+                .ConfigureAwait(false);
+            if (requests.NextCursor is not null)
+                context.Response.Headers["X-MutualGPU-Next-Cursor"] = requests.NextCursor;
+            return Results.Ok(requests.Items.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+        }
+        catch (ArgumentException)
+        {
+            return Results.BadRequest(new { code = "pagination_cursor_invalid" });
+        }
     }
 
     private static async Task<IResult> ApprovePartnerResource(
@@ -224,12 +252,25 @@ public static class AdminEndpoints
         HttpContext context,
         AdminAccessService access,
         IPartnerResourceRegistry registry,
+        int? limit,
+        string? cursor,
         CancellationToken cancellationToken)
     {
         NoStore(context.Response);
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
-        var requests = await registry.ListApprovedAsync(cancellationToken).ConfigureAwait(false);
-        return Results.Ok(requests.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+        try
+        {
+            var requests = await registry
+                .ListApprovedPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken)
+                .ConfigureAwait(false);
+            if (requests.NextCursor is not null)
+                context.Response.Headers["X-MutualGPU-Next-Cursor"] = requests.NextCursor;
+            return Results.Ok(requests.Items.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+        }
+        catch (ArgumentException)
+        {
+            return Results.BadRequest(new { code = "pagination_cursor_invalid" });
+        }
     }
 
     private static async Task<IResult> RevokePartnerResource(

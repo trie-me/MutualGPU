@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/MutualGPU.Application/MutualGPU.Application.csproj" />
+    <ProjectReference Include="../../src/MutualGPU.Infrastructure/MutualGPU.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

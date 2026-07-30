@@ -251,7 +251,9 @@ public sealed class ProviderControlService(
         var attemptId = ParseAttemptId(request.AttemptId);
         if (!assignments.TryGet(unitId, taskId, attemptId, request.TaskHandle, out var task) ||
             task.Attempts.SingleOrDefault(attempt => attempt.Id == attemptId)?.State is not AttemptState.Accepted) return false;
-        var authorization = uploads.Issue(unitId, taskId, attemptId, request.TaskHandle, DateTimeOffset.UtcNow);
+        var authorization = await uploads
+            .IssueAsync(unitId, taskId, attemptId, request.TaskHandle, DateTimeOffset.UtcNow, cancellationToken)
+            .ConfigureAwait(false);
         await WriteAsync(response, responseGate, new ServerMessage { ResultUpload = new MutualGPU.Protocol.ResultUploadAuthorization { UploadToken = authorization.Token } }, cancellationToken).ConfigureAwait(false);
         return true;
     }
@@ -263,16 +265,6 @@ public sealed class ProviderControlService(
         ObjectKey? input = task.Parameters.ImageExtension is { Length: > 0 } extension
             ? keys.TaskInput(task.RequestorId, task.Id, task.Parameters.Image.Value, extension)
             : null;
-        // Snapshots written before image metadata was added remain readable during a
-        // rolling demo upgrade. New tasks use the deterministic key above and make no
-        // object-store listing call on this hot path.
-        if (input is null)
-        {
-            await foreach (var entry in store.ListAsync(keys.TaskInputs(task.RequestorId, task.Id), cancellationToken).ConfigureAwait(false))
-            {
-                if (entry.Key.Value.Contains(task.Parameters.Image.Value.Value.ToString("N"), StringComparison.Ordinal)) { input = entry.Key; break; }
-            }
-        }
         if (input is null) return false;
         var url = await store.CreateDownloadUrlAsync(input.Value, TimeSpan.FromMinutes(15), cancellationToken).ConfigureAwait(false);
         await WriteAsync(response, responseGate, new ServerMessage { InputDownload = new InputDownloadAuthorization { Url = url.ToString() } }, cancellationToken).ConfigureAwait(false);

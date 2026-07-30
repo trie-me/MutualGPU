@@ -291,7 +291,9 @@ public static class ProviderWebSocketEndpoints
         if (!Guid.TryParse(request.TaskId, out var task) || !Guid.TryParse(request.AttemptId, out var attempt) ||
             !assignments.TryGet(unitId, new TaskId(task), new AttemptId(attempt), request.TaskHandle, out var requestTask) ||
             requestTask.Attempts.SingleOrDefault(candidate => candidate.Id == new AttemptId(attempt))?.State is not AttemptState.Accepted) return false;
-        var authorization = uploads.Issue(unitId, new TaskId(task), new AttemptId(attempt), request.TaskHandle, DateTimeOffset.UtcNow);
+        var authorization = await uploads
+            .IssueAsync(unitId, new TaskId(task), new AttemptId(attempt), request.TaskHandle, DateTimeOffset.UtcNow, cancellationToken)
+            .ConfigureAwait(false);
         await SendAsync(socket, sendGate, new ServerMessage { ResultUpload = new MutualGPU.Protocol.ResultUploadAuthorization { UploadToken = authorization.Token } }, cancellationToken).ConfigureAwait(false);
         return true;
     }
@@ -302,15 +304,6 @@ public static class ProviderWebSocketEndpoints
         ObjectKey? input = task.Parameters.ImageExtension is { Length: > 0 } extension
             ? keys.TaskInput(task.RequestorId, task.Id, task.Parameters.Image.Value, extension)
             : null;
-        if (input is null)
-        {
-            // Compatibility fallback for snapshots written before deterministic image
-            // extension metadata was persisted.
-            await foreach (var entry in store.ListAsync(keys.TaskInputs(task.RequestorId, task.Id), cancellationToken).ConfigureAwait(false))
-            {
-                if (entry.Key.Value.Contains(task.Parameters.Image.Value.Value.ToString("N"), StringComparison.Ordinal)) { input = entry.Key; break; }
-            }
-        }
         if (input is null) return false;
         var url = await store.CreateDownloadUrlAsync(input.Value, TimeSpan.FromMinutes(15), cancellationToken).ConfigureAwait(false);
         await SendAsync(socket, sendGate, new ServerMessage { InputDownload = new InputDownloadAuthorization { Url = url.ToString() } }, cancellationToken).ConfigureAwait(false);

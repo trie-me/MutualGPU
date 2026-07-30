@@ -5,8 +5,9 @@ mode="${1:-demo}"
 case "$mode" in
   demo) npm_command="demo:node" ;;
   smoke) npm_command="smoke:node" ;;
+  harness) npm_command="" ;;
   *)
-    echo "Usage: $0 [demo|smoke]" >&2
+    echo "Usage: $0 [demo|smoke|harness]" >&2
     exit 64
     ;;
 esac
@@ -17,14 +18,27 @@ api_project="$example_dir/src/MutualGPU.Api/MutualGPU.Api.csproj"
 api_content_root="$example_dir/src/MutualGPU.Api"
 api_assembly="$api_content_root/bin/Debug/net10.0/MutualGPU.Api.dll"
 sdk_dir="$example_dir/sdk/typescript"
+postgres_compose="$example_dir/compose.postgres.yaml"
+provider_key_tool="$example_dir/tools/MutualGPU.ProviderKeyProvisioner/MutualGPU.ProviderKeyProvisioner.csproj"
 
 api_url="${MUTUALGPU_API_URL:-https://localhost:7043}"
 execution_unit_id="${MUTUALGPU_EXECUTION_UNIT_ID:-00000000-0000-0000-0000-000000000001}"
 provider_key="${MUTUALGPU_PROVIDER_KEY:-local-demo-key}"
+postgres_connection="${MUTUALGPU_POSTGRES_CONNECTION:-Host=localhost;Port=55432;Database=mutualgpu;Username=mutualgpu;Password=mutualgpu-local}"
+handle_encryption_key="${MUTUALGPU_HANDLE_ENCRYPTION_KEY:-bXV0dWFsZ3B1LWxvY2FsLWRldmVsb3BtZW50LWtleSE=}"
 
 if [[ "$api_url" != https://* ]]; then
   echo "MUTUALGPU_API_URL must use https:// (received: $api_url)" >&2
   exit 64
+fi
+
+if [[ "$mode" == "harness" ]]; then
+  export MutualGPU__Development__InMemoryObjectDownloadBaseUrl="$api_url"
+  (
+    cd "$sdk_dir"
+    npm test
+    npm run build:browser-bundle
+  )
 fi
 
 if ! dotnet dev-certs https --check >/dev/null 2>&1; then
@@ -43,7 +57,14 @@ if curl --http1.1 --silent --output /dev/null --connect-timeout 1 "$api_url/heal
   exit 1
 fi
 
-dotnet build "$api_project" --nologo --verbosity quiet
+docker compose -f "$postgres_compose" up -d --wait
+env \
+  MutualGPU__Postgres__ConnectionString="$postgres_connection" \
+  MUTUALGPU_EXECUTION_UNIT_ID="$execution_unit_id" \
+  MUTUALGPU_PROVIDER_KEY="$provider_key" \
+  dotnet run --project "$provider_key_tool" --no-launch-profile -- --bind-environment
+
+dotnet build "$api_project" --disable-build-servers --nologo --verbosity quiet
 
 # BSD/macOS mktemp only substitutes a trailing X run. Keeping the suffix after
 # the Xs creates a literal filename and makes the second demo invocation fail.
@@ -52,7 +73,10 @@ api_pid=""
 tail_pid=""
 
 cleanup() {
-  status=$?
+  local status=$?
+  if [[ $# -gt 0 ]]; then
+    status="$1"
+  fi
   trap - EXIT INT TERM
 
   if [[ -n "$tail_pid" ]] && kill -0 "$tail_pid" 2>/dev/null; then
@@ -68,7 +92,17 @@ cleanup() {
   rm -f "$api_log"
   exit "$status"
 }
-trap cleanup EXIT INT TERM
+
+handle_signal() {
+  if [[ "$mode" == "harness" ]]; then
+    cleanup 0
+  else
+    cleanup 130
+  fi
+}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
 
 (
   cd "$api_content_root"
@@ -79,6 +113,8 @@ trap cleanup EXIT INT TERM
     MutualGPU__Demo__SimulateForest=true \
     MutualGPU__Providers__0__ExecutionUnitId="$execution_unit_id" \
     MutualGPU__Providers__0__PresharedKey="$provider_key" \
+    MutualGPU__Postgres__ConnectionString="$postgres_connection" \
+    MutualGPU__Postgres__HandleEncryptionKey="$handle_encryption_key" \
     dotnet "$api_assembly"
 ) >"$api_log" 2>&1 &
 api_pid=$!
@@ -125,8 +161,22 @@ echo
 echo "MutualGPU API ready at $api_url"
 if [[ "$mode" == "demo" ]]; then
   echo "Open $api_url and submit a task after the simulated provider connects."
+elif [[ "$mode" == "harness" ]]; then
+  echo "Local browser harness: $api_url/local-harness/"
+  echo
+  echo "Open $api_url/local-harness/ and choose Run full certification."
+  echo
+  echo "This is the provider reconnect harness, hosted and targeted locally with no Vercel, CORS, or external-network dependency."
+  echo "It verifies SDK recovery, PostgreSQL-backed enrollment, WSS assignment, input download, result upload, completion, and result downloads."
+  echo
+  echo "Press Ctrl-C to stop the local API."
 fi
 echo
+
+if [[ "$mode" == "harness" ]]; then
+  wait "$api_pid"
+  exit $?
+fi
 
 cd "$sdk_dir"
 MUTUALGPU_API_URL="$api_url" \

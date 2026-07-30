@@ -170,12 +170,18 @@ public sealed class ProviderConnectionRegistry : IProviderPresence, IProviderAss
     {
         lock (gate)
         {
-            active[(executionUnitId, task.Id, attempt.Id)] = new ActiveProviderAssignment(executionUnitId, task, attempt);
+            var key = (executionUnitId, task.Id, attempt.Id);
+            var wasTracked = active.ContainsKey(key);
+            active[key] = new ActiveProviderAssignment(executionUnitId, task, attempt);
             if (connections.TryGetValue(executionUnitId, out var connection) && sessions.TryGetValue(connection.SessionId, out var session))
             {
                 assignmentSessions[attempt.Id] = session.SessionId;
-                session.RecordedStates.Add((attempt.Id, AttemptState.Assigned));
-                AddEvent(session, "assignment_created", "Task assigned to provider.", attempt.AssignedAt, task.Id, attempt.Id);
+                if (!wasTracked)
+                {
+                    session.RecordedStates.Add((attempt.Id, AttemptState.Assigned));
+                    AddEvent(session, "assignment_created", "Task assigned to provider.", attempt.AssignedAt, task.Id, attempt.Id);
+                }
+                CaptureAttemptState(executionUnitId, task.Id, attempt.Id);
             }
         }
     }

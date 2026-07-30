@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using MutualGPU.Domain;
 
 namespace MutualGPU.Application;
@@ -9,6 +10,12 @@ public interface IExecutionUnitRepository
     Task<IReadOnlyList<CapabilityDefinition>> GetCapabilitiesAsync(CancellationToken cancellationToken);
 
     Task SaveAsync(ExecutionUnit executionUnit, CancellationToken cancellationToken);
+
+    void Add(ExecutionUnit executionUnit) =>
+        throw new NotSupportedException("Writes are available only inside an operation unit of work.");
+
+    void Update(ExecutionUnit executionUnit) =>
+        throw new NotSupportedException("Writes are available only inside an operation unit of work.");
 }
 
 /// <summary>Serializes the read/resolve/save enrollment transaction inside the
@@ -26,6 +33,34 @@ public interface ITaskRepository
     Task<IReadOnlyList<TaskRequest>> GetByRequestorAsync(RequestorId requestorId, CancellationToken cancellationToken);
 
     Task SaveAsync(TaskRequest task, CancellationToken cancellationToken);
+
+    Task<TaskRequest?> GetAsync(TaskId id, CancellationToken cancellationToken) =>
+        Task.FromResult<TaskRequest?>(null);
+
+    Task<TaskRequest?> GetActiveByHandleAsync(
+        ExecutionUnitId executionUnitId,
+        string handle,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<TaskRequest?>(null);
+
+    Task<IReadOnlyList<TaskRequest>> GetByAttemptStateBeforeAsync(
+        AttemptState state,
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<TaskRequest>>([]);
+
+    async Task<TaskRequest?> GetByIdempotencyKeyAsync(
+        RequestorId requestorId,
+        string idempotencyKey,
+        CancellationToken cancellationToken) =>
+        (await GetByRequestorAsync(requestorId, cancellationToken).ConfigureAwait(false))
+            .FirstOrDefault(task => StringComparer.Ordinal.Equals(task.Parameters.IdempotencyKey, idempotencyKey));
+
+    void Add(TaskRequest task) =>
+        throw new NotSupportedException("Writes are available only inside an operation unit of work.");
+
+    void Update(TaskRequest task) =>
+        throw new NotSupportedException("Writes are available only inside an operation unit of work.");
 }
 
 public sealed record TaskSummary(
@@ -38,9 +73,25 @@ public sealed record TaskSummary(
     string? FailureStep = null,
     string? FailureReason = null);
 
+public sealed record PageRequest(int Limit = 50, string? Cursor = null)
+{
+    public int BoundedLimit => Math.Clamp(Limit, 1, 200);
+}
+
+public sealed record PageResult<T>(IReadOnlyList<T> Items, string? NextCursor);
+
 public interface ITaskSummaryReader
 {
     Task<IReadOnlyList<TaskSummary>> ListSummariesAsync(RequestorId requestorId, CancellationToken cancellationToken);
+
+    async Task<PageResult<TaskSummary>> ListSummariesPageAsync(
+        RequestorId requestorId,
+        PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var items = await ListSummariesAsync(requestorId, cancellationToken).ConfigureAwait(false);
+        return new PageResult<TaskSummary>(items.Take(page.BoundedLimit).ToArray(), null);
+    }
 }
 
 public interface IQueuedTaskReader
@@ -53,6 +104,12 @@ public interface IQueuedTaskReader
 public interface IAdminTaskReader
 {
     Task<IReadOnlyList<TaskRequest>> GetAllAsync(CancellationToken cancellationToken);
+
+    async Task<PageResult<TaskRequest>> GetPageAsync(PageRequest page, CancellationToken cancellationToken)
+    {
+        var items = await GetAllAsync(cancellationToken).ConfigureAwait(false);
+        return new PageResult<TaskRequest>(items.Take(page.BoundedLimit).ToArray(), null);
+    }
 }
 
 /// <summary>
@@ -68,6 +125,22 @@ public interface IPartnerResourceRegistry
     Task<IReadOnlyList<PartnerResourceRequest>> ListPendingAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<PartnerResourceRequest>> ListApprovedAsync(CancellationToken cancellationToken);
+
+    async Task<PageResult<PartnerResourceRequest>> ListPendingPageAsync(
+        PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var items = await ListPendingAsync(cancellationToken).ConfigureAwait(false);
+        return new PageResult<PartnerResourceRequest>(items.Take(page.BoundedLimit).ToArray(), null);
+    }
+
+    async Task<PageResult<PartnerResourceRequest>> ListApprovedPageAsync(
+        PageRequest page,
+        CancellationToken cancellationToken)
+    {
+        var items = await ListApprovedAsync(cancellationToken).ConfigureAwait(false);
+        return new PageResult<PartnerResourceRequest>(items.Take(page.BoundedLimit).ToArray(), null);
+    }
 
     Task<PartnerResourceRequest?> ApproveAsync(Guid id, CancellationToken cancellationToken);
 
@@ -92,7 +165,8 @@ public sealed record PartnerResourceRequest(
     string Origin,
     DateTimeOffset SubmittedAt,
     DateTimeOffset? ProcessedAt = null,
-    DateTimeOffset? RevokedAt = null);
+    DateTimeOffset? RevokedAt = null,
+    long Version = 1);
 
 public interface IStartupRecovery
 {
@@ -182,6 +256,25 @@ public interface IResultUploadAuthorizations
 {
     ResultUploadAuthorization Issue(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, DateTimeOffset now);
     bool TryConsume(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string token, DateTimeOffset now);
+
+    ValueTask<ResultUploadAuthorization> IssueAsync(
+        ExecutionUnitId unitId,
+        TaskId taskId,
+        AttemptId attemptId,
+        string handle,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(Issue(unitId, taskId, attemptId, handle, now));
+
+    ValueTask<bool> TryConsumeAsync(
+        ExecutionUnitId unitId,
+        TaskId taskId,
+        AttemptId attemptId,
+        string handle,
+        string token,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(TryConsume(unitId, taskId, attemptId, handle, token, now));
 }
 
 public sealed record StagedResult(string Receipt, TaskResult Result);
@@ -192,12 +285,55 @@ public interface IStagedResults
     bool TryTake(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt, out StagedResult result);
     void MarkCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt);
     bool IsCompleted(ExecutionUnitId unitId, TaskId taskId, AttemptId attemptId, string handle, string receipt);
+
+    ValueTask StageAsync(
+        ExecutionUnitId unitId,
+        TaskId taskId,
+        AttemptId attemptId,
+        string handle,
+        StagedResult result,
+        CancellationToken cancellationToken)
+    {
+        Stage(unitId, taskId, attemptId, handle, result);
+        return ValueTask.CompletedTask;
+    }
+
+    ValueTask<StagedResult?> GetAsync(
+        ExecutionUnitId unitId,
+        TaskId taskId,
+        AttemptId attemptId,
+        string handle,
+        string receipt,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(TryTake(unitId, taskId, attemptId, handle, receipt, out var result) ? result : null);
+
+    ValueTask MarkCompletedAsync(
+        ExecutionUnitId unitId,
+        TaskId taskId,
+        AttemptId attemptId,
+        string handle,
+        string receipt,
+        CancellationToken cancellationToken)
+    {
+        MarkCompleted(unitId, taskId, attemptId, handle, receipt);
+        return ValueTask.CompletedTask;
+    }
+
+    ValueTask<bool> IsCompletedAsync(
+        ExecutionUnitId unitId,
+        TaskId taskId,
+        AttemptId attemptId,
+        string handle,
+        string receipt,
+        CancellationToken cancellationToken) =>
+        ValueTask.FromResult(IsCompleted(unitId, taskId, attemptId, handle, receipt));
 }
 
 public sealed record TaskProgress(ulong SequenceNumber, DateTimeOffset ObservedAt, string? Phase = null, double? Percent = null, string? Message = null);
 
 /// <summary>Safe, closed outcomes for an advisory provider progress update.
 /// Drops are deliberately distinct from authorization and lifecycle rejections.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
 public enum ProviderProgressDisposition
 {
     Accepted,

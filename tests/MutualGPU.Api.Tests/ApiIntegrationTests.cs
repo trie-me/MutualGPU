@@ -29,6 +29,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         this.factory = factory.WithWebHostBuilder(builder =>
         {
             builder.UseEnvironment("Development");
+            builder.UseSetting("MutualGPU:Testing:AllowLegacyObjectStorePersistence", "true");
             builder.UseSetting("NetCats:FiberDiagnostics:Enabled", "true");
             builder.UseSetting("MutualGPU:Providers:0:ExecutionUnitId", ProviderId.Value.ToString("D"));
             builder.UseSetting("MutualGPU:Providers:0:PresharedKey", ProviderKey);

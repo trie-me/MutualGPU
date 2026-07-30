@@ -1,8 +1,16 @@
 # Transactional data Postgres migration plan
 
-Status: proposed  
+Status: implemented in source; production import/cutover requires an operator write pause
 Date: 2026-07-28  
 Scope: MutualGPU operational and transactional state
+
+Implementation note: the schema, operation unit of work, PostgreSQL
+repositories/readers, durable upload state, native database enums, outbox,
+artifact reconciliation, AWS infrastructure, resumable importer, verification
+report, pagination, and production-only cutover registrations described here
+are checked in. The repository PostgreSQL 18 composition publishes host port
+`55432`. No production import, write pause, or legacy-object deletion is
+performed merely by applying this implementation.
 
 ## Executive decisions
 

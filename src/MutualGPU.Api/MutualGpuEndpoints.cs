@@ -1,6 +1,7 @@
 using MutualGPU.Application;
 using MutualGPU.Contracts;
 using MutualGPU.Domain;
+using Microsoft.AspNetCore.Mvc;
 using System.Security.Cryptography;
 using System.Text.Json;
 
@@ -193,11 +194,25 @@ public static class MutualGpuEndpoints
         return false;
     }
 
-    public static async Task<IResult> ListTasks(HttpContext context, ITaskSummaryReader summaries, IProviderProgress progress, CancellationToken cancellationToken)
+    public static async Task<IResult> ListTasks(HttpContext context, ITaskSummaryReader summaries, IProviderProgress progress, int? limit, string? cursor, CancellationToken cancellationToken)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
-        var tasks = await summaries.ListSummariesAsync(requestorId, cancellationToken).ConfigureAwait(false);
-        return TypedResults.Ok(tasks.Select(task => ToDto(task, progress.Get(task.TaskId))).ToArray());
+        PageResult<TaskSummary> tasks;
+        try
+        {
+            tasks = await summaries
+                .ListSummariesPageAsync(requestorId, new PageRequest(limit ?? 50, cursor), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (ArgumentException)
+        {
+            return Problem("pagination_cursor_invalid", StatusCodes.Status400BadRequest);
+        }
+        if (tasks.NextCursor is not null)
+        {
+            context.Response.Headers["X-MutualGPU-Next-Cursor"] = tasks.NextCursor;
+        }
+        return TypedResults.Ok(tasks.Items.Select(task => ToDto(task, progress.Get(task.TaskId))).ToArray());
     }
 
     public static async Task StreamTaskEvents(HttpContext context, TaskUpdateHub updates, CancellationToken cancellationToken)
@@ -243,9 +258,61 @@ public static class MutualGpuEndpoints
         return TypedResults.Accepted($"/api/tasks/{taskId:D}");
     }
 
-    public static async Task<IResult> CancelTask(HttpContext context, Guid taskId, ITaskRepository tasks, IProviderAssignments assignments, IProviderProgress progress, IApplicationEventSink events, RequestorDiagnostics diagnostics, CancellationToken cancellationToken)
+    public static async Task<IResult> CancelTask(HttpContext context, Guid taskId, ITaskRepository tasks, IProviderAssignments assignments, IProviderProgress progress, IApplicationEventSink events, RequestorDiagnostics diagnostics, CancellationToken cancellationToken, [FromServices] IOperationUnitOfWork? operations = null)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
+        if (operations is not null)
+        {
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    var cancelled = await operations.ExecuteAsync(
+                        async (operation, token) =>
+                        {
+                            var current = await operation.Tasks
+                                .GetAsync(requestorId, new TaskId(taskId), token)
+                                .ConfigureAwait(false);
+                            if (current is null) return (Found: false, Task: (TaskRequest?)null, Active: (TaskAttempt?)null);
+                            var activeAttempt = current.Cancel();
+                            operation.Tasks.Update(current);
+                            operation.Publish(OperationEvent.TaskChanged(requestorId, DateTimeOffset.UtcNow));
+                            operation.Publish(OperationEvent.Scheduler(DateTimeOffset.UtcNow));
+                            return (Found: true, Task: current, Active: activeAttempt);
+                        },
+                        cancellationToken).ConfigureAwait(false);
+                    if (!cancelled.Found) return TypedResults.NotFound();
+                    if (cancelled.Active is not null)
+                    {
+                        assignments.TryCancel(
+                            cancelled.Active.ExecutionUnitId,
+                            cancelled.Task!.Id,
+                            cancelled.Active.Id,
+                            cancelled.Active.Handle);
+                        assignments.Remove(cancelled.Active.ExecutionUnitId, cancelled.Task.Id, cancelled.Active.Id);
+                        progress.Remove(cancelled.Task.Id, cancelled.Active.Id);
+                    }
+                    diagnostics.TaskOperation(context, requestorId, cancelled.Task!.Id, "cancelled");
+                    return TypedResults.NoContent();
+                }
+                catch (OptimisticConcurrencyException) when (attempt == 0)
+                {
+                    // Provider acceptance and requestor cancellation can race on the
+                    // same versioned task row. Reload once so cancellation observes
+                    // the accepted assignment and can issue its cancellation frame.
+                }
+                catch (DomainRuleViolation)
+                {
+                    return Problem("task_not_cancellable", StatusCodes.Status409Conflict);
+                }
+            }
+
+            var current = await tasks.GetAsync(requestorId, new TaskId(taskId), cancellationToken).ConfigureAwait(false);
+            return current is null
+                ? TypedResults.NotFound()
+                : Problem("task_not_cancellable", StatusCodes.Status409Conflict);
+        }
+
         var task = await tasks.GetAsync(requestorId, new TaskId(taskId), cancellationToken).ConfigureAwait(false);
         if (task is null) return TypedResults.NotFound();
 

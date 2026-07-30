@@ -2,12 +2,12 @@
 
 MutualGPU is a distributed WebGPU work exchange built on [NetCats](https://github.com/trie-me/NetCats).
 
-It includes the pure domain, canonical capability catalogue, cold enrollment/submission workflows, an AWS S3 data store and dedicated provider-key registry, gRPC and binary-WebSocket provider connection adapters, a process-local triggered scheduler, static requestor APIs, optional result artifacts, the additional capacity matrix, and Node.js/Chrome provider SDK packages.
+It includes the pure domain, canonical capability catalogue, PostgreSQL-backed transactional workflows and provider credentials, an outbox-driven multi-replica scheduler, AWS S3 input/output artifacts, gRPC and binary-WebSocket provider connection adapters, paginated requestor/admin APIs, the additional capacity matrix, and Node.js/Chrome provider SDK packages.
 
 The hosted partner test harness and browser SDK validator is maintained in
 [MutualGPU.Providers.TestHarness](https://github.com/trie-me/MutualGPU.Providers.TestHarness).
 
-The Development in-memory object store is for local demonstration and in-process tests only. The current AWS deployment stores task data and artifacts in `mutualgpu-data` and provider-key bindings in `mutualgpu-preshared-keys`; the Backblaze adapter remains an optional configuration. The provider SDK supports Node.js and Chrome through a shared lifecycle and canonical Protobuf codec, with a native Node HTTPS/HTTP2 gRPC transport and Chrome WSS transport. Its fixture suite verifies the wire format against the .NET-generated contracts. Consumer setup and API behaviour are documented in the [provider SDK documentation](docs/sdk/README.md), and the target exchange behaviour is defined in [the specification](docs/08-mutualgpu-example-implementation.md).
+PostgreSQL is the system of record for tasks, attempts, enrollments, capabilities, provider-key digests, partner reviews, artifact descriptors, upload receipts, audit events, and the operation outbox. AWS S3 stores only input and output bytes at deterministic object keys. The Development in-memory adapters exist for in-process tests; the local composition uses the repository’s `postgres:18` Docker service. The provider SDK supports Node.js and Chrome through a shared lifecycle and canonical Protobuf codec, with a native Node HTTPS/HTTP2 gRPC transport and Chrome WSS transport.
 
 ## How Codex accelerated MutualGPU
 
@@ -23,10 +23,10 @@ The following are intentionally deferred from the demo critical path and tracked
 
 - the Swift SDK release and its cross-language conformance run;
 - automated browser UI/fiber-overlay smoke, stress, and visual checks (a separate task owns this);
-- the complete production telemetry instrument set and live Backblaze contract suite;
+- the complete production telemetry instrument set;
 - streaming multipart uploads beyond the documented 64 MiB request / 50 MiB ZIP demo bounds;
 - full JSON-Schema evaluation for optional result metadata. The MVP requires a declared metadata output and a bounded JSON object, but does not interpret a schema string beyond retaining it in the immutable capability contract;
-- multi-replica scheduler leadership, distributed repository locks, retention policy, and provider sandboxing.
+- long-term artifact-retention policy and provider sandboxing.
 
 These deferrals do not permit cleartext provider traffic or unauthenticated result publication.
 
@@ -42,14 +42,32 @@ npm install --prefix sdk/typescript
 
 If the repository was cloned without `--recurse-submodules`, run `git submodule update --init --recursive` before restoring or building. The .NET projects target .NET 10.
 
-The Development host uses an in-memory object store when `MutualGPU:Backblaze` is absent. Provider credentials are deliberately configuration-only:
+Start the local PostgreSQL 18 service:
+
+```text
+just mutualgpu-postgres-up
+```
+
+The API requires PostgreSQL configuration and a base64-encoded 256-bit task-handle encryption key. The following development-only values match `compose.postgres.yaml`:
+
+```text
+export MutualGPU__Postgres__ConnectionString='Host=localhost;Port=55432;Database=mutualgpu;Username=mutualgpu;Password=mutualgpu-local'
+export MutualGPU__Postgres__HandleEncryptionKey='bXV0dWFsZ3B1LWxvY2FsLWRldmVsb3BtZW50LWtleSE='
+```
+
+Provider bindings are stored as SHA-256 digests in PostgreSQL. To bind the fixed local demo provider without putting its key on a command line:
+
+```text
+export MUTUALGPU_EXECUTION_UNIT_ID='00000000-0000-0000-0000-000000000001'
+export MUTUALGPU_PROVIDER_KEY='local-demo-key'
+dotnet run --project tools/MutualGPU.ProviderKeyProvisioner -- --bind-environment
+```
+
+Chrome provider API origins remain an explicit allow-list:
 
 ```json
 {
   "MutualGPU": {
-    "Providers": [
-      { "ExecutionUnitId": "00000000-0000-0000-0000-000000000001", "PresharedKey": "local-demo-key" }
-    ],
     "ProviderCorsOrigins": ["https://provider.example"],
     "TrustForwardedProto": false
   }
@@ -71,15 +89,25 @@ dotnet dev-certs https --trust
 dotnet run --project src/MutualGPU.Api --urls https://localhost:7043
 ```
 
-The repository-level `justfile` wraps the same local composition. Both commands configure the local provider identity, wait for API readiness, use the in-memory store, and stop the API when the Node process exits or you press `Ctrl-C`:
+The repository-level `justfile` wraps the same local composition. Both commands start/wait for PostgreSQL, bind the local provider identity, wait for API readiness, and stop the API when the Node process exits or you press `Ctrl-C`:
 
 ```text
 just mutualgpu-dev-cert     # one-time HTTPS development certificate setup
 just mutualgpu-local-smoke  # API + real SDK Enroll/Connect handshake, then exit
 just mutualgpu-local-demo   # API + long-running simulated provider for requestor UI testing
+just mutualgpu-local-harness # offline browser integration harness, kept alive until Ctrl-C
 ```
 
 `mutualgpu-local-demo` prints the local HTTPS URL. Open it once the simulated provider reports connected, choose **mutualgpu-local-demo**, and submit a task. The provider performs the real enrollment, gRPC session, result upload, and completion flow, but produces a synthetic ZIP rather than GPU work. Run the full API, frontend, and SDK test set with `just mutualgpu-test`.
+
+`mutualgpu-local-harness` serves the local mirror of the provider reconnect
+harness at `https://localhost:7043/local-harness/`. It keeps the remote harness's
+certification controls and scenarios—SDK contract checks, accepted-task recovery,
+success, terminal failure, requestor cancellation, and diagnostics—while locking
+the page to the local HTTPS origin. The command runs the SDK contract suite before
+hosting the page; the browser run uses PostgreSQL for durable state and local HTTPS
+artifact endpoints for every input and result download. No Vercel, S3, CORS setup,
+or external network access is involved.
 
 ### Administrator operations console
 
@@ -111,6 +139,13 @@ The API integration tests run the host in-process, including static-file deliver
 
 ```text
 dotnet test NetCats.Examples.MutualGPU.slnx
+```
+
+The PostgreSQL concurrency and rollback tests are opt-in so normal unit tests do not require Docker:
+
+```text
+MUTUALGPU_TEST_POSTGRES='Host=localhost;Port=55432;Database=mutualgpu;Username=mutualgpu;Password=mutualgpu-local' \
+  dotnet test tests/MutualGPU.Application.Tests --filter PostgresOperationUnitOfWorkTests
 ```
 
 The no-build-step frontend matrix and fiber-overlay lifecycle are tested directly with Node's built-in test runner:

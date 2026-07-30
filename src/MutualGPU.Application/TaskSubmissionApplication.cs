@@ -61,7 +61,8 @@ public sealed class TaskSubmissionApplication(
     ICapabilityReader capabilities,
     IProviderPresence presence,
     ITaskRepository tasks,
-    IApplicationEventSink events)
+    IApplicationEventSink events,
+    IOperationUnitOfWork? operations = null)
 {
     public Latent<SubmitTaskResult> Submit(SubmitTaskCommand command) => Latent<SubmitTaskResult>.DelayAsync(async cancellationToken =>
     {
@@ -84,8 +85,17 @@ public sealed class TaskSubmissionApplication(
 
         if (!String.IsNullOrWhiteSpace(command.IdempotencyKey))
         {
-            var existing = (await tasks.GetByRequestorAsync(command.RequestorId, cancellationToken).ConfigureAwait(false))
-                .FirstOrDefault(task => StringComparer.Ordinal.Equals(task.Parameters.IdempotencyKey, command.IdempotencyKey));
+            var existing = operations is not null
+                ? await tasks
+                    .GetByIdempotencyKeyAsync(
+                        command.RequestorId,
+                        command.IdempotencyKey,
+                        cancellationToken)
+                    .ConfigureAwait(false)
+                : (await tasks.GetByRequestorAsync(command.RequestorId, cancellationToken).ConfigureAwait(false))
+                    .FirstOrDefault(task => StringComparer.Ordinal.Equals(
+                        task.Parameters.IdempotencyKey,
+                        command.IdempotencyKey));
             if (existing is not null)
             {
                 return SameSubmission(existing, command)
@@ -110,8 +120,46 @@ public sealed class TaskSubmissionApplication(
                 command.ImageLength,
                 command.ImageSha256,
                 command.RequestorIpHash,
-                command.RequestorIpClassAB),
+            command.RequestorIpClassAB),
             command.SubmittedAt);
+        if (operations is not null)
+        {
+            try
+            {
+                return await operations.ExecuteAsync<SubmitTaskResult>(
+                    async (context, token) =>
+                    {
+                        if (!String.IsNullOrWhiteSpace(command.IdempotencyKey))
+                        {
+                            var replay = await context.Tasks
+                                .GetByIdempotencyKeyAsync(command.RequestorId, command.IdempotencyKey, token)
+                                .ConfigureAwait(false);
+                            if (replay is not null)
+                            {
+                                return SameSubmission(replay, command)
+                                    ? new SubmitTaskResult.Created(replay, CreatedNow: false)
+                                    : new SubmitTaskResult.Conflict("idempotency_key_reused");
+                            }
+                        }
+
+                        context.Tasks.Add(task);
+                        context.Publish(OperationEvent.TaskChanged(command.RequestorId, command.SubmittedAt));
+                        context.Publish(OperationEvent.Scheduler(command.SubmittedAt));
+                        return new SubmitTaskResult.Created(task);
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (TaskIdempotencyConflictException) when (!String.IsNullOrWhiteSpace(command.IdempotencyKey))
+            {
+                var replay = await tasks
+                    .GetByIdempotencyKeyAsync(command.RequestorId, command.IdempotencyKey, cancellationToken)
+                    .ConfigureAwait(false);
+                return replay is not null && SameSubmission(replay, command)
+                    ? new SubmitTaskResult.Created(replay, CreatedNow: false)
+                    : new SubmitTaskResult.Conflict("idempotency_key_reused");
+            }
+        }
+
         await tasks.SaveAsync(task, cancellationToken).ConfigureAwait(false);
         events.TaskChanged(command.RequestorId);
         events.TriggerScheduler();

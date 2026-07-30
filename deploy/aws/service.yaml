@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MutualGPU demo public ALB and single-task ECS service.
+Description: MutualGPU public ALB and multi-replica ECS service backed by private PostgreSQL.
 
 Parameters:
   FoundationStackName:
@@ -24,10 +24,6 @@ Parameters:
     Type: String
     Default: mutualgpu-data
     Description: Dedicated S3 bucket for MutualGPU task state, inputs, and result artifacts.
-  ProviderKeyBucketName:
-    Type: String
-    Default: mutualgpu-preshared-keys
-    Description: Dedicated S3 bucket for provider-key bindings only.
   ProviderCorsOrigin0:
     Type: String
     Default: 'https://huggingface.co'
@@ -254,14 +250,27 @@ Resources:
               Value: 10.42.0.0/20
             - Name: MutualGPU__TrustedProxyNetworks__1
               Value: 10.42.16.0/20
-            - Name: MutualGPU__ProviderKeyS3__BucketName
-              Value: !Ref ProviderKeyBucketName
-            - Name: MutualGPU__ProviderKeyS3__Region
-              Value: us-east-1
             - Name: MutualGPU__S3__BucketName
               Value: !Ref ApplicationDataBucketName
             - Name: MutualGPU__S3__Region
               Value: us-east-1
+            - Name: MutualGPU__Postgres__Host
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointAddress'
+            - Name: MutualGPU__Postgres__Port
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointPort'
+            - Name: MutualGPU__Postgres__Database
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseName'
+            - Name: MutualGPU__Postgres__Username
+              Value: mutualgpu
+            - Name: MutualGPU__Postgres__RequireTls
+              Value: 'true'
+            - Name: MutualGPU__Postgres__MinimumPoolSize
+              Value: '1'
+            - Name: MutualGPU__Postgres__MaximumPoolSize
+              Value: '30'
             - !If
               - HasProviderCorsOrigin0
               - Name: MutualGPU__ProviderCorsOrigins__0
@@ -280,6 +289,14 @@ Resources:
           Secrets:
             - Name: MutualGPU__Admin__MasterPassword
               ValueFrom: !Sub '${DeploymentSecretArn}:adminMasterPassword::'
+            - Name: MutualGPU__Postgres__Password
+              ValueFrom:
+                Fn::Join:
+                  - ''
+                  - - Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseSecretArn'
+                    - ':password::'
+            - Name: MutualGPU__Postgres__HandleEncryptionKey
+              ValueFrom: !Sub '${DeploymentSecretArn}:taskHandleEncryptionKey::'
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -298,13 +315,13 @@ Resources:
       Cluster:
         Fn::ImportValue: !Sub '${FoundationStackName}-EcsClusterArn'
       TaskDefinition: !Ref TaskDefinition
-      DesiredCount: 1
+      DesiredCount: 2
       LaunchType: FARGATE
       PlatformVersion: LATEST
       HealthCheckGracePeriodSeconds: 120
       DeploymentConfiguration:
-        MinimumHealthyPercent: 0
-        MaximumPercent: 100
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
