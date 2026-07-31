@@ -25,6 +25,11 @@ var providerCorsOrigins = (builder.Configuration.GetSection("MutualGPU:ProviderC
     .Select(origin => PartnerResourceOrigin.Normalize(origin)
         ?? throw new InvalidOperationException("MutualGPU:ProviderCorsOrigins entries must be explicit HTTPS origins without wildcards or paths."))
     .ToArray();
+var s3ImageOriginConfiguration = builder.Configuration["MutualGPU:Csp:S3ImageOrigin"];
+var s3ImageOrigin = String.IsNullOrWhiteSpace(s3ImageOriginConfiguration)
+    ? null
+    : PartnerResourceOrigin.Normalize(s3ImageOriginConfiguration)
+        ?? throw new InvalidOperationException("MutualGPU:Csp:S3ImageOrigin must be an explicit HTTPS origin without wildcards or paths.");
 var trustForwardedProto = builder.Configuration.GetValue("MutualGPU:TrustForwardedProto", false);
 var trustedProxyNetworks = builder.Configuration.GetSection("MutualGPU:TrustedProxyNetworks").Get<string[]>() ?? [];
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -60,6 +65,10 @@ var providerKeys = providerCredentials
     .ToDictionary(static credential => new ExecutionUnitId(Guid.Parse(credential.ExecutionUnitId)), static credential => credential.PresharedKey);
 var objectKeys = new MutualGpuObjectKeys();
 var s3 = builder.Configuration.GetSection("MutualGPU:S3").Get<AwsS3ObjectStoreOptions>();
+if (s3 is not null && s3ImageOrigin is null)
+{
+    throw new InvalidOperationException("MutualGPU:Csp:S3ImageOrigin is required when MutualGPU:S3 is configured.");
+}
 var localObjectDownloadBaseUrl = builder.Configuration["MutualGPU:Development:InMemoryObjectDownloadBaseUrl"];
 Uri? localObjectDownloadBaseUri = null;
 if (!String.IsNullOrWhiteSpace(localObjectDownloadBaseUrl))
@@ -287,7 +296,8 @@ app.UseCors(policy => policy
     .AllowCredentials());
 app.Use(async (context, next) =>
 {
-    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' https://api.producthunt.com https://mutualgpu-data.s3.us-east-1.amazonaws.com; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+    context.Response.Headers["Content-Security-Policy"] =
+        $"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' https://api.producthunt.com{(s3ImageOrigin is null ? String.Empty : $" {s3ImageOrigin}")}; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";

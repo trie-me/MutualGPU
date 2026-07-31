@@ -1,0 +1,816 @@
+{
+  "schemaVersion": "1.0",
+  "repositoryPath": "docs/mutualgpu-source-resource-manifest.json",
+  "generatedAt": "2026-07-30T23:14:55Z",
+  "purpose": "Read-only inventory of MutualGPU-owned resources in the ai-quinn source account for migration teardown planning.",
+  "migrationContext": {
+    "tlsStatus": "handled",
+    "note": "Per user confirmation, TLS migration issues are already handled. The source ACM certificate remains listed only as a source teardown resource."
+  },
+  "source": {
+    "profile": "ai-quinn",
+    "accountId": "351791602105",
+    "principalArn": "arn:aws:iam::351791602105:user/ai_quinn",
+    "primaryRegion": "us-east-1",
+    "identityVerified": true
+  },
+  "scope": {
+    "enabledRegionsSearched": [
+      "ap-south-1",
+      "eu-south-2",
+      "ca-central-1",
+      "eu-central-1",
+      "us-west-1",
+      "us-west-2",
+      "eu-north-1",
+      "eu-west-3",
+      "eu-west-2",
+      "eu-west-1",
+      "ap-northeast-3",
+      "ap-northeast-2",
+      "ap-northeast-1",
+      "sa-east-1",
+      "ap-southeast-1",
+      "ap-southeast-2",
+      "us-east-1",
+      "us-east-2"
+    ],
+    "ownershipCriteria": [
+      "Current membership in a live MutualGPU CloudFormation stack.",
+      "Direct live reference from the current CloudFormation, ECS, IAM, or storage configuration.",
+      "MutualGPU name or Project=MutualGPU tag corroborated by current service state.",
+      "Creation by ai_quinn during the 2026-07-20 through 2026-07-30 project creation window, corroborated by CloudTrail metadata."
+    ],
+    "evidenceSources": [
+      "STS caller identity",
+      "CloudFormation stack and stack-resource inventories in every enabled region",
+      "Resource Groups Tagging API Project=MutualGPU and name/tag searches in every enabled region",
+      "Direct ECS, ECR, EC2, ELBv2, WAFv2, IAM, S3, Secrets Manager, ACM, CloudWatch Logs, CloudWatch, SSM, KMS, Route 53, and Application Auto Scaling reads",
+      "CloudTrail event metadata for the complete project creation window",
+      "Public .com registry RDAP metadata for mutualgpu.com"
+    ],
+    "limitations": [
+      {
+        "service": "RDS",
+        "status": "direct-list-denied",
+        "assessment": "No current MutualGPU RDS resource was found in live CloudFormation, ECS configuration, tags, Secrets Manager, or CloudTrail creation events. The active task definition has S3 configuration keys and no MutualGPU__Postgres__ keys. Confidence that the live source has no MutualGPU RDS resource is high, but direct account-wide RDS listing was denied."
+      },
+      {
+        "service": "Route53Domains",
+        "status": "direct-list-denied",
+        "assessment": "The source account has no Route 53 hosted zone matching MutualGPU and no Route 53 mutation in the project creation window. Public registry RDAP identifies Spaceship, Inc. as registrar and Spaceship nameservers, so mutualgpu.com is not an AWS Route 53 Domains teardown target."
+      },
+      {
+        "service": "ResourceExplorer2",
+        "status": "denied",
+        "assessment": "Account-wide Resource Explorer cross-check was unavailable."
+      },
+      {
+        "service": "AWSConfig",
+        "status": "denied",
+        "assessment": "AWS Config recorder or aggregator cross-check was unavailable."
+      }
+    ]
+  },
+  "summary": {
+    "cloudFormationStacks": 2,
+    "cloudFormationMemberResources": 26,
+    "standaloneOwnedResources": 4,
+    "ecsTaskDefinitionRevisions": 53,
+    "ecsTaskDefinitionsOutsideCurrentStack": 52,
+    "serviceManagedOrImplicitChildrenObserved": 21,
+    "ecrImageArtifacts": 155,
+    "cloudWatchLogStreams": 75,
+    "s3CurrentObjects": 11089,
+    "s3ObjectVersions": 15002,
+    "s3DeleteMarkers": 4435,
+    "regionsWithOwnedResources": [
+      "us-east-1"
+    ]
+  },
+  "orchestrationResources": [
+    {
+      "service": "cloudformation",
+      "type": "AWS::CloudFormation::Stack",
+      "name": "mutualgpu-foundation",
+      "arn": "arn:aws:cloudformation:us-east-1:351791602105:stack/mutualgpu-foundation/0eb89e80-84c5-11f1-b2b6-0affca082aef",
+      "region": "us-east-1",
+      "status": "UPDATE_COMPLETE",
+      "createdAt": "2026-07-21T05:28:51.633Z",
+      "lastUpdatedAt": "2026-07-25T03:25:29.575Z",
+      "terminationProtection": false,
+      "deleteOrder": 2,
+      "preconditions": [
+        "Delete mutualgpu-service first so all imported exports are released.",
+        "Remove the out-of-band AmazonS3FullAccess attachment from both stack-owned IAM roles.",
+        "Empty the non-empty mutualgpu-api ECR repository because the live template does not set EmptyOnDelete."
+      ]
+    },
+    {
+      "service": "cloudformation",
+      "type": "AWS::CloudFormation::Stack",
+      "name": "mutualgpu-service",
+      "arn": "arn:aws:cloudformation:us-east-1:351791602105:stack/mutualgpu-service/7aa6a0f0-84df-11f1-bd32-12db278e9a53",
+      "region": "us-east-1",
+      "status": "UPDATE_COMPLETE",
+      "createdAt": "2026-07-21T08:37:59.643Z",
+      "lastUpdatedAt": "2026-07-27T01:16:56.529Z",
+      "terminationProtection": false,
+      "deleteOrder": 1,
+      "preconditions": [
+        "Complete and verify cutover, data migration, rollback retention, and source write freeze.",
+        "Copy and verify the deployed ECR image digest before removing the service."
+      ]
+    }
+  ],
+  "cloudFormationMemberResources": [
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "AlbSecurityGroup",
+      "type": "AWS::EC2::SecurityGroup",
+      "physicalId": "sg-0c736c2cc9b48fd0a",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "ApiLogGroup",
+      "type": "AWS::Logs::LogGroup",
+      "physicalId": "/ecs/mutualgpu-api",
+      "arn": "arn:aws:logs:us-east-1:351791602105:log-group:/ecs/mutualgpu-api",
+      "region": "us-east-1",
+      "details": {
+        "retentionDays": 14,
+        "storedBytes": 145327831,
+        "logStreamCount": 75
+      }
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "ApiSecurityGroup",
+      "type": "AWS::EC2::SecurityGroup",
+      "physicalId": "sg-08a92d481e9a267fe",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "Cluster",
+      "type": "AWS::ECS::Cluster",
+      "physicalId": "mutualgpu-demo",
+      "arn": "arn:aws:ecs:us-east-1:351791602105:cluster/mutualgpu-demo",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "DefaultPublicRoute",
+      "type": "AWS::EC2::Route",
+      "physicalId": "rtb-0e3bb1ccc115d0b38|0.0.0.0/0",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "ImageRepository",
+      "type": "AWS::ECR::Repository",
+      "physicalId": "mutualgpu-api",
+      "arn": "arn:aws:ecr:us-east-1:351791602105:repository/mutualgpu-api",
+      "region": "us-east-1",
+      "dataBearing": true,
+      "details": {
+        "imageCount": 155,
+        "taggedImageCount": 49,
+        "untaggedImageCount": 106,
+        "totalImageSizeBytes": 9607136746,
+        "activeImageDigest": "sha256:519b123233e0940c5f4b579e119ec8de3d4e168b6385af19b1c15d9f9d97ac31",
+        "activeImageTag": "cors-all-origins-20260727-r2",
+        "emptyOnDeleteConfigured": false,
+        "lifecyclePolicyPresent": false,
+        "repositoryPolicyPresent": false
+      }
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "InternetGateway",
+      "type": "AWS::EC2::InternetGateway",
+      "physicalId": "igw-0d488d309f1cf60e9",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "InternetGatewayAttachment",
+      "type": "AWS::EC2::VPCGatewayAttachment",
+      "physicalId": "IGW|vpc-0ddcf2b09606ad7b2",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "MutualGpuVpc",
+      "type": "AWS::EC2::VPC",
+      "physicalId": "vpc-0ddcf2b09606ad7b2",
+      "arn": "arn:aws:ec2:us-east-1:351791602105:vpc/vpc-0ddcf2b09606ad7b2",
+      "region": "us-east-1",
+      "details": {
+        "cidr": "10.42.0.0/16",
+        "isDefault": false
+      }
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "PublicRouteTable",
+      "type": "AWS::EC2::RouteTable",
+      "physicalId": "rtb-0e3bb1ccc115d0b38",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "PublicSubnetA",
+      "type": "AWS::EC2::Subnet",
+      "physicalId": "subnet-0d7a2a5a8c96696a6",
+      "region": "us-east-1",
+      "details": {
+        "availabilityZone": "us-east-1a",
+        "availabilityZoneId": "use1-az4",
+        "cidr": "10.42.0.0/20"
+      }
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "PublicSubnetARouteTableAssociation",
+      "type": "AWS::EC2::SubnetRouteTableAssociation",
+      "physicalId": "rtbassoc-0e8cd536b70b8368f",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "PublicSubnetB",
+      "type": "AWS::EC2::Subnet",
+      "physicalId": "subnet-054038fe2173403b5",
+      "region": "us-east-1",
+      "details": {
+        "availabilityZone": "us-east-1b",
+        "availabilityZoneId": "use1-az6",
+        "cidr": "10.42.16.0/20"
+      }
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "PublicSubnetBRouteTableAssociation",
+      "type": "AWS::EC2::SubnetRouteTableAssociation",
+      "physicalId": "rtbassoc-033f6d0ed6be963e8",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "TaskExecutionRole",
+      "type": "AWS::IAM::Role",
+      "physicalId": "mutualgpu-ecs-task-execution",
+      "arn": "arn:aws:iam::351791602105:role/mutualgpu-ecs-task-execution",
+      "region": "global",
+      "details": {
+        "inlinePolicies": [
+          "ReadMutualGpuDeploymentSecrets"
+        ],
+        "templateManagedPolicyAttachments": [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        ],
+        "outOfBandManagedPolicyAttachments": [
+          "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+        ]
+      }
+    },
+    {
+      "stack": "mutualgpu-foundation",
+      "logicalId": "TaskRole",
+      "type": "AWS::IAM::Role",
+      "physicalId": "mutualgpu-ecs-task",
+      "arn": "arn:aws:iam::351791602105:role/mutualgpu-ecs-task",
+      "region": "global",
+      "details": {
+        "inlinePolicies": [
+          "AccessMutualGpuStorage"
+        ],
+        "templateManagedPolicyAttachments": [],
+        "outOfBandManagedPolicyAttachments": [
+          "arn:aws:iam::aws:policy/AmazonS3FullAccess"
+        ]
+      }
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "GrpcRule",
+      "type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener-rule/app/mutualgpu-demo/d7e74d63d20706c6/bdc92c4395b039ea/150fe947e63dc3c4",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "GrpcTargetGroup",
+      "type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:targetgroup/mutualgpu-grpc/7016ea4bc8c06d7a",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "HttpListener",
+      "type": "AWS::ElasticLoadBalancingV2::Listener",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener/app/mutualgpu-demo/d7e74d63d20706c6/b68da4d597fc2a04",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "HttpsListener",
+      "type": "AWS::ElasticLoadBalancingV2::Listener",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener/app/mutualgpu-demo/d7e74d63d20706c6/bdc92c4395b039ea",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "LoadBalancer",
+      "type": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6",
+      "region": "us-east-1",
+      "details": {
+        "name": "mutualgpu-demo",
+        "dnsName": "mutualgpu-demo-1634136555.us-east-1.elb.amazonaws.com",
+        "scheme": "internet-facing",
+        "type": "application"
+      }
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "ProviderEnrollmentWebAcl",
+      "type": "AWS::WAFv2::WebACL",
+      "physicalId": "mutualgpu-provider-enrollment|418abe21-8d22-4319-9049-7d5ce1d2fdcb|REGIONAL",
+      "arn": "arn:aws:wafv2:us-east-1:351791602105:regional/webacl/mutualgpu-provider-enrollment/418abe21-8d22-4319-9049-7d5ce1d2fdcb",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "ProviderEnrollmentWebAclAssociation",
+      "type": "AWS::WAFv2::WebACLAssociation",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6|arn:aws:wafv2:us-east-1:351791602105:regional/webacl/mutualgpu-provider-enrollment/418abe21-8d22-4319-9049-7d5ce1d2fdcb",
+      "region": "us-east-1"
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "Service",
+      "type": "AWS::ECS::Service",
+      "physicalId": "arn:aws:ecs:us-east-1:351791602105:service/mutualgpu-demo/mutualgpu-api",
+      "region": "us-east-1",
+      "details": {
+        "desiredCount": 1,
+        "runningCount": 1,
+        "launchType": "FARGATE"
+      }
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "TaskDefinition",
+      "type": "AWS::ECS::TaskDefinition",
+      "physicalId": "arn:aws:ecs:us-east-1:351791602105:task-definition/mutualgpu-api:53",
+      "region": "us-east-1",
+      "details": {
+        "status": "ACTIVE",
+        "cpu": "1024",
+        "memory": "2048",
+        "activeImageDigest": "sha256:519b123233e0940c5f4b579e119ec8de3d4e168b6385af19b1c15d9f9d97ac31",
+        "storageModel": "legacy-structured-s3",
+        "hasPostgresConfigurationKeys": false
+      }
+    },
+    {
+      "stack": "mutualgpu-service",
+      "logicalId": "WebTargetGroup",
+      "type": "AWS::ElasticLoadBalancingV2::TargetGroup",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:targetgroup/mutualgpu-web/1b7272bd6ab1bf84",
+      "region": "us-east-1"
+    }
+  ],
+  "standaloneOwnedResources": [
+    {
+      "service": "s3",
+      "type": "AWS::S3::Bucket",
+      "name": "mutualgpu-data",
+      "arn": "arn:aws:s3:::mutualgpu-data",
+      "region": "us-east-1",
+      "cloudFormationManaged": false,
+      "dataBearing": true,
+      "ownershipConfidence": "confirmed",
+      "ownershipEvidence": [
+        "Current mutualgpu-service and mutualgpu-foundation ApplicationDataBucketName parameter.",
+        "Current mutualgpu-ecs-task inline policy.",
+        "Project=MutualGPU and Purpose=ApplicationData tags.",
+        "CloudTrail CreateBucket by ai_quinn at 2026-07-22T17:24:59Z."
+      ],
+      "details": {
+        "versioningStatus": "Enabled",
+        "objectOwnership": "BucketOwnerEnforced",
+        "encryption": "AES256",
+        "publicAccessBlocked": true,
+        "corsConfigured": true,
+        "currentObjectCount": 10418,
+        "currentBytes": 563462911,
+        "versionCount": 14331,
+        "versionBytes": 570339282,
+        "deleteMarkerCount": 4435,
+        "incompleteMultipartUploadCount": 0
+      },
+      "deletePrecondition": "Copy and verify all required application state, approve source retention expiry, then purge every object version and delete marker before deleting the bucket."
+    },
+    {
+      "service": "s3",
+      "type": "AWS::S3::Bucket",
+      "name": "mutualgpu-preshared-keys",
+      "arn": "arn:aws:s3:::mutualgpu-preshared-keys",
+      "region": "us-east-1",
+      "cloudFormationManaged": false,
+      "dataBearing": true,
+      "ownershipConfidence": "confirmed",
+      "ownershipEvidence": [
+        "Current mutualgpu-service and mutualgpu-foundation ProviderKeyBucketName parameter.",
+        "Current mutualgpu-ecs-task inline policy.",
+        "Current ECS task definition has MutualGPU__ProviderKeyS3__ configuration keys.",
+        "CloudTrail CreateBucket by ai_quinn; bucket created at 2026-07-21T10:59:26Z."
+      ],
+      "details": {
+        "tagged": false,
+        "versioningStatus": "Disabled",
+        "objectOwnership": "BucketOwnerEnforced",
+        "encryption": "AES256",
+        "publicAccessBlocked": true,
+        "corsConfigured": false,
+        "currentObjectCount": 671,
+        "currentBytes": 933439,
+        "versionCount": 671,
+        "nullVersionCount": 671,
+        "deleteMarkerCount": 0,
+        "incompleteMultipartUploadCount": 0
+      },
+      "deletePrecondition": "Export and verify provider-key digest/binding state, approve source retention expiry, then delete all objects before deleting the bucket."
+    },
+    {
+      "service": "secretsmanager",
+      "type": "AWS::SecretsManager::Secret",
+      "name": "mutualgpu/deployment",
+      "arn": "arn:aws:secretsmanager:us-east-1:351791602105:secret:mutualgpu/deployment-Adk6Uk",
+      "region": "us-east-1",
+      "cloudFormationManaged": false,
+      "sensitive": true,
+      "ownershipConfidence": "confirmed",
+      "ownershipEvidence": [
+        "Current mutualgpu-service DeploymentSecretArn parameter.",
+        "Current mutualgpu-ecs-task-execution inline policy.",
+        "CloudTrail CreateSecret by ai_quinn at 2026-07-21T07:01:27Z."
+      ],
+      "details": {
+        "kmsKey": "aws/secretsmanager default",
+        "rotationEnabled": false,
+        "versionCount": 2,
+        "replicated": false
+      },
+      "deletePrecondition": "Remove all ECS consumers and complete any approved secret preservation or rotation plan. Use a normal recovery window unless force deletion is separately authorized."
+    },
+    {
+      "service": "acm",
+      "type": "AWS::CertificateManager::Certificate",
+      "name": "mutualgpu.com",
+      "arn": "arn:aws:acm:us-east-1:351791602105:certificate/77805af9-10d0-4583-88f7-006a5f80dbf1",
+      "region": "us-east-1",
+      "cloudFormationManaged": false,
+      "ownershipConfidence": "confirmed",
+      "ownershipEvidence": [
+        "Current mutualgpu-service CertificateArn parameter.",
+        "Current HTTPS listener attachment.",
+        "CloudTrail RequestCertificate by ai_quinn at 2026-07-21T07:05:43Z."
+      ],
+      "details": {
+        "status": "ISSUED",
+        "type": "AMAZON_ISSUED",
+        "validation": "DNS",
+        "renewalEligibility": "ELIGIBLE",
+        "notAfter": "2027-02-03T23:59:59Z",
+        "inUseBy": [
+          "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6"
+        ]
+      },
+      "deletePrecondition": "Delete the service stack and verify that the ALB no longer uses the certificate."
+    }
+  ],
+  "residualCollections": [
+    {
+      "service": "ecs",
+      "type": "AWS::ECS::TaskDefinition",
+      "family": "mutualgpu-api",
+      "region": "us-east-1",
+      "totalRevisionCount": 53,
+      "currentStackRevision": 53,
+      "outsideCurrentStackCount": 52,
+      "activeRevisionCount": 19,
+      "activeRevisions": [
+        2,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+        13,
+        21,
+        25,
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        53
+      ],
+      "inactiveRevisionCount": 34,
+      "inactiveRevisions": [
+        1,
+        3,
+        4,
+        8,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        22,
+        23,
+        24,
+        26,
+        27,
+        28,
+        29,
+        30,
+        31,
+        32,
+        33,
+        34,
+        35,
+        36,
+        37,
+        38,
+        39,
+        40,
+        41,
+        49,
+        50,
+        51,
+        52
+      ],
+      "arnPattern": "arn:aws:ecs:us-east-1:351791602105:task-definition/mutualgpu-api:<revision>",
+      "deletePrecondition": "Delete the ECS service, deregister every remaining ACTIVE revision, then permanently delete all INACTIVE revisions."
+    }
+  ],
+  "serviceManagedOrImplicitChildren": [
+    {
+      "type": "AWS::EC2::VPCCidrBlockAssociation",
+      "physicalId": "vpc-cidr-assoc-0c7f1b8d790d0c081",
+      "parent": "vpc-0ddcf2b09606ad7b2",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroup",
+      "physicalId": "sg-0baf3ea54b066df8f",
+      "name": "default",
+      "parent": "vpc-0ddcf2b09606ad7b2",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::RouteTable",
+      "physicalId": "rtb-073e469d7279a02b0",
+      "parent": "vpc-0ddcf2b09606ad7b2",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::RouteTableAssociation",
+      "physicalId": "rtbassoc-03c9b0b4d6e356315",
+      "parent": "rtb-073e469d7279a02b0",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::NetworkAcl",
+      "physicalId": "acl-021ccbad4d27c44f8",
+      "parent": "vpc-0ddcf2b09606ad7b2",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::SubnetNetworkAclAssociation",
+      "physicalId": "aclassoc-0c2c0360199423c23",
+      "parent": "acl-021ccbad4d27c44f8",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::SubnetNetworkAclAssociation",
+      "physicalId": "aclassoc-0e3cd46809c75e3c9",
+      "parent": "acl-021ccbad4d27c44f8",
+      "cleanup": "automatic-with-vpc"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupRule",
+      "physicalId": "sgr-0191f236c64cc9fb2",
+      "parent": "sg-08a92d481e9a267fe",
+      "cleanup": "automatic-with-security-group"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupRule",
+      "physicalId": "sgr-0d09d94291fc9c3e9",
+      "parent": "sg-08a92d481e9a267fe",
+      "cleanup": "automatic-with-security-group"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupRule",
+      "physicalId": "sgr-04b63d63eae3bf082",
+      "parent": "sg-0c736c2cc9b48fd0a",
+      "cleanup": "automatic-with-security-group"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupRule",
+      "physicalId": "sgr-0248bcd408e910313",
+      "parent": "sg-0c736c2cc9b48fd0a",
+      "cleanup": "automatic-with-security-group"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupRule",
+      "physicalId": "sgr-0c7ee53c3140f418d",
+      "parent": "sg-0c736c2cc9b48fd0a",
+      "cleanup": "automatic-with-security-group"
+    },
+    {
+      "type": "AWS::EC2::SecurityGroupRule",
+      "physicalId": "sgr-0fc3fff800b8d634a",
+      "parent": "sg-08a92d481e9a267fe",
+      "cleanup": "automatic-with-security-group"
+    },
+    {
+      "type": "AWS::ECS::Task",
+      "physicalId": "arn:aws:ecs:us-east-1:351791602105:task/mutualgpu-demo/f64faeef7f3a4a37819190004efd51e8",
+      "parent": "arn:aws:ecs:us-east-1:351791602105:service/mutualgpu-demo/mutualgpu-api",
+      "dynamic": true,
+      "cleanup": "automatic-with-service"
+    },
+    {
+      "type": "AWS::EC2::NetworkInterface",
+      "physicalId": "eni-06468a92eb5728f47",
+      "parent": "arn:aws:ecs:us-east-1:351791602105:task/mutualgpu-demo/f64faeef7f3a4a37819190004efd51e8",
+      "dynamic": true,
+      "cleanup": "automatic-with-ecs-task"
+    },
+    {
+      "type": "AWS::EC2::NetworkInterface",
+      "physicalId": "eni-06df60a22e56563d8",
+      "parent": "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6",
+      "dynamic": true,
+      "cleanup": "automatic-with-load-balancer"
+    },
+    {
+      "type": "AWS::EC2::NetworkInterface",
+      "physicalId": "eni-0d2f2d7506fe52063",
+      "parent": "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6",
+      "dynamic": true,
+      "cleanup": "automatic-with-load-balancer"
+    },
+    {
+      "type": "AWS::EC2::ElasticIp",
+      "physicalId": "eipalloc-03f72ebaf9dac3458",
+      "parent": "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6",
+      "serviceManagedBy": "alb",
+      "dynamic": true,
+      "cleanup": "automatic-with-load-balancer"
+    },
+    {
+      "type": "AWS::EC2::ElasticIp",
+      "physicalId": "eipalloc-0c1667e6bda047dfd",
+      "parent": "arn:aws:elasticloadbalancing:us-east-1:351791602105:loadbalancer/app/mutualgpu-demo/d7e74d63d20706c6",
+      "serviceManagedBy": "alb",
+      "dynamic": true,
+      "cleanup": "automatic-with-load-balancer"
+    },
+    {
+      "type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener-rule/app/mutualgpu-demo/d7e74d63d20706c6/b68da4d597fc2a04/96d44aac4e2fe3ad",
+      "parent": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener/app/mutualgpu-demo/d7e74d63d20706c6/b68da4d597fc2a04",
+      "cleanup": "automatic-with-listener"
+    },
+    {
+      "type": "AWS::ElasticLoadBalancingV2::ListenerRule",
+      "physicalId": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener-rule/app/mutualgpu-demo/d7e74d63d20706c6/bdc92c4395b039ea/f7f02483030155e8",
+      "parent": "arn:aws:elasticloadbalancing:us-east-1:351791602105:listener/app/mutualgpu-demo/d7e74d63d20706c6/bdc92c4395b039ea",
+      "cleanup": "automatic-with-listener"
+    }
+  ],
+  "excludedSharedDependencies": [
+    {
+      "type": "AWS::KMS::Key",
+      "arn": "arn:aws:kms:us-east-1:351791602105:key/74407914-00b3-46d0-ac02-945bf4eb7c3c",
+      "alias": "alias/aws/acm",
+      "reason": "AWS-managed, created before MutualGPU, and not project-owned. Never delete as part of MutualGPU teardown."
+    },
+    {
+      "type": "AWS::IAM::ServiceLinkedRole",
+      "arn": "arn:aws:iam::351791602105:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS",
+      "reason": "Account-scoped shared service role created before MutualGPU. Never classify as a project teardown target without a separate account-wide dependency review."
+    },
+    {
+      "type": "AWS::IAM::ServiceLinkedRole",
+      "arn": "arn:aws:iam::351791602105:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing",
+      "reason": "Account-scoped shared service role created before MutualGPU. Never classify as a project teardown target without a separate account-wide dependency review."
+    },
+    {
+      "type": "AWS::Route53::HostedZone",
+      "reason": "No MutualGPU hosted zone exists in the source account."
+    },
+    {
+      "type": "DomainRegistration",
+      "name": "mutualgpu.com",
+      "registrar": "Spaceship, Inc.",
+      "nameservers": [
+        "launch1.spaceship.net",
+        "launch2.spaceship.net"
+      ],
+      "reason": "External DNS/registrar dependency, not an AWS source-account teardown resource."
+    }
+  ],
+  "negativeFindings": {
+    "liveMutualGpuResourcesNotFound": [
+      "RDS DB instance, cluster, or snapshot",
+      "DynamoDB table",
+      "Lambda function",
+      "API Gateway API",
+      "EventBridge rule",
+      "SQS queue",
+      "SNS topic",
+      "CloudFront distribution",
+      "Route 53 hosted zone",
+      "SSM parameter",
+      "Customer-managed KMS key or alias",
+      "CloudWatch alarm",
+      "CloudWatch dashboard",
+      "ECS Application Auto Scaling target or policy",
+      "NAT gateway",
+      "VPC endpoint",
+      "VPC peering connection",
+      "EC2 instance",
+      "EBS volume",
+      "EC2 launch template",
+      "Elastic File System",
+      "ElastiCache cluster",
+      "OpenSearch domain"
+    ],
+    "cloudTrailCreationSourcesObservedForMutualGpu": [
+      "acm.amazonaws.com",
+      "cloudformation.amazonaws.com",
+      "ec2.amazonaws.com",
+      "ecr.amazonaws.com",
+      "ecs.amazonaws.com",
+      "elasticloadbalancing.amazonaws.com",
+      "iam.amazonaws.com",
+      "logs.amazonaws.com",
+      "s3.amazonaws.com",
+      "secretsmanager.amazonaws.com",
+      "wafv2.amazonaws.com"
+    ]
+  },
+  "teardownSequence": [
+    {
+      "order": 0,
+      "action": "Do not tear down until target cutover, source freeze, data/image export verification, rollback-retention approval, and the remaining non-TLS migration gates are complete."
+    },
+    {
+      "order": 1,
+      "action": "Delete the mutualgpu-service CloudFormation stack. This stops the ECS service and removes the ALB, listeners/rules, target groups, WAF association/WebACL, and current task-definition stack resource."
+    },
+    {
+      "order": 2,
+      "action": "Wait for ECS and ALB service-managed tasks, ENIs, Elastic IPs, and default listener rules to disappear."
+    },
+    {
+      "order": 3,
+      "action": "Deregister every remaining ACTIVE mutualgpu-api task-definition revision and permanently delete all INACTIVE revisions."
+    },
+    {
+      "order": 4,
+      "action": "Detach the out-of-band AmazonS3FullAccess policy from both stack-owned IAM roles and empty all 155 images from mutualgpu-api."
+    },
+    {
+      "order": 5,
+      "action": "Delete the mutualgpu-foundation CloudFormation stack. Verify that the ECR repository, ECS cluster, log group, IAM roles, VPC, subnets, route table, internet gateway, and security groups are gone."
+    },
+    {
+      "order": 6,
+      "action": "Delete the now-unused ACM certificate and schedule deletion of mutualgpu/deployment with the reviewed recovery window."
+    },
+    {
+      "order": 7,
+      "action": "After the approved retention period, purge every version/delete marker from mutualgpu-data and every object from mutualgpu-preshared-keys, then delete both buckets."
+    },
+    {
+      "order": 8,
+      "action": "Repeat the regional/global name, tag, dependency, and cost checks. Confirm that only excluded shared dependencies and external DNS remain."
+    }
+  ]
+}

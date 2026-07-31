@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MutualGPU public ALB and multi-replica ECS service backed by private PostgreSQL.
+Description: MutualGPU public ALB and one ARM64 EC2-backed ECS service using clean PostgreSQL and S3 state.
 
 Parameters:
   FoundationStackName:
@@ -7,10 +7,12 @@ Parameters:
     Default: mutualgpu-foundation
   ImageUri:
     Type: String
-    Description: Immutable ECR image URI, preferably pinned by digest.
+    AllowedPattern: '^428590861908\.dkr\.ecr\.us-east-1\.amazonaws\.com/mutualgpu-api@sha256:[a-f0-9]{64}$'
+    ConstraintDescription: Must be the reviewed Quinn-MutualCompute ECR image URI pinned by immutable digest.
   CertificateArn:
     Type: String
-    Description: Issued ACM certificate ARN for the public HTTPS listener.
+    AllowedPattern: '^arn:aws:acm:us-east-1:428590861908:certificate/[0-9a-f-]+$'
+    ConstraintDescription: Must be an ACM certificate ARN in target account 428590861908 and us-east-1.
   PublicApiHost:
     Type: String
     Default: mutualgpu.com
@@ -19,11 +21,15 @@ Parameters:
     Description: Public DNS hostname covered by CertificateArn and routed to this load balancer.
   DeploymentSecretArn:
     Type: String
-    Description: ARN of the Secrets Manager JSON secret named mutualgpu/deployment.
-  ApplicationDataBucketName:
-    Type: String
-    Default: mutualgpu-data
-    Description: Dedicated S3 bucket for MutualGPU task state, inputs, and result artifacts.
+    AllowedPattern: '^arn:aws:secretsmanager:us-east-1:428590861908:secret:mutualgpu/deployment-[A-Za-z0-9]+$'
+    ConstraintDescription: Must be the target mutualgpu/deployment secret ARN without exposing its value.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    AllowedValues:
+      - 0
+      - 1
+    Description: Use 1 for the approved steady state; 0 is available for a reviewed stop-before-start operation.
   ProviderCorsOrigin0:
     Type: String
     Default: 'https://huggingface.co'
@@ -66,8 +72,22 @@ Resources:
         - Key: client_keep_alive.seconds
           Value: '604800'
       Tags:
+        - Key: Name
+          Value: mutualgpu-demo
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   ProviderEnrollmentWebAcl:
     Type: AWS::WAFv2::WebACL
@@ -122,8 +142,22 @@ Resources:
         MetricName: mutualgpuProviderEnrollment
         SampledRequestsEnabled: false
       Tags:
+        - Key: Name
+          Value: mutualgpu-provider-enrollment
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   ProviderEnrollmentWebAclAssociation:
     Type: AWS::WAFv2::WebACLAssociation
@@ -135,14 +169,14 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: mutualgpu-web
-      TargetType: ip
+      TargetType: instance
       Protocol: HTTP
       Port: 8080
       VpcId:
         Fn::ImportValue: !Sub '${FoundationStackName}-VpcId'
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
-      HealthCheckPath: /health/live
+      HealthCheckPath: /health/ready
       HealthCheckIntervalSeconds: 15
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
@@ -152,12 +186,29 @@ Resources:
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: '15'
+      Tags:
+        - Key: Name
+          Value: mutualgpu-web
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   GrpcTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: mutualgpu-grpc
-      TargetType: ip
+      TargetType: instance
       Protocol: HTTP
       ProtocolVersion: GRPC
       Port: 8081
@@ -178,6 +229,23 @@ Resources:
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: '15'
+      Tags:
+        - Key: Name
+          Value: mutualgpu-grpc
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   HttpListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -191,6 +259,23 @@ Resources:
             Protocol: HTTPS
             Port: '443'
             StatusCode: HTTP_301
+      Tags:
+        - Key: Name
+          Value: mutualgpu-http
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   HttpsListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -203,6 +288,23 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref WebTargetGroup
+      Tags:
+        - Key: Name
+          Value: mutualgpu-https
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   GrpcRule:
     Type: AWS::ElasticLoadBalancingV2::ListenerRule
@@ -217,15 +319,34 @@ Resources:
       Actions:
         - Type: forward
           TargetGroupArn: !Ref GrpcTargetGroup
+      Tags:
+        - Key: Name
+          Value: mutualgpu-grpc
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: mutualgpu-api
-      RequiresCompatibilities: [FARGATE]
-      NetworkMode: awsvpc
-      Cpu: '1024'
-      Memory: '2048'
+      RequiresCompatibilities:
+        - EC2
+      NetworkMode: bridge
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
       ExecutionRoleArn:
         Fn::ImportValue: !Sub '${FoundationStackName}-TaskExecutionRoleArn'
       TaskRoleArn:
@@ -234,11 +355,16 @@ Resources:
         - Name: api
           Image: !Ref ImageUri
           Essential: true
+          Cpu: 256
+          MemoryReservation: 256
+          Memory: 384
           PortMappings:
             - ContainerPort: 8080
+              HostPort: 8080
               Protocol: tcp
               AppProtocol: http
             - ContainerPort: 8081
+              HostPort: 8081
               Protocol: tcp
               AppProtocol: grpc
           Environment:
@@ -247,13 +373,22 @@ Resources:
             - Name: MutualGPU__TrustForwardedProto
               Value: 'true'
             - Name: MutualGPU__TrustedProxyNetworks__0
-              Value: 10.42.0.0/20
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetACidr'
             - Name: MutualGPU__TrustedProxyNetworks__1
-              Value: 10.42.16.0/20
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBCidr'
             - Name: MutualGPU__S3__BucketName
-              Value: !Ref ApplicationDataBucketName
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
             - Name: MutualGPU__S3__Region
               Value: us-east-1
+            - Name: MutualGPU__Csp__S3ImageOrigin
+              Value:
+                Fn::Sub:
+                  - 'https://${BucketName}.s3.${AWS::Region}.amazonaws.com'
+                  - BucketName:
+                      Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
             - Name: MutualGPU__Postgres__Host
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointAddress'
@@ -270,7 +405,7 @@ Resources:
             - Name: MutualGPU__Postgres__MinimumPoolSize
               Value: '1'
             - Name: MutualGPU__Postgres__MaximumPoolSize
-              Value: '30'
+              Value: '5'
             - !If
               - HasProviderCorsOrigin0
               - Name: MutualGPU__ProviderCorsOrigins__0
@@ -303,6 +438,23 @@ Resources:
               awslogs-group: /ecs/mutualgpu-api
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: api
+      Tags:
+        - Key: Name
+          Value: mutualgpu-api
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
 
   Service:
     Type: AWS::ECS::Service
@@ -315,24 +467,21 @@ Resources:
       Cluster:
         Fn::ImportValue: !Sub '${FoundationStackName}-EcsClusterArn'
       TaskDefinition: !Ref TaskDefinition
-      DesiredCount: 2
-      LaunchType: FARGATE
-      PlatformVersion: LATEST
+      DesiredCount: !Ref DesiredCount
+      CapacityProviderStrategy:
+        - CapacityProvider:
+            Fn::ImportValue: !Sub '${FoundationStackName}-EcsCapacityProviderName'
+          Base: 1
+          Weight: 1
       HealthCheckGracePeriodSeconds: 120
       DeploymentConfiguration:
-        MinimumHealthyPercent: 100
-        MaximumPercent: 200
+        MinimumHealthyPercent: 0
+        MaximumPercent: 100
         DeploymentCircuitBreaker:
           Enable: true
           Rollback: true
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          SecurityGroups:
-            - Fn::ImportValue: !Sub '${FoundationStackName}-ApiSecurityGroupId'
-          Subnets:
-            - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetAId'
-            - Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBId'
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
       LoadBalancers:
         - ContainerName: api
           ContainerPort: 8080
@@ -341,8 +490,22 @@ Resources:
           ContainerPort: 8081
           TargetGroupArn: !Ref GrpcTargetGroup
       Tags:
+        - Key: Name
+          Value: mutualgpu-api
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
 
 Outputs:
   LoadBalancerDnsName:

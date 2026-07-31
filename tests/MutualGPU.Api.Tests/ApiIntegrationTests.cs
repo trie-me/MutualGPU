@@ -34,6 +34,7 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
             builder.UseSetting("MutualGPU:Providers:0:ExecutionUnitId", ProviderId.Value.ToString("D"));
             builder.UseSetting("MutualGPU:Providers:0:PresharedKey", ProviderKey);
             builder.UseSetting("MutualGPU:ProviderCorsOrigins:0", "https://provider.example");
+            builder.UseSetting("MutualGPU:Csp:S3ImageOrigin", "https://mutualgpu-data-428590861908-us-east-1.s3.us-east-1.amazonaws.com");
         });
     }
 
@@ -70,6 +71,8 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net", contentSecurityPolicy, StringComparison.Ordinal);
         Assert.Contains("https://huggingface.co", contentSecurityPolicy, StringComparison.Ordinal);
         Assert.Contains("https://*.xethub.hf.co", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.Contains("https://mutualgpu-data-428590861908-us-east-1.s3.us-east-1.amazonaws.com", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.DoesNotContain("https://mutualgpu-data.s3.us-east-1.amazonaws.com", contentSecurityPolicy, StringComparison.Ordinal);
         var offerCompute = await client.GetStringAsync("/offer-compute.html");
         var hostCompute = await client.GetStringAsync("/host-compute.html");
         Assert.Contains("flux2-klein-4b-text-to-image", offerCompute, StringComparison.Ordinal);

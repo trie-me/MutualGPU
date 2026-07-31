@@ -1,28 +1,98 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: "MutualGPU foundation: network, private PostgreSQL, image repository, ECS, logs, and roles."
+Description: "MutualGPU clean-start foundation: S3, network, private PostgreSQL, and one ARM64 EC2-backed ECS capacity provider."
 
 Parameters:
   ApplicationDataBucketName:
     Type: String
-    Default: mutualgpu-data
-    Description: Dedicated S3 bucket for MutualGPU task state, inputs, and result artifacts.
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    ConstraintDescription: Must be the exact reviewed, globally unique target S3 bucket name.
+    Description: Clean target bucket for MutualGPU inputs and result artifacts. Never use the source bucket name mutualgpu-data.
+  PrimaryAvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Reviewed target AZ for the ECS host, RDS instance, and A subnets.
+  SecondaryAvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Reviewed distinct target AZ for the ALB and RDS subnet-group B subnets.
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$'
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.42.0.0/20
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.42.16.0/20
+  DatabaseSubnetACidr:
+    Type: String
+    Default: 10.42.32.0/20
+  DatabaseSubnetBCidr:
+    Type: String
+    Default: 10.42.48.0/20
   DatabaseName:
     Type: String
     Default: mutualgpu
     AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]+$'
+  DatabaseEngineVersion:
+    Type: String
+    Default: '18.4'
+    AllowedPattern: '^18\.[0-9]+$'
+  DatabaseStorageAutoscaling:
+    Type: String
+    Default: disabled
+    AllowedValues:
+      - disabled
+      - enabled
+    Description: Keep disabled for a fixed 20 GiB volume; enabling permits growth up to 100 GiB.
+  EcsHostCount:
+    Type: Number
+    Default: 0
+    AllowedValues:
+      - 0
+      - 1
+    Description: Use 0 for the initial empty-ASG capacity-provider deployment, then update to 1 after association verification.
+  EcsOptimizedAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/recommended/image_id
+    Description: Recommended ARM64 Amazon Linux 2023 ECS-optimized AMI.
+
+Rules:
+  ApplicationBucketMustBeTargetSpecific:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref ApplicationDataBucketName, mutualgpu-data]]
+        AssertDescription: The globally scoped source bucket name mutualgpu-data is forbidden in the clean target.
+  AvailabilityZonesMustDiffer:
+    Assertions:
+      - Assert: !Not [!Equals [!Ref PrimaryAvailabilityZone, !Ref SecondaryAvailabilityZone]]
+        AssertDescription: PrimaryAvailabilityZone and SecondaryAvailabilityZone must be distinct.
+
+Conditions:
+  DatabaseStorageAutoscalingEnabled: !Equals [!Ref DatabaseStorageAutoscaling, enabled]
 
 Resources:
   MutualGpuVpc:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.42.0.0/16
+      CidrBlock: !Ref VpcCidr
       EnableDnsHostnames: true
       EnableDnsSupport: true
       Tags:
         - Key: Name
           Value: mutualgpu-demo-vpc
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Network
+        - Key: Lifecycle
+          Value: Persistent
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -30,8 +100,20 @@ Resources:
       Tags:
         - Key: Name
           Value: mutualgpu-demo-igw
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Network
+        - Key: Lifecycle
+          Value: Persistent
 
   InternetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -42,54 +124,102 @@ Resources:
   PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Select [0, !GetAZs '']
-      CidrBlock: 10.42.0.0/20
+      AvailabilityZone: !Ref PrimaryAvailabilityZone
+      CidrBlock: !Ref PublicSubnetACidr
       MapPublicIpOnLaunch: true
       VpcId: !Ref MutualGpuVpc
       Tags:
         - Key: Name
           Value: mutualgpu-demo-public-a
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Network
+        - Key: Lifecycle
+          Value: Persistent
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Select [1, !GetAZs '']
-      CidrBlock: 10.42.16.0/20
+      AvailabilityZone: !Ref SecondaryAvailabilityZone
+      CidrBlock: !Ref PublicSubnetBCidr
       MapPublicIpOnLaunch: true
       VpcId: !Ref MutualGpuVpc
       Tags:
         - Key: Name
           Value: mutualgpu-demo-public-b
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Network
+        - Key: Lifecycle
+          Value: Persistent
 
   DatabaseSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Select [0, !GetAZs '']
-      CidrBlock: 10.42.32.0/20
+      AvailabilityZone: !Ref PrimaryAvailabilityZone
+      CidrBlock: !Ref DatabaseSubnetACidr
       MapPublicIpOnLaunch: false
       VpcId: !Ref MutualGpuVpc
       Tags:
         - Key: Name
           Value: mutualgpu-database-a
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   DatabaseSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Select [1, !GetAZs '']
-      CidrBlock: 10.42.48.0/20
+      AvailabilityZone: !Ref SecondaryAvailabilityZone
+      CidrBlock: !Ref DatabaseSubnetBCidr
       MapPublicIpOnLaunch: false
       VpcId: !Ref MutualGpuVpc
       Tags:
         - Key: Name
           Value: mutualgpu-database-b
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
@@ -98,8 +228,20 @@ Resources:
       Tags:
         - Key: Name
           Value: mutualgpu-demo-public
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Network
+        - Key: Lifecycle
+          Value: Persistent
 
   DefaultPublicRoute:
     Type: AWS::EC2::Route
@@ -120,6 +262,90 @@ Resources:
     Properties:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnetB
+
+  ApplicationDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref ApplicationDataBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Name
+          Value: !Ref ApplicationDataBucketName
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Storage
+        - Key: Lifecycle
+          Value: Persistent
+
+  ApplicationDataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ApplicationDataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ApplicationDataBucket.Arn
+              - !Sub '${ApplicationDataBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcEndpointType: Gateway
+      VpcId: !Ref MutualGpuVpc
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      RouteTableIds:
+        - !Ref PublicRouteTable
+      Tags:
+        - Key: Name
+          Value: mutualgpu-s3
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Network
+        - Key: Lifecycle
+          Value: Persistent
 
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -143,13 +369,25 @@ Resources:
       Tags:
         - Key: Name
           Value: mutualgpu-demo-alb
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Ingress
+        - Key: Lifecycle
+          Value: Persistent
 
   ApiSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: MutualGPU API ports accepted only from the ALB
+      GroupDescription: MutualGPU EC2 API ports accepted only from the ALB
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
@@ -168,13 +406,25 @@ Resources:
       Tags:
         - Key: Name
           Value: mutualgpu-demo-api
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: MutualGPU PostgreSQL accepted only from ECS API tasks
+      GroupDescription: MutualGPU PostgreSQL accepted only from the ECS host
       SecurityGroupIngress:
         - Description: PostgreSQL from the MutualGPU API
           IpProtocol: tcp
@@ -185,8 +435,20 @@ Resources:
       Tags:
         - Key: Name
           Value: mutualgpu-postgres
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   DatabaseSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
@@ -196,8 +458,22 @@ Resources:
         - !Ref DatabaseSubnetA
         - !Ref DatabaseSubnetB
       Tags:
+        - Key: Name
+          Value: mutualgpu-postgres
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   DatabaseSecret:
     Type: AWS::SecretsManager::Secret
@@ -209,8 +485,22 @@ Resources:
         PasswordLength: 40
         ExcludePunctuation: true
       Tags:
+        - Key: Name
+          Value: mutualgpu/postgres
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   DatabaseParameterGroup:
     Type: AWS::RDS::DBParameterGroup
@@ -219,6 +509,23 @@ Resources:
       Family: postgres18
       Parameters:
         rds.force_ssl: '1'
+      Tags:
+        - Key: Name
+          Value: mutualgpu-postgres-tls
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   Database:
     Type: AWS::RDS::DBInstance
@@ -227,13 +534,14 @@ Resources:
     Properties:
       DBInstanceIdentifier: mutualgpu-postgres
       Engine: postgres
-      EngineVersion: '18'
+      EngineVersion: !Ref DatabaseEngineVersion
       DBName: !Ref DatabaseName
       DBInstanceClass: db.t4g.micro
       AllocatedStorage: '20'
-      MaxAllocatedStorage: 100
+      MaxAllocatedStorage: !If [DatabaseStorageAutoscalingEnabled, 100, !Ref AWS::NoValue]
       StorageType: gp3
       StorageEncrypted: true
+      AvailabilityZone: !Ref PrimaryAvailabilityZone
       PubliclyAccessible: false
       MultiAZ: false
       Port: 5432
@@ -244,13 +552,32 @@ Resources:
         - !GetAtt DatabaseSecurityGroup.GroupId
       DBParameterGroupName: !Ref DatabaseParameterGroup
       BackupRetentionPeriod: 7
+      PreferredBackupWindow: 03:00-04:00
+      PreferredMaintenanceWindow: sun:05:00-sun:06:00
       CopyTagsToSnapshot: true
       DeletionProtection: true
       EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      DatabaseInsightsMode: standard
+      MonitoringInterval: 0
       AutoMinorVersionUpgrade: true
       Tags:
+        - Key: Name
+          Value: mutualgpu-postgres
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
 
   ImageRepository:
     Type: AWS::ECR::Repository
@@ -261,9 +588,42 @@ Resources:
         ScanOnPush: true
       EncryptionConfiguration:
         EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after 14 days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": 14
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
       Tags:
+        - Key: Name
+          Value: mutualgpu-api
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
 
   Cluster:
     Type: AWS::ECS::Cluster
@@ -271,16 +631,86 @@ Resources:
       ClusterName: mutualgpu-demo
       ClusterSettings:
         - Name: containerInsights
-          Value: enabled
+          Value: disabled
       Tags:
+        - Key: Name
+          Value: mutualgpu-demo
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
 
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: /ecs/mutualgpu-api
-      RetentionInDays: 14
+      RetentionInDays: 7
+      Tags:
+        - Key: Name
+          Value: /ecs/mutualgpu-api
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Observability
+        - Key: Lifecycle
+          Value: Persistent
+
+  ContainerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mutualgpu-ecs-container-instance
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: mutualgpu-ecs-container-instance
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
+
+  ContainerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: mutualgpu-ecs-container-instance
+      Roles:
+        - !Ref ContainerInstanceRole
 
   TaskExecutionRole:
     Type: AWS::IAM::Role
@@ -303,10 +733,26 @@ Resources:
               - Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
-                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mutualgpu/*'
+                Resource:
+                  - !Ref DatabaseSecret
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mutualgpu/deployment-*'
       Tags:
+        - Key: Name
+          Value: mutualgpu-ecs-task-execution
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Identity
+        - Key: Lifecycle
+          Value: Persistent
 
   TaskRole:
     Type: AWS::IAM::Role
@@ -325,24 +771,254 @@ Resources:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action: s3:ListBucket
-                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}'
-              - Effect: Allow
                 Action:
+                  - s3:ListBucket
                   - s3:PutBucketCORS
                   - s3:DeleteBucketCORS
-                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}'
+                Resource: !GetAtt ApplicationDataBucket.Arn
               - Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}/mutualgpu/v3/requestors/*/tasks/*/inputs/*'
-                  - !Sub 'arn:${AWS::Partition}:s3:::${ApplicationDataBucketName}/mutualgpu/v3/requestors/*/tasks/*/results/*'
+                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/inputs/*'
+                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/results/*'
       Tags:
+        - Key: Name
+          Value: mutualgpu-ecs-task
+        - Key: Application
+          Value: MutualGPU
         - Key: Project
           Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Identity
+        - Key: Lifecycle
+          Value: Persistent
+
+  EcsHostLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: mutualgpu-ecs-host
+      LaunchTemplateData:
+        ImageId: !Ref EcsOptimizedAmiId
+        InstanceType: t4g.nano
+        IamInstanceProfile:
+          Arn: !GetAtt ContainerInstanceProfile.Arn
+        CreditSpecification:
+          CpuCredits: standard
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+          InstanceMetadataTags: disabled
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref ApiSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              DeleteOnTermination: true
+              Encrypted: true
+              VolumeType: gp3
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: mutualgpu-ecs-host
+              - Key: Application
+                Value: MutualGPU
+              - Key: Project
+                Value: MutualGPU
+              - Key: Environment
+                Value: Production
+              - Key: ManagedBy
+                Value: CloudFormation
+              - Key: Owner
+                Value: Quinn-MutualCompute
+              - Key: Component
+                Value: Compute
+              - Key: Lifecycle
+                Value: Persistent
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: mutualgpu-ecs-host-root
+              - Key: Application
+                Value: MutualGPU
+              - Key: Project
+                Value: MutualGPU
+              - Key: Environment
+                Value: Production
+              - Key: ManagedBy
+                Value: CloudFormation
+              - Key: Owner
+                Value: Quinn-MutualCompute
+              - Key: Component
+                Value: Compute
+              - Key: Lifecycle
+                Value: Persistent
+          - ResourceType: network-interface
+            Tags:
+              - Key: Name
+                Value: mutualgpu-ecs-host
+              - Key: Application
+                Value: MutualGPU
+              - Key: Project
+                Value: MutualGPU
+              - Key: Environment
+                Value: Production
+              - Key: ManagedBy
+                Value: CloudFormation
+              - Key: Owner
+                Value: Quinn-MutualCompute
+              - Key: Component
+                Value: Compute
+              - Key: Lifecycle
+                Value: Persistent
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -euxo pipefail
+            cat >> /etc/ecs/ecs.config <<EOF
+            ECS_CLUSTER=${Cluster}
+            ECS_ENABLE_TASK_IAM_ROLE=true
+            ECS_ENABLE_TASK_IAM_ROLE_NETWORK_HOST=true
+            EOF
+
+            cat > /usr/local/sbin/mutualgpu-block-container-imds <<'EOF'
+            #!/bin/bash
+            set -euo pipefail
+            # Deliberately block only EC2 IMDS. Do not block the ECS task-role
+            # credential endpoint at 169.254.170.2.
+            for attempt in $(seq 1 30); do
+              if /usr/sbin/iptables -w 5 -n -L DOCKER-USER >/dev/null 2>&1; then
+                /usr/sbin/iptables -w 5 -C DOCKER-USER -d 169.254.169.254/32 -j DROP >/dev/null 2>&1 || \
+                  /usr/sbin/iptables -w 5 -I DOCKER-USER 1 -d 169.254.169.254/32 -j DROP
+                exit 0
+              fi
+              sleep 1
+            done
+            exit 1
+            EOF
+            chmod 0755 /usr/local/sbin/mutualgpu-block-container-imds
+
+            mkdir -p /etc/systemd/system/docker.service.d
+            cat > /etc/systemd/system/docker.service.d/10-mutualgpu-imds-block.conf <<'EOF'
+            [Service]
+            ExecStartPost=/usr/local/sbin/mutualgpu-block-container-imds
+            EOF
+
+            systemctl daemon-reload
+            systemctl restart docker
+            systemctl enable --now ecs
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: mutualgpu-ecs-host
+            - Key: Application
+              Value: MutualGPU
+            - Key: Project
+              Value: MutualGPU
+            - Key: Environment
+              Value: Production
+            - Key: ManagedBy
+              Value: CloudFormation
+            - Key: Owner
+              Value: Quinn-MutualCompute
+            - Key: Component
+              Value: Compute
+            - Key: Lifecycle
+              Value: Persistent
+
+  EcsHostAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: mutualgpu-ecs-hosts
+      VPCZoneIdentifier:
+        - !Ref PublicSubnetA
+      MinSize: !Ref EcsHostCount
+      DesiredCapacity: !Ref EcsHostCount
+      MaxSize: '1'
+      NewInstancesProtectedFromScaleIn: false
+      LaunchTemplate:
+        LaunchTemplateId: !Ref EcsHostLaunchTemplate
+        Version: !GetAtt EcsHostLaunchTemplate.LatestVersionNumber
+      Tags:
+        - Key: Name
+          Value: mutualgpu-ecs-host
+          PropagateAtLaunch: true
+        - Key: Application
+          Value: MutualGPU
+          PropagateAtLaunch: true
+        - Key: Project
+          Value: MutualGPU
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: Production
+          PropagateAtLaunch: true
+        - Key: ManagedBy
+          Value: CloudFormation
+          PropagateAtLaunch: true
+        - Key: Owner
+          Value: Quinn-MutualCompute
+          PropagateAtLaunch: true
+        - Key: Component
+          Value: Compute
+          PropagateAtLaunch: true
+        - Key: Lifecycle
+          Value: Persistent
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 0
+        MaxBatchSize: 1
+
+  EcsCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      Name: mutualgpu-api-ec2
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !GetAtt EcsHostAutoScalingGroup.AutoScalingGroupARN
+        ManagedScaling:
+          Status: DISABLED
+        ManagedTerminationProtection: DISABLED
+        ManagedDraining: ENABLED
+      Tags:
+        - Key: Name
+          Value: mutualgpu-api-ec2
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Compute
+        - Key: Lifecycle
+          Value: Persistent
+
+  ClusterCapacityProviderAssociation:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
+    Properties:
+      Cluster: !Ref Cluster
+      CapacityProviders:
+        - !Ref EcsCapacityProvider
+      DefaultCapacityProviderStrategy: []
 
 Outputs:
   VpcId:
@@ -357,6 +1033,14 @@ Outputs:
     Value: !Ref PublicSubnetB
     Export:
       Name: !Sub '${AWS::StackName}-PublicSubnetBId'
+  PublicSubnetACidr:
+    Value: !Ref PublicSubnetACidr
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnetACidr'
+  PublicSubnetBCidr:
+    Value: !Ref PublicSubnetBCidr
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnetBCidr'
   AlbSecurityGroupId:
     Value: !Ref AlbSecurityGroup
     Export:
@@ -365,6 +1049,10 @@ Outputs:
     Value: !Ref ApiSecurityGroup
     Export:
       Name: !Sub '${AWS::StackName}-ApiSecurityGroupId'
+  ApplicationDataBucketName:
+    Value: !Ref ApplicationDataBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationDataBucketName'
   DatabaseEndpointAddress:
     Value: !GetAtt Database.Endpoint.Address
     Export:
@@ -389,6 +1077,10 @@ Outputs:
     Value: !GetAtt Cluster.Arn
     Export:
       Name: !Sub '${AWS::StackName}-EcsClusterArn'
+  EcsCapacityProviderName:
+    Value: !Ref EcsCapacityProvider
+    Export:
+      Name: !Sub '${AWS::StackName}-EcsCapacityProviderName'
   TaskExecutionRoleArn:
     Value: !GetAtt TaskExecutionRole.Arn
     Export:
