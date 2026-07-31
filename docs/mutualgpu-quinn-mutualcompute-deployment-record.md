@@ -64,6 +64,7 @@ no IAM changes were made.
 | Active service shape | Fargate, desired `1`, running `1`, `awsvpc`, public task IP |
 | Image URI | `351791602105.dkr.ecr.us-east-1.amazonaws.com/mutualgpu-api@sha256:519b123233e0940c5f4b579e119ec8de3d4e168b6385af19b1c15d9f9d97ac31` |
 | Image tag | `cors-all-origins-20260727-r2` |
+| Application Git commit | `f96854d9429b398421fe15bbce89a8a741e1c769` |
 | Linux AMD64 child | `sha256:d9108af687fabc6fd308dbf9ef0d08cc3862ee30ed17074604d565f767261355` |
 | Attestation child | `sha256:8437e5cf064df5440508282d33b3f73d2a3d3dbc6aadb8989574aa070fd332db` |
 | Linux ARM64 child | absent |
@@ -74,13 +75,18 @@ no IAM changes were made.
 The second index child is explicitly annotated as
 `vnd.docker.reference.type=attestation-manifest` and references the AMD64 child.
 It is not an ARM64 image. The active task also has legacy structured-S3
-configuration and no `MutualGPU__Postgres__*` configuration. The live image is
-therefore both architecture-incompatible with the target host and not proven to
-contain the approved PostgreSQL-capable application.
+configuration and no `MutualGPU__Postgres__*` configuration. Source Link metadata
+inside the live application maps the MutualGPU source to exact Git commit
+`f96854d9429b398421fe15bbce89a8a741e1c769`.
 
-The target image must be rebuilt from an exact, clean, reviewed
-PostgreSQL-capable commit as a Linux AMD64 plus Linux ARM64 OCI index. No build or
-push has occurred. The source digest remains recorded only for provenance.
+That S3-exclusive application is the required first target release. It must be
+rebuilt from the exact clean commit above as a Linux AMD64 plus Linux ARM64 OCI
+index because the live index lacks ARM64. It keeps tag
+`cors-all-origins-20260727-r2`; its new target index digest is expected to differ
+from the source digest because a second runtime architecture is added. No build
+or push has occurred. The source digest remains recorded as immutable
+provenance, and RDS remains in the target infrastructure for a future
+PostgreSQL application release.
 
 The live non-secret provider origins are:
 
@@ -99,7 +105,9 @@ launch2.spaceship.net
 
 At observation time, `mutualgpu.com` resolved to the same two addresses as the
 source ALB. The exact Spaceship account/zone identifier and change mechanism
-remain a user confirmation.
+remain a user confirmation. All certificate-validation and application-record
+DNS changes are manual user operations: Codex will present the exact values,
+pause, and tag the user rather than operating Spaceship through Brave or an API.
 
 ## Target availability and name checks
 
@@ -174,6 +182,8 @@ proposed.
 | Initial/final ASG count | `0` for association bootstrap, then `1` |
 | Task | CPU `256`, reservation `256 MiB`, hard limit `384 MiB` |
 | ECS desired count | `1` |
+| ECS release retention | At most the last five successful target `mutualgpu-api` task-definition revisions |
+| ECR release retention | At most five target multi-architecture release indexes, plus only their required platform and attestation artifacts |
 | Deployment percentages | minimum healthy `0`, maximum `100` |
 | Network mode | `bridge`, fixed host/container ports `8080` and `8081` |
 | RDS | PostgreSQL `18.4`, `db.t4g.micro`, Single-AZ, private |
@@ -226,15 +236,49 @@ either identity.
 - The API integration test requires the proposed target S3 origin and rejects
   the obsolete source bucket origin.
 - `deploy/aws/foundation.yaml` now creates the clean S3 bucket, S3 gateway
-  endpoint, private PostgreSQL, and empty-bootstrap EC2 ECS capacity provider.
+  endpoint, explicitly isolated database route table, private PostgreSQL, and
+  empty-bootstrap EC2 ECS capacity provider. Only the ALB accepts public ingress;
+  its egress is restricted to API ports 8080/8081, the API host accepts those
+  ports only from the ALB security group, and PostgreSQL accepts 5432 only from
+  the API security group.
 - `deploy/aws/service.yaml` now uses EC2/ARM64/bridge networking, instance target
   groups, one stop-before-start task, `/health/ready`, and a five-connection
   PostgreSQL pool.
 - `scripts/deploy-aws-service.sh` is target-only, identity-gated, change-set
-  based, non-destructive, and clean-start guarded.
-- `scripts/build-and-push-quinn-mutualcompute-image.sh` requires a clean exact
-  reviewed commit and verifies one Linux AMD64 plus one Linux ARM64 child after
-  a target push.
+  based, and clean-start guarded. A first service-stack creation and its execution
+  both reverify the exact recorded source commit/tag/index provenance in each
+  target platform image. Its post-release checks verify the running release and
+  deployed security boundaries using target reads only. After a stable service
+  release, its separate retention workflow produces a content-hashed preview;
+  only an explicit match of that SHA-256 can mark the release successful and
+  delete older revisions and ECR artifacts outside the corresponding five
+  multi-architecture releases.
+- `scripts/build-and-push-quinn-mutualcompute-image.sh` is locked to the first
+  release commit and tag, rejects overrides, and requires an explicit separate
+  clean Git worktree at `f96854d9429b398421fe15bbce89a8a741e1c769`.
+  It publishes from a fresh temporary context, verifies both target platform
+  configs carry the recorded source provenance, and emits a canonical receipt.
+
+The release-retention operation refuses to proceed if the service is unstable,
+if another service/cluster or standalone task consumes the reserved task family,
+if a live task falls outside the last five successful releases, if any retained
+image is not digest-pinned in the exact target repository, or if a retained
+index lacks either Linux AMD64 or Linux ARM64. It recursively protects index
+descriptors and OCI referrers, rechecks live consumers before ECR deletion, and
+checks each AWS deletion response for per-item failures. Failed or manually
+registered task definitions do not displace successful rollback releases.
+
+Five multi-architecture releases require more than five raw ECR manifest
+entries: each logical release has an OCI index and child platform/attestation
+manifests. The symmetry enforced here is five ECS releases to no more than five
+ECR release indexes; only the dependency closure of those indexes may remain.
+No independent age/tag lifecycle rule is configured because it cannot verify ECS
+rollback references; the reviewed explicit retention plan is the only cleanup
+mechanism.
+
+This policy applies only to the new target account. The 53 historical source
+task-definition revisions and all source ECR entries remain untouched under the
+strictly read-only `ai-quinn` boundary.
 
 Both CloudFormation templates passed target `ValidateTemplate`. Both shell
 scripts passed shell syntax validation. No change set was created or executed,
@@ -243,7 +287,8 @@ no image was built or pushed, and no AWS application resource was mutated.
 ## Approval gates before any target infrastructure mutation
 
 1. Confirm `mutualgpu.com` remains the public hostname.
-2. Confirm the exact Spaceship account/zone and apex-record change method.
+2. Confirm that the user will perform the Spaceship certificate-validation and
+   apex-record changes manually from the exact values Codex presents.
 3. Approve or replace the proposed target bucket name.
 4. Approve or replace primary `us-east-1a` and secondary `us-east-1b`.
 5. Approve the overlapping `10.42.0.0/16` target VPC or choose a future-proof
@@ -254,11 +299,12 @@ no image was built or pushed, and no AWS application resource was mutated.
 8. Confirm fixed 20 GiB RDS storage rather than autoscaling to 100 GiB.
 9. Confirm the WAF rate remains 10 per source IP per minute.
 10. Confirm the fixed resource names and the backup/maintenance windows above.
-11. Approve the exact clean PostgreSQL-capable Git commit for the multi-platform
-    image rebuild.
-12. Confirm the source stop/overlap policy, intact-source retention duration,
-    and acceptance that clean-target writes are lost if rollback returns to the
-    source.
+11. Confirm the first image is the exact live S3-exclusive application at
+    `f96854d9429b398421fe15bbce89a8a741e1c769`, built from a separate clean
+    worktree without switching the shared migration working tree.
+12. Confirm the source remains untouched, accept DNS-propagation overlap between
+    the independent environments, and accept that clean-target writes are lost
+    if DNS rollback returns users to the source.
 13. Supply the desired monthly budget threshold and notification address.
 14. Reverify credit balances/expiry in the Billing console with the user
     present.

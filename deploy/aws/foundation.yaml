@@ -263,6 +263,40 @@ Resources:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref PublicSubnetB
 
+  DatabaseRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MutualGpuVpc
+      Tags:
+        - Key: Name
+          Value: mutualgpu-database-isolated
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Database
+        - Key: Lifecycle
+          Value: Persistent
+
+  DatabaseSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DatabaseRouteTable
+      SubnetId: !Ref DatabaseSubnetA
+
+  DatabaseSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DatabaseRouteTable
+      SubnetId: !Ref DatabaseSubnetB
+
   ApplicationDataBucket:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -352,8 +386,16 @@ Resources:
     Properties:
       GroupDescription: MutualGPU public HTTPS ingress
       SecurityGroupEgress:
-        - IpProtocol: '-1'
-          CidrIp: 0.0.0.0/0
+        - Description: Web traffic to the MutualGPU API host
+          IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          DestinationSecurityGroupId: !Ref ApiSecurityGroup
+        - Description: Native gRPC traffic to the MutualGPU API host
+          IpProtocol: tcp
+          FromPort: 8081
+          ToPort: 8081
+          DestinationSecurityGroupId: !Ref ApiSecurityGroup
       SecurityGroupIngress:
         - Description: Redirect HTTP to HTTPS at the load balancer
           IpProtocol: tcp
@@ -391,17 +433,6 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: '-1'
           CidrIp: 0.0.0.0/0
-      SecurityGroupIngress:
-        - Description: HTTP/1.1 web, REST, WebSocket, and SSE traffic
-          IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8080
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-        - Description: Native gRPC traffic
-          IpProtocol: tcp
-          FromPort: 8081
-          ToPort: 8081
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
       VpcId: !Ref MutualGpuVpc
       Tags:
         - Key: Name
@@ -420,6 +451,26 @@ Resources:
           Value: Compute
         - Key: Lifecycle
           Value: Persistent
+
+  ApiWebIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: HTTP/1.1 web, REST, WebSocket, and SSE traffic from the ALB
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8080
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  ApiGrpcIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Native gRPC traffic from the ALB
+      GroupId: !Ref ApiSecurityGroup
+      IpProtocol: tcp
+      FromPort: 8081
+      ToPort: 8081
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
 
   DatabaseSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -588,25 +639,6 @@ Resources:
         ScanOnPush: true
       EncryptionConfiguration:
         EncryptionType: AES256
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {
-            "rules": [
-              {
-                "rulePriority": 1,
-                "description": "Expire untagged images after 14 days",
-                "selection": {
-                  "tagStatus": "untagged",
-                  "countType": "sinceImagePushed",
-                  "countUnit": "days",
-                  "countNumber": 14
-                },
-                "action": {
-                  "type": "expire"
-                }
-              }
-            ]
-          }
       Tags:
         - Key: Name
           Value: mutualgpu-api

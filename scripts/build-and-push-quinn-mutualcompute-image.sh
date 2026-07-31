@@ -9,9 +9,19 @@ readonly target_region="us-east-1"
 readonly target_role_arn="arn:aws:sts::428590861908:assumed-role/MutualGPUMigrationAdmin/mutual-ai-automation"
 readonly repository_name="mutualgpu-api"
 readonly repository_uri="${target_account}.dkr.ecr.${target_region}.amazonaws.com/${repository_name}"
+readonly live_source_release_commit="f96854d9429b398421fe15bbce89a8a741e1c769"
+readonly live_source_release_tag="cors-all-origins-20260727-r2"
+readonly live_source_index_digest="sha256:519b123233e0940c5f4b579e119ec8de3d4e168b6385af19b1c15d9f9d97ac31"
+readonly reviewed_commit="$live_source_release_commit"
+readonly image_tag="$live_source_release_tag"
+readonly controller_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-reviewed_commit="${MUTUALGPU_REVIEWED_COMMIT:?Set MUTUALGPU_REVIEWED_COMMIT to the exact reviewed PostgreSQL-capable Git commit.}"
-image_tag="${MUTUALGPU_IMAGE_TAG:-postgres-${reviewed_commit:0:12}}"
+if [[ -n "${MUTUALGPU_REVIEWED_COMMIT:-}" || -n "${MUTUALGPU_IMAGE_TAG:-}" ]]; then
+  echo "Commit and tag overrides are disabled for the first Quinn-MutualCompute release." >&2
+  exit 1
+fi
+source_worktree_input="${MUTUALGPU_SOURCE_WORKTREE:?Set MUTUALGPU_SOURCE_WORKTREE to a clean detached worktree at ${live_source_release_commit}.}"
+source_worktree="$(cd "$source_worktree_input" && pwd -P)"
 
 if [[ "${AWS_PROFILE:-$target_profile}" != "$target_profile" ]]; then
   echo "AWS_PROFILE must be exactly ${target_profile}." >&2
@@ -21,11 +31,6 @@ if [[ "${AWS_REGION:-$target_region}" != "$target_region" ]]; then
   echo "AWS_REGION must be exactly ${target_region}." >&2
   exit 1
 fi
-if [[ "$image_tag" == "latest" || ! "$image_tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
-  echo "MUTUALGPU_IMAGE_TAG must be an immutable descriptive tag and must not be latest." >&2
-  exit 1
-fi
-
 aws_target() {
   aws --profile "$target_profile" --region "$target_region" "$@"
 }
@@ -43,19 +48,24 @@ if [[ "$account" != "$target_account" || "$arn" != "$target_role_arn" ]]; then
   exit 1
 fi
 
-head_commit="$(git rev-parse HEAD)"
+head_commit="$(git -C "$source_worktree" rev-parse HEAD)"
 if [[ "$head_commit" != "$reviewed_commit" ]]; then
-  echo "HEAD ${head_commit} does not equal reviewed commit ${reviewed_commit}." >&2
+  echo "Source-worktree HEAD ${head_commit} does not equal the live release commit ${reviewed_commit}." >&2
   exit 1
 fi
-if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
-  echo "The working tree must be completely clean before producing a deployment image." >&2
+if [[ -n "$(git -C "$source_worktree" status --porcelain --untracked-files=all)" ]]; then
+  echo "The detached source worktree must be completely clean before producing the first deployment image." >&2
+  exit 1
+fi
+if [[ ! -f "$source_worktree/deploy/Dockerfile" ||
+      ! -f "$source_worktree/src/MutualGPU.Api/MutualGPU.Api.csproj" ]]; then
+  echo "The detached source worktree is missing the reviewed API build inputs." >&2
   exit 1
 fi
 
 aws_target ecr describe-repositories --repository-names "$repository_name" >/dev/null
 if aws_target ecr describe-images --repository-name "$repository_name" --image-ids "imageTag=${image_tag}" >/dev/null 2>&1; then
-  echo "The immutable target tag ${image_tag} already exists; choose a new reviewed tag." >&2
+  echo "The immutable first-release tag ${image_tag} already exists; refusing to overwrite or silently replace it." >&2
   exit 1
 fi
 
@@ -65,9 +75,16 @@ if [[ "$builder_platforms" != *"linux/amd64"* || "$builder_platforms" != *"linux
   exit 1
 fi
 
-dotnet publish src/MutualGPU.Api/MutualGPU.Api.csproj \
+build_context="$(mktemp -d "${TMPDIR:-/tmp}/mutualgpu-first-release.XXXXXX")"
+cleanup() {
+  rm -rf -- "$build_context"
+}
+trap cleanup EXIT
+
+dotnet publish "$source_worktree/src/MutualGPU.Api/MutualGPU.Api.csproj" \
   --configuration Release \
-  --output artifacts/mutualgpu-api \
+  --output "$build_context/artifacts/mutualgpu-api" \
+  --artifacts-path "$build_context/dotnet-artifacts" \
   /p:UseAppHost=false
 
 aws_target ecr get-login-password |
@@ -78,13 +95,17 @@ aws_target ecr get-login-password |
     >/dev/null
 
 docker buildx build \
-  --file deploy/Dockerfile \
+  --file "$source_worktree/deploy/Dockerfile" \
   --platform linux/amd64,linux/arm64 \
   --provenance=true \
   --sbom=true \
+  --label "org.opencontainers.image.revision=${reviewed_commit}" \
+  --label "org.opencontainers.image.version=${image_tag}" \
+  --label "com.mutualgpu.live-source.index=${live_source_index_digest}" \
+  --label "com.mutualgpu.live-source.tag=${live_source_release_tag}" \
   --push \
   --tag "${repository_uri}:${image_tag}" \
-  .
+  "$build_context"
 
 image_digest="$(aws_target ecr describe-images \
   --repository-name "$repository_name" \
@@ -96,18 +117,38 @@ if [[ -z "$image_digest" || "$image_digest" == "None" ]]; then
   exit 1
 fi
 
-index_manifest="$(aws_target ecr batch-get-image \
+manifest_response="$(aws_target ecr batch-get-image \
   --repository-name "$repository_name" \
   --image-ids "imageDigest=${image_digest}" \
-  --accepted-media-types application/vnd.oci.image.index.v1+json application/vnd.docker.distribution.manifest.list.v2+json \
-  --query 'images[0].imageManifest' \
-  --output text)"
-amd64_count="$(jq '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length' <<<"$index_manifest")"
-arm64_count="$(jq '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length' <<<"$index_manifest")"
-if [[ "$amd64_count" -ne 1 || "$arm64_count" -ne 1 ]]; then
-  echo "The pushed OCI index does not contain exactly one Linux AMD64 and one Linux ARM64 image." >&2
+  --output json)"
+if ! jq -e --arg digest "$image_digest" \
+  '(.failures | length) == 0
+   and ([.images[]? | select(.imageId.imageDigest == $digest)] | length) == 1
+   and ([.images[]?
+         | select(.imageId.imageDigest == $digest)
+         | .imageManifestMediaType]
+        | any(. == "application/vnd.oci.image.index.v1+json"
+              or . == "application/vnd.docker.distribution.manifest.list.v2+json"))' \
+  <<<"$manifest_response" \
+  >/dev/null; then
+  echo "The pushed target digest is missing or is not a supported multi-architecture image index." >&2
+  jq '{Failures: [.failures[]? | {ImageId: .imageId, FailureCode: .failureCode, FailureReason: .failureReason}]}' \
+    <<<"$manifest_response" \
+    >&2
   exit 1
 fi
+image_uri="${repository_uri}@${image_digest}"
+verification="$("$controller_root/scripts/deploy-aws-service.sh" \
+  verify-live-source-release-image \
+  "$image_uri")"
+receipt="$(jq -n \
+  --arg kind "MutualGPUQuinnMutualComputeFirstRelease" \
+  --argjson verification "$verification" \
+  '{
+     Kind: $kind,
+     Verification: $verification
+   }')"
+receipt_hash="$(jq -cS . <<<"$receipt" | shasum -a 256 | awk '{print $1}')"
 
-echo "Verified target multi-architecture image:"
-echo "${repository_uri}@${image_digest}"
+echo "$receipt"
+echo "Build receipt SHA-256: ${receipt_hash}"

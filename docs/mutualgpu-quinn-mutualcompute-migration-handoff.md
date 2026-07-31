@@ -1,6 +1,6 @@
 # MutualGPU migration handoff: Quinn-MutualCompute
 
-- Status: planning and access bootstrap only
+- Status: Phase 0 verification and Phase 1 local implementation complete; no cloud mutations
 - Prepared: 2026-07-30
 - Repository branch: `alpha`
 - Repository commit at planning time: `f1042bb04aa6ccc13c68eb21b6aa36640cd7efc3` (`postgres cutover`)
@@ -21,14 +21,14 @@ The intended result is:
 - one Single-AZ RDS PostgreSQL `db.t4g.micro`;
 - the existing ALB and focused WAF protection retained;
 - no NAT gateway;
-- the already-deployed multi-architecture image copied by immutable digest instead
-  of rebuilt;
+- a target-only immutable Linux AMD64 plus Linux ARM64 rebuild of the exact
+  S3-exclusive application release observed live in `ai-quinn`;
 - low-effort, low-risk cost reductions without redesigning the application.
 
 No database, S3 object, provider identity, task, partner approval, or other
-application-state migration is planned. The target starts clean. Source access is
-limited to resolving/copying the deployed image and confirming non-secret runtime
-configuration needed to reproduce the service.
+application-state migration is planned. The target starts clean. The `ai-quinn`
+source account is strictly read-only and is limited to the already-completed
+minimum discovery of the deployed image and non-secret runtime configuration.
 
 This document is a plan, not authorization to skip review. Before any target
 mutation, the next context must resolve the significant identifiers listed below,
@@ -63,13 +63,15 @@ No long-lived access key was created during this setup.
 - No target ACM certificate exists.
 - No target S3 bucket, ECR image, ECS service, EC2 instance, ALB, WAF, RDS database,
   or application secret has been created.
-- The exact image digest used by the live source ECS service has not been resolved.
-- The live source data model has not been resolved because it is not needed for
-  the approved clean-start scope.
+- The exact source image was resolved read-only and recorded in
+  `docs/mutualgpu-quinn-mutualcompute-deployment-record.md`; it has no ARM64 child.
+- The live source uses the legacy structured-S3 model, but no source data is
+  needed or permitted for the approved clean-start scope.
 - No image or application data has been copied.
 - No DNS record has been changed.
 - No source application resource has been modified or stopped.
-- No migration code or CloudFormation change has been implemented.
+- Phase 1 migration code and CloudFormation changes are implemented locally and
+  have not been applied to AWS.
 
 Read-only target checks during this session found no CloudFormation stacks or ACM
 certificates. They also confirmed that an ARM64 ECS-optimized Amazon Linux 2023
@@ -94,7 +96,7 @@ Use explicit profiles on every AWS CLI command. Never rely on a default profile.
 
 | Purpose | Profile or identity | Required behavior |
 |---|---|---|
-| Source discovery/export | `ai-quinn` | Minimum required reads and approved export/cutover actions only |
+| Source discovery | `ai-quinn` | Strictly read-only; minimum descriptive reads only |
 | Target authentication | `quinn-mutualcompute-login` | Authentication only; never use for service operations |
 | Target operations | `quinn-mutualcompute` | Must resolve to account `428590861908` in `us-east-1` |
 | Target console user | `mutual-ai-automation` | MFA-protected console identity |
@@ -133,9 +135,10 @@ If the login binding, account, role, or session name differs, stop and ask the
 user to verify the profile. Do not accept “same account” with a different
 principal as equivalent.
 
-Before source discovery or export, resolve the `ai-quinn` caller identity and
+Before any further source discovery, resolve the `ai-quinn` caller identity and
 explicitly distinguish it from the target. Do not copy an account ID from
-documentation into an AWS command without first verifying it.
+documentation into an AWS command without first verifying it, and never issue a
+source mutation under this plan.
 
 Brave currently has unusually broad console authority. Prefer reviewed CLI and
 CloudFormation operations. When MFA, ACM DNS validation, DNS management, or
@@ -167,7 +170,8 @@ automation. Do not reduce or replace access during the migration without approva
 | Architecture | Linux ARM64 |
 | ECS desired count | 1 |
 | Availability | Single task, Single-AZ compute, and Single-AZ database are acceptable |
-| Image | Existing deployed multi-architecture image; no rebuild planned |
+| First image | Rebuild commit `f96854d9429b398421fe15bbce89a8a741e1c769` under tag `cors-all-origins-20260727-r2` as an immutable Linux AMD64 plus Linux ARM64 index |
+| Release retention | Keep at most the last five successful target ECS task-definition revisions and their corresponding target ECR release indexes |
 | Ingress | Retain ALB and WAF for TLS and safety controls |
 | Scaling | No replica requirement and no application autoscaling |
 | Cost goal | Low-hanging cost optimization; avoid elaborate redesign |
@@ -191,8 +195,8 @@ Resolve and present these as one verification sheet before the first
 infrastructure mutation:
 
 1. Whether the public hostname remains exactly `mutualgpu.com`.
-2. The authoritative DNS provider/account and exact hosted-zone or zone
-   identifier.
+2. Confirm that the user will perform certificate-validation and application
+   DNS changes manually from the exact values presented after ACM/ALB creation.
 3. The exact globally unique target S3 bucket name. Recommended:
    `mutualgpu-data-428590861908-us-east-1`.
 4. The target primary and secondary Availability Zones, chosen only after
@@ -218,8 +222,9 @@ infrastructure mutation:
     - log group `/ecs/mutualgpu-api`;
     - secrets `mutualgpu/postgres` and `mutualgpu/deployment`.
 12. The exact tag vocabulary below, especially `Owner` and `Environment`.
-13. Whether to stop the source service immediately before DNS cutover or allow a
-    short overlap during DNS propagation. No late source writes will be migrated.
+13. Confirm that the source service remains untouched and that DNS propagation
+    can temporarily send traffic to both independent environments. No late
+    source writes will be migrated.
 14. The rollback policy for writes accepted by the clean target: explicitly
     accept their loss on rollback or separately expand scope later.
 15. The budget/anomaly-alert threshold and recipient address, after current
@@ -477,8 +482,11 @@ Required changes:
    service stack.
 7. Disable ECS Container Insights.
 8. Reduce `/ecs/mutualgpu-api` log retention from 14 to 7 days.
-9. Keep the ECR repository immutable and encrypted. Add only an untagged-image
-   cleanup rule; do not expire deployable rollback images yet.
+9. Keep the ECR repository immutable and encrypted. After each stable target
+   release, explicitly preview and approve retention of the five OCI indexes
+   referenced by the last five successful target ECS releases and only their
+   required platform, nested, and referrer artifacts. Do not add an independent
+   age/tag lifecycle rule, because it cannot verify ECS rollback references.
 10. Preserve least-privilege separation between the EC2 instance role, task
     execution role, and application task role.
 
@@ -556,7 +564,8 @@ Required changes:
 11. Keep the ALB's web, WebSocket/SSE, and native gRPC routing.
 12. Keep the WAF rate rule, subject to confirmation of its exact limit.
 13. Use `/health/ready`, rather than only `/health/live`, for the web target group
-    because it latches only after startup PostgreSQL/S3 checks and recovery.
+    because it latches only after the application release's enabled startup
+    dependency checks and recovery.
     This is a one-time startup latch, not continuous dependency health; it will
     not detect a later RDS/S3 outage without an application change.
 14. Preserve deployment circuit-breaker rollback.
@@ -621,13 +630,24 @@ outside the clean-start scope: do not invoke or modify it for this deployment.
 Never deploy `artifacts/ai-quinn-iam-clone.template.yaml`. It is a broad,
 source-era IAM artifact and is not MutualGPU application infrastructure.
 
-## Existing image migration
+## Target image publication
 
-The default plan is to copy the exact image currently deployed by the live source
-ECS service. Do not rebuild merely because the target architecture changed:
-the image is expected to be a multi-architecture OCI image.
+Read-only discovery proved that the live source index has one Linux AMD64 image
+and one attestation but no Linux ARM64 image. The S3-exclusive application in
+that index is the required first target release; only the source index itself is
+not directly deployable on the ARM64 target host. Source Link metadata in the
+live application maps it to exact Git commit
+`f96854d9429b398421fe15bbce89a8a741e1c769`. The approved path is a fresh
+Linux AMD64 plus Linux ARM64 build from that exact clean commit, preserving tag
+`cors-all-origins-20260727-r2`. The target index digest will differ because it
+adds an ARM64 runtime image.
 
-### Resolve the source image
+RDS remains provisioned, private, and wired in the infrastructure for the future
+PostgreSQL application release. The first deployed application remains
+S3-exclusive and must not be replaced with the later PostgreSQL code merely
+because the database infrastructure already exists.
+
+### Recorded source evidence
 
 With read-only source calls:
 
@@ -635,51 +655,44 @@ With read-only source calls:
 2. Resolve the exact active task-definition ARN.
 3. Read only the API container's image URI and non-secret configuration names.
 4. Resolve the ECR tag, image digest, and OCI index.
-5. Verify the index contains `linux/arm64`; also record whether it contains
-   `linux/amd64`.
-6. Prove that the image supports the target PostgreSQL configuration and embedded
-   schema migrations. A live source service already using PostgreSQL is strong
-   evidence; a legacy structured-S3 source image is not.
-7. Record the source image URI, index digest, child ARM64 manifest digest, source
-   task-definition ARN, and observation timestamp.
+5. Verify and record the available runtime architectures; the observed source
+   index has Linux AMD64 and no Linux ARM64.
+6. Resolve the application Git commit from the live binary's Source Link metadata
+   without reading source secrets or application data.
+7. Record the source image URI, index digest, AMD64 child digest, exact Git
+   commit, source task-definition ARN, and observation timestamp.
 
 Do not use a floating `latest` tag as the deployment identifier.
 
-### Copy the image
+### Build and publish the target image
 
 After the target ECR repository exists:
 
-1. Authenticate separately to source and target ECR without printing passwords.
-2. Prefer `skopeo copy --all` or an equivalent registry-to-registry operation that
-   preserves the complete OCI index and all referenced platform manifests.
-3. If the image is already present locally, verify that the local artifact still
-   contains every platform; an ordinary single-platform Docker pull is not
-   sufficient evidence.
-4. Give the target image an immutable descriptive tag such as
-   `migration-<source-digest-prefix>`.
-5. Resolve the new target index digest and verify ARM64 again.
-6. Pass the target image to CloudFormation as
+1. Create a separate clean, detached Git worktree at
+   `f96854d9429b398421fe15bbce89a8a741e1c769`; do not check out or switch the
+   shared migration working tree.
+2. Set `MUTUALGPU_SOURCE_WORKTREE` to that worktree and use
+   `scripts/build-and-push-quinn-mutualcompute-image.sh`. The controller is bound
+   to the exact first-release commit/tag and target account/profile/role and
+   rejects commit/tag overrides or a dirty source worktree.
+3. Publish both `linux/amd64` and `linux/arm64`, with provenance and SBOM
+   attestations, under an immutable descriptive tag.
+4. Resolve the target OCI index digest and verify exactly one Linux AMD64 and one
+   Linux ARM64 child.
+5. Pass the target image to CloudFormation as
    `428590861908.dkr.ecr.us-east-1.amazonaws.com/mutualgpu-api@sha256:...`.
 
-The target registry may assign the same or a different index digest depending on
-the copy tool and manifest representation. Record the actual target digest.
+Do not authenticate to source ECR or copy the source index during this build.
+Rebuild the exact application source that produced the live S3-exclusive release;
+do not substitute the later PostgreSQL application version.
 
-Only consider rebuilding if the deployed source index lacks ARM64, the complete
-image cannot be copied, or the live image does not contain the PostgreSQL-capable
-application/schema required by the target design. In particular, do not reuse a
-legacy structured-S3 image merely because its architecture is compatible. A
-rebuild changes provenance and may change behavior, so show the evidence and get
-explicit approval first. If approved, build from a clean, reviewed
-PostgreSQL-capable commit—not from an ambiguous working tree—and publish both
-`linux/amd64` and `linux/arm64`.
-
-Repository build notes for that fallback:
+Repository build notes:
 
 - `deploy/Dockerfile` copies `artifacts/mutualgpu-api`, not
   `artifacts/publish`;
 - publish framework-dependent output with `UseAppHost=false`;
-- the current repository has no complete build-and-push script;
-- verify the Buildx builder before relying on it.
+- the target build script verifies that Buildx advertises both required
+  platforms before pushing.
 
 ## Clean-start data policy
 
@@ -690,140 +703,19 @@ cross-account data-transfer permissions.
 
 The clean target begins with:
 
-- an empty target PostgreSQL database initialized by the approved application;
+- an empty, provisioned target PostgreSQL database that the first S3-exclusive
+  application release does not initialize or use;
 - an empty target S3 application bucket;
 - freshly generated database credentials and task-handle encryption key;
 - no source tasks, artifacts, providers, partner approvals, or audit history;
 - existing browser requestor cookies still present at the hostname but no
   corresponding historical target records.
 
-The detailed subsections below are retained only as out-of-scope contingency
-notes. Do not execute them unless the user later expands scope through a new
-reviewed plan.
-
-### Out of scope: determine a source storage model
-
-Only if scope later changes, read the active source ECS task definition and
-inspect configuration names without reading secret values:
-
-- if it has `MutualGPU__Postgres__*`, PostgreSQL is authoritative;
-- if it has `MutualGPU__ProviderKeyS3__*` and no PostgreSQL configuration, the
-  legacy structured-S3 model is authoritative.
-
-Do not infer this from the repository's current commit. The repository recently
-changed to PostgreSQL and the live deployment can differ.
-
-### Out of scope: state a future full migration would preserve
-
-| State | Destination and handling |
-|---|---|
-| Tasks, attempts/events, capabilities, execution units/enrollments, provider-key digests, partner reviews, upload state, audit/outbox | Target PostgreSQL |
-| Input/result ZIPs, previews, thumbnails, metadata, and log bytes | Target S3 with identical object keys |
-| Provider identities | Migrate digest/binding records; raw keys are neither required nor available |
-| Approved partner origins and contact emails | Migrate as structured data |
-| Requestor identity | Preserve exact hostname so the host-scoped browser cookie remains usable |
-| Admin sessions, live sockets, progress, diagnostics | Process-local; expected to reset |
-
-Artifact prefixes include:
-
-```text
-mutualgpu/v3/requestors/*/tasks/*/inputs/*
-mutualgpu/v3/requestors/*/tasks/*/results/*
-```
-
-Before choosing the copy mechanism, inventory:
-
-- all source keys and sizes;
-- SSE-S3 versus SSE-KMS and any KMS key dependencies;
-- object ownership;
-- versioning and delete-marker behavior;
-- Object Lock;
-- storage classes;
-- content types, user metadata, and available checksum fields.
-
-Copy only from live CloudFormation/ECS-resolved buckets. Preserve object keys and
-required metadata. If a temporary cross-account bucket/KMS policy is needed,
-review its exact principal, actions, bucket/prefix, and duration, then remove it
-after verification.
-
-Require full current-key and object-size parity plus all available checksum and
-required-metadata comparisons. A multipart ETag is not a content MD5. Use
-controlled content hashing where no reliable service checksum exists and the
-risk warrants it. The repository's importer does not copy artifact bodies, and
-its source-artifact checks do not prove that the target bodies arrived.
-
-### Out of scope: if the source is already PostgreSQL
-
-Use a consistent PostgreSQL dump/restore or another explicitly reviewed logical
-migration. The repository currently has no PostgreSQL-to-PostgreSQL migration
-tool.
-
-Likely safe approach:
-
-1. provision the private target RDS instance but keep the target application task
-   stopped;
-2. perform an initial S3 artifact copy;
-3. choose an executable private-network path; the target EC2 host cannot directly
-   reach a source RDS instance in a separate account/VPC without connectivity
-   that is not in this design;
-4. securely resolve source and target database credentials from Secrets Manager;
-5. resolve the exact source PostgreSQL engine version and select a compatible
-   `pg_dump`/`pg_restore` client from the same major or a supported newer major;
-6. test an earlier dump by restoring it into a disposable database, using
-   `--no-owner --no-acl` or another reviewed ownership mapping so the target
-   `mutualgpu` principal owns the restored objects;
-7. delete/reset only the exact disposable database after reviewing the target;
-8. hard-stop the source ECS service for final consistency;
-9. take and validate a final logical dump;
-10. restore into the empty production target database;
-11. verify ownership, schema migrations, row counts, constraints, and
-    representative records;
-12. run the final S3 delta copy;
-13. start the target service.
-
-Do not make either RDS instance publicly accessible and do not place credentials
-in command arguments, files committed to Git, or tool output.
-
-Two viable connectivity patterns are:
-
-- run a narrowly permissioned ephemeral dump task inside the source VPC, write an
-  encrypted dump to an exact temporary S3 key, then run a separate restore task
-  inside the target VPC; or
-- use separate SSM tunnels through already managed hosts in each VPC, if live
-  discovery proves both paths exist.
-
-The first is more likely because the source currently appears ECS/Fargate-based.
-It requires explicit approval for the source-side task and temporary transfer
-permissions. Review the exact principals, prefixes, encryption mode/KMS keys, and
-cleanup. Do not add VPC peering or expose a database merely for migration.
-
-An encrypted cross-account RDS snapshot may require a customer-managed KMS key
-and extra policy work. For this small, cost-focused deployment, prefer a logical
-dump unless read-only discovery proves snapshot restore materially safer.
-
-### Out of scope: if the source uses legacy structured S3 state
-
-Use the checked-in resumable transactional-data importer to populate target
-PostgreSQL, after adapting its execution path so it can read the source profile
-and securely reach the private target database.
-
-The importer handles structured records such as provider bindings,
-capabilities, nodes/enrollments, task manifests/facts/attempt events, partner
-requests, queue markers, and commit markers. It does not copy input/result object
-bodies, so run a separate S3 copy and verification.
-
-The target application/schema uses embedded checksummed migrations and an
-advisory lock. Verify importer and application migration versions match the exact
-image being deployed.
-
-The existing importer is not a general incremental replicator. Once a task or
-ledger destination exists, later changed source facts can be reported as
-conflicts or skipped rather than updated. Do not run an initial production import
-and assume a final delta import will reconcile it. For any future state migration,
-run the authoritative structured-state import once after the source freeze. An
-earlier trial must use disposable state that is fully reset before the real
-import, or the importer must first be extended and tested for true incremental
-behavior.
+No data-migration contingency is executable under this handoff. Any future
+request to transfer source state would require a separate plan written from
+scratch, with new authorization and safety review. Do not adapt or invoke the
+checked-in importer, create source-side jobs, authenticate to source data stores,
+or add cross-account transfer permissions in this deployment.
 
 ### Secret handling
 
@@ -870,21 +762,21 @@ need to reveal any secret value to Codex.
 ### Cutover without data migration
 
 No database/S3 consistency freeze is required because source state will not move.
-The remaining decision is how to avoid confusing split operation while DNS
-propagates:
+The source account remains untouched while DNS propagates:
 
 1. fully validate the clean target before DNS;
-2. record the source service's actual desired count for rollback;
-3. get explicit approval for the chosen overlap policy;
-4. either scale the source service to zero immediately before DNS, accepting
-   propagation downtime, or allow a short source/target overlap and explicitly
-   accept that late source writes will never appear in the target;
-5. change DNS to the target;
-6. retain the intact source environment for the approved rollback period.
+2. record the source endpoint and observed read-only health for rollback;
+3. present the exact target ALB DNS name and propagation warning, then pause and
+   tag the user;
+4. have the user change DNS manually to the target without scaling, updating, or
+   otherwise mutating the source service;
+5. accept that requests reaching the old endpoint during DNS propagation remain
+   isolated from the clean target;
+6. leave the source environment untouched.
 
-Scaling the source to zero and changing DNS are significant mutations. Reverify
-the source/target identities and exact service/record identifiers immediately
-before both operations.
+Changing DNS is a significant external mutation. Reverify the target identity
+and exact DNS record immediately before that operation. No source-account
+mutation is part of cutover.
 
 ## ACM and DNS
 
@@ -897,18 +789,21 @@ Recommended sequence:
 1. discover the authoritative DNS provider and current records;
 2. confirm whether the hostname is the apex `mutualgpu.com`;
 3. request the target ACM certificate;
-4. pause and tag the user before any required Brave/MFA interaction;
-5. add the exact ACM DNS-validation record in the authoritative zone;
+4. present the exact ACM DNS-validation name/type/value, then pause and tag the
+   user;
+5. have the user add the ACM DNS-validation record manually in the authoritative
+   zone; Codex must not automate this DNS change through Brave or an API;
 6. wait for `ISSUED`;
 7. record and verify the target certificate ARN;
 8. deploy the target ALB with that ARN;
-9. lower the application record's TTL ahead of cutover if the provider supports
-   it and the user approves;
+9. ask the user to lower the application record's TTL manually ahead of cutover
+   if the provider supports it and the user approves;
 10. wait at least the record's previous TTL after lowering it before treating the
     lower TTL as effective;
 11. validate the target through the ALB while retaining SNI/Host
     `mutualgpu.com`;
-12. change the authoritative application record only after the target is healthy.
+12. present the exact application-record target only after the deployment is
+    healthy, then pause and tag the user to make that DNS change manually.
 
 Do not create a duplicate hosted zone casually. If DNS is already managed in
 another account or provider, leaving it there and changing one record is usually
@@ -946,7 +841,9 @@ Apply these low-hanging controls:
 - S3 versioning disabled initially;
 - S3 incomplete multipart cleanup;
 - free S3 gateway endpoint if change-set review is clean;
-- ECR immutable images with cleanup limited to untagged artifacts;
+- at most five target ECS release revisions and five corresponding target ECR
+  release indexes, with only their required multi-architecture artifact
+  closures retained;
 - no replica scaling, service autoscaling, Multi-AZ RDS, ElastiCache, or other
   unneeded service.
 
@@ -1009,7 +906,8 @@ new live discovery identifies it and the user approves it.
 2. Convert `foundation.yaml` to create S3 and EC2 capacity resources.
 3. Convert `service.yaml` from Fargate to EC2/ARM64/bridge.
 4. Add identity-gated target provisioning/deployment tooling.
-5. Add an image-copy path that preserves the multi-platform index.
+5. Add a target-only image-build path that publishes and verifies the
+   multi-platform index.
 6. Add clean-start safeguards so no source database/S3 migration is invoked.
 7. Update deployment documentation.
 8. Run .NET tests and local/static CloudFormation checks.
@@ -1019,7 +917,8 @@ No cloud mutation is needed to complete Phase 1.
 
 ### Phase 2: create target prerequisites and foundation
 
-1. Create/validate the target ACM certificate through the approved DNS process.
+1. Request the target ACM certificate, present its exact validation record, pause
+   and tag the user, and wait for the user's manual DNS validation.
 2. Create the deployment secret securely with a fresh handle-encryption key.
 3. Validate the foundation template.
 4. Create the initial foundation change set with the exact approved parameters
@@ -1046,13 +945,17 @@ No cloud mutation is needed to complete Phase 1.
    - application, ownership, management, component, environment, and lifecycle
      tags on every supported resource and propagation path.
 
-### Phase 3: copy the image
+### Phase 3: build and publish the image
 
-1. Copy the exact source OCI index into target ECR.
-2. Verify `linux/arm64`.
-3. Verify the image is PostgreSQL-capable for the approved target schema/config.
-4. Record the target immutable tag and digest.
-5. Do not rebuild unless the user approves the documented fallback.
+1. Use a separate clean worktree at exact live-release commit
+   `f96854d9429b398421fe15bbce89a8a741e1c769`; do not switch the shared working
+   tree.
+2. Build and push an immutable target-only OCI index with Linux AMD64 and Linux
+   ARM64 children.
+3. Verify the target index contains exactly one child for each required
+   architecture and record the immutable target tag and digest.
+4. Do not authenticate to source ECR or copy the source index; rebuild the exact
+   live S3-exclusive release because its observed index lacks ARM64.
 
 ### Phase 4: verify the clean target data plane
 
@@ -1080,7 +983,10 @@ No cloud mutation is needed to complete Phase 1.
    - provider enrollment and reconnect;
    - WebSocket/SSE and native gRPC routing;
    - S3 upload, download, preview, and result paths;
-   - PostgreSQL persistence across one stop-before-start task deployment;
+   - continued S3 task/result persistence across one stop-before-start task
+     deployment;
+   - RDS remains private and healthy but unused by this first application
+     release;
    - CSP with the new S3 origin.
 7. Exercise a representative large-enough result to expose nano-memory failures.
 8. Review ECS/EC2 memory, OOM events, CPU credit balance, RDS connections/free
@@ -1093,25 +999,34 @@ No cloud mutation is needed to complete Phase 1.
 2. Reverify all identities and exact resource IDs.
 3. Reconfirm target ECS stability, `/health/ready`, ALB target health, approved
    image digest, and ARM64 runtime.
-4. Reconfirm the source-overlap policy. If the approved choice is a hard stop,
-   scale the exact source service to zero and wait for running count zero.
+4. Reconfirm that the source remains untouched and accept the temporary
+   source/target split caused by DNS propagation.
 5. Do not export, copy, restore, or import source application data.
-6. With explicit approval, change the exact DNS record to the target ALB.
+6. Present the exact target ALB record value, pause and tag the user, and have the
+   user change DNS manually.
 7. Validate public TLS, UI, API, provider flow, gRPC, clean target data, and admin
    access.
 8. Monitor closely through the agreed observation window.
 
 ### Phase 7: stabilization and later cleanup
 
-1. Keep the complete source environment intact for the approved rollback period.
+1. Leave the complete source environment untouched.
 2. Keep the source/target image digests and approved configuration/deployment
    record. No database dump or S3 migration manifest is required.
-3. Tune the task only from observed evidence.
-4. If `t4g.nano` is unsafe, present OOM/placement/load evidence and request approval
+3. After every stable target service release, preview and apply target-only
+   release retention using the exact displayed plan SHA-256: mark the current
+   revision successful, permanently remove task definitions outside the last
+   five successful releases, then remove ECR indexes and artifacts outside the
+   recursive dependency/referrer closure of those five releases.
+4. Treat five as the logical ECR release-index limit. A multi-architecture index
+   necessarily has child platform and attestation manifests, so raw artifact
+   count is not expected to equal five.
+5. Tune the task only from observed evidence.
+6. If `t4g.nano` is unsafe, present OOM/placement/load evidence and request approval
    for `t4g.micro`.
-5. Review actual spend and credit consumption.
-6. Propose least-privilege replacement for migration-time AdministratorAccess.
-7. Decommission source resources only under a new, explicit, reviewed plan.
+7. Review actual spend and credit consumption.
+8. Propose least-privilege replacement for migration-time AdministratorAccess.
+9. Source decommissioning is outside this plan and must not be performed.
 
 ## Validation gates
 
@@ -1131,7 +1046,21 @@ Do not declare completion until all applicable checks pass:
 - the running container can use its task-role S3 permissions but cannot reach
   EC2 IMDS/instance-profile credentials;
 - deployed image URI is pinned by target digest;
-- OCI index includes Linux ARM64;
+- the first deployed index has exactly one Linux AMD64 and one Linux ARM64
+  runtime image, and both carry provenance for source commit
+  `f96854d9429b398421fe15bbce89a8a741e1c769`, tag
+  `cors-all-origins-20260727-r2`, and the recorded source index digest;
+- no more than five total target `mutualgpu-api` task-definition revisions
+  remain after post-release retention, and each is a recorded successful release;
+- no more than five target ECR release indexes remain, and every other retained
+  ECR artifact is in the recursive descriptor/referrer closure required by one
+  of those indexes;
+- the ALB security group exposes only TCP 80/443 publicly and can egress only to
+  the API security group on 8080/8081;
+- the ECS host has no SSH key/rule or other direct public ingress and accepts
+  8080/8081 only from the ALB security group;
+- RDS is not public, its subnets have no public default route, and its security
+  group accepts 5432 only from the API security group;
 - service desired count is 1 and running count is 1;
 - ALB web and gRPC targets are healthy;
 - `/health/ready` succeeds;
@@ -1143,9 +1072,10 @@ Do not declare completion until all applicable checks pass:
 - CSP permits only the exact target S3 origin;
 - WAF is associated with the target ALB and the reviewed rule is active;
 - public certificate and hostname validate;
-- DNS resolves to the target only after approval;
+- DNS resolves to the target only after the user performs the reviewed manual
+  record change;
 - no credentials or secret values appeared in logs or transcripts;
-- source remains recoverable throughout the rollback window.
+- no source-account resource was changed at any point.
 
 ## Rollback
 
@@ -1161,12 +1091,12 @@ After cutover:
    stop; wait for running count zero.
 2. Record the accepted target-write/data-loss boundary. No reverse data migration
    is planned.
-3. Restore the source ECS service to its recorded pre-cutover desired count.
-4. Wait for source ECS stability, source `/health/ready`, and healthy source ALB
-   targets.
-5. Only then change DNS back to the exact recorded source endpoint.
-6. Monitor old and new TTL/cache windows while the target stays stopped.
-7. Keep target resources for diagnosis; do not destroy evidence automatically.
+3. Verify the recorded source endpoint read-only; do not scale, update, or
+   otherwise mutate its ECS service.
+4. Present the exact recorded source endpoint, pause and tag the user, and have
+   the user change DNS back manually only after explicit approval.
+5. Monitor old and new TTL/cache windows while the target stays stopped.
+6. Keep target resources for diagnosis; do not destroy evidence automatically.
 
 Rollback after target writes loses access to those clean-target writes because no
 reverse migration is planned. Keep the initial observation window short and
@@ -1177,13 +1107,15 @@ avoid source deletion so the infrastructure rollback remains manageable.
 - Do not use Backblaze/B2.
 - Do not run any AWS CLI command without an explicit source or target profile.
 - Do not use `quinn-mutualcompute-login` for AWS service operations.
-- Do not run `scripts/deploy-aws-service.sh` unchanged.
+- Do not bypass the target identity, change-set review, or release-retention
+  safety gates in `scripts/deploy-aws-service.sh`.
 - Do not deploy the source IAM-clone artifact.
 - Do not create or use the globally conflicting bucket name `mutualgpu-data`.
 - Do not deploy Fargate.
 - Do not substitute `t4g.micro` for the ECS host without approval.
 - Do not add a NAT gateway.
-- Do not rebuild the application image by default.
+- Do not publish a single-platform application image or copy the incompatible
+  source index as the target release.
 - Do not deploy a floating `latest` image.
 - Do not infer live source resources from stale documentation.
 - Do not dump, restore, import, synchronize, or copy source PostgreSQL/S3
@@ -1191,8 +1123,8 @@ avoid source deletion so the infrastructure rollback remains manageable.
 - Do not create cross-account data-transfer policies or migration jobs.
 - Do not expose secret values or raw provider keys.
 - Do not make RDS public.
-- Do not delete, overwrite, or decommission source resources during migration
-  without explicit approval.
+- Do not create, update, scale, tag, copy into, delete, overwrite, or
+  decommission any source-account resource under this plan.
 - Do not perform broad Brave console operations without the user present and the
   account/resource visibly verified.
 
@@ -1207,15 +1139,15 @@ At minimum, the implementation context should expect reviewed changes to:
 - `src/MutualGPU.Api/Program.cs` and relevant configuration/tests;
 - deployment/cutover documentation.
 
-Prefer a new explicit image-copy script over hiding cross-account behavior inside
-the service deploy wrapper. Keep discovery, provisioning, image copy, deployment,
-cutover, and decommissioning as separately reviewable operations. Do not modify
-or invoke `scripts/import-transactional-data.sh` for this clean start.
+Keep read-only source discovery, target provisioning, target image build,
+deployment, and cutover as separately reviewable operations. Do not add
+cross-account image-copy behavior and do not modify or invoke
+`scripts/import-transactional-data.sh` for this clean start.
 
 ## New-context starting instruction
 
-Start with Phase 0 only. Read the live resources using the minimum source access,
-produce the exact verification sheet, and return it to the user with the
-CloudFormation/code implementation plan. Do not create target application
-resources until those significant identifiers and configurations have been
-confirmed. No application-data migration is planned.
+Use `docs/mutualgpu-quinn-mutualcompute-deployment-record.md` as the completed
+Phase 0 evidence and Phase 1 change record. Reverify time-sensitive target facts
+before any cloud mutation, present the exact change set and identifiers, and do
+not create target application resources until the user confirms them. No source
+mutation or application-data migration is permitted.
