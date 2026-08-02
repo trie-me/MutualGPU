@@ -307,7 +307,9 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
-      ObjectOwnership: BucketOwnerEnforced
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -813,9 +815,7 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
-                Resource:
-                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/inputs/*'
-                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/results/*'
+                Resource: !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/*'
       Tags:
         - Key: Name
           Value: mutualgpu-ecs-task
@@ -952,7 +952,11 @@ Resources:
 
             systemctl daemon-reload
             systemctl restart docker
-            systemctl enable --now ecs
+            # ecs.service waits for cloud-init. Starting it synchronously from
+            # cloud-final deadlocks both units, so enable it and queue the start
+            # without waiting for completion.
+            systemctl enable ecs
+            systemctl start --no-block ecs
       TagSpecifications:
         - ResourceType: launch-template
           Tags:

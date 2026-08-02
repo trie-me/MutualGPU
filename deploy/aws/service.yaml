@@ -283,11 +283,20 @@ Resources:
       LoadBalancerArn: !Ref LoadBalancer
       Port: 443
       Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-Res-2021-06
       Certificates:
         - CertificateArn: !Ref CertificateArn
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref WebTargetGroup
+      ListenerAttributes:
+        - Key: routing.http.response.content_security_policy.header_value
+          Value:
+            Fn::Sub:
+              - >-
+                default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: https://api.producthunt.com https://${BucketName}.s3.${AWS::Region}.amazonaws.com; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
+              - BucketName:
+                  Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
       Tags:
         - Key: Name
           Value: mutualgpu-https
@@ -370,6 +379,8 @@ Resources:
           Environment:
             - Name: ASPNETCORE_ENVIRONMENT
               Value: Production
+            - Name: MutualGPU__Security__AllowArbitraryBrowserTaskWriteOrigins
+              Value: 'true'
             - Name: MutualGPU__TrustForwardedProto
               Value: 'true'
             - Name: MutualGPU__TrustedProxyNetworks__0
@@ -382,6 +393,11 @@ Resources:
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
             - Name: MutualGPU__S3__Region
+              Value: us-east-1
+            - Name: MutualGPU__ProviderKeyS3__BucketName
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
+            - Name: MutualGPU__ProviderKeyS3__Region
               Value: us-east-1
             - Name: MutualGPU__Csp__S3ImageOrigin
               Value:
