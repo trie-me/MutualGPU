@@ -15,6 +15,7 @@ ENV ASPNETCORE_ENVIRONMENT=Production \
     Kestrel__Endpoints__Grpc__Protocols=Http2
 
 COPY artifacts/mutualgpu-api/ ./
+COPY artifacts/mutualgpu-transactional-data-migrator/ ./migrator/
 
 EXPOSE 8080 8081
 USER app

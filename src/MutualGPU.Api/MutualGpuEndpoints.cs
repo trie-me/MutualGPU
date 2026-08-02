@@ -197,6 +197,14 @@ public static class MutualGpuEndpoints
     public static async Task<IResult> ListTasks(HttpContext context, ITaskSummaryReader summaries, IProviderProgress progress, int? limit, string? cursor, CancellationToken cancellationToken)
     {
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
+        if (limit is null && cursor is null)
+        {
+            // Preserve the legacy no-query contract. Pagination is opt-in so
+            // existing clients cannot silently lose older task history.
+            var allTasks = await summaries.ListSummariesAsync(requestorId, cancellationToken).ConfigureAwait(false);
+            return TypedResults.Ok(allTasks.Select(task => ToDto(task, progress.Get(task.TaskId))).ToArray());
+        }
+
         PageResult<TaskSummary> tasks;
         try
         {

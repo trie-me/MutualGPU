@@ -35,6 +35,7 @@ Usage:
   scripts/deploy-aws-service.sh create-foundation-change-set <change-set-name>
   scripts/deploy-aws-service.sh create-service-change-set <change-set-name>
   scripts/deploy-aws-service.sh execute-change-set <stack-name> <change-set-name-or-arn>
+  scripts/deploy-aws-service.sh verify-release-image <target-image-uri>
   scripts/deploy-aws-service.sh verify-live-source-release-image <target-image-uri>
   scripts/deploy-aws-service.sh verify-deployed-live-source-release
   scripts/deploy-aws-service.sh verify-deployed-security-boundaries
@@ -98,6 +99,175 @@ verify_target_identity() {
     echo "Observed ARN: ${arn}" >&2
     exit 1
   fi
+}
+
+verify_release_image() {
+  [[ $# -eq 1 ]] || usage
+  local image_uri="$1"
+  local reviewed_commit="${MUTUALGPU_REVIEWED_COMMIT:?Set MUTUALGPU_REVIEWED_COMMIT to the exact reviewed release commit.}"
+  local reviewed_tag="${MUTUALGPU_REVIEWED_RELEASE_TAG:?Set MUTUALGPU_REVIEWED_RELEASE_TAG to the immutable reviewed release tag.}"
+  local image_digest image_details scan_status manifest_response index_manifest
+  local amd64_digest arm64_digest architecture child_manifest_response child_manifest config_digest download_url config_json
+
+  if [[ ! "$reviewed_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "MUTUALGPU_REVIEWED_COMMIT must be an exact 40-character lowercase Git commit." >&2
+    exit 1
+  fi
+  if [[ ! "$reviewed_tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+    echo "MUTUALGPU_REVIEWED_RELEASE_TAG must be a valid immutable container tag." >&2
+    exit 1
+  fi
+  if [[ "$image_uri" != "${ecr_repository_uri}@sha256:"* ]]; then
+    echo "The release image must use the exact target repository and an immutable digest." >&2
+    exit 1
+  fi
+  image_digest="${image_uri##*@}"
+  if [[ ! "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    echo "The release image has an invalid immutable digest." >&2
+    exit 1
+  fi
+
+  image_details="$(aws_target ecr describe-images \
+    --repository-name "$ecr_repository_name" \
+    --image-ids "imageDigest=${image_digest}" \
+    --query imageDetails \
+    --output json)"
+  if ! jq -e --arg digest "$image_digest" --arg tag "$reviewed_tag" \
+    'length == 1
+     and .[0].imageDigest == $digest
+     and ((.[0].imageTags // []) | sort == [$tag])
+     and (.[0].imageScanStatus.status // "COMPLETE") != "IN_PROGRESS"' \
+    <<<"$image_details" \
+    >/dev/null; then
+    echo "The release digest must have exactly the reviewed immutable tag and a settled image-scan status." >&2
+    exit 1
+  fi
+  scan_status="$(jq -r '.[0].imageScanStatus.status // "UNAVAILABLE"' <<<"$image_details")"
+
+  manifest_response="$(aws_target ecr batch-get-image \
+    --repository-name "$ecr_repository_name" \
+    --image-ids "imageDigest=${image_digest}" \
+    --output json)"
+  if ! jq -e --arg digest "$image_digest" \
+    '(.failures | length) == 0
+     and ([.images[]? | select(.imageId.imageDigest == $digest)] | length) == 1
+     and ([.images[]?
+           | select(.imageId.imageDigest == $digest)
+           | .imageManifestMediaType]
+          | any(. == "application/vnd.oci.image.index.v1+json"
+                or . == "application/vnd.docker.distribution.manifest.list.v2+json"))' \
+    <<<"$manifest_response" \
+    >/dev/null; then
+    echo "The release digest is missing or is not a supported multi-architecture image index." >&2
+    exit 1
+  fi
+  index_manifest="$(jq -r --arg digest "$image_digest" \
+    '.images[] | select(.imageId.imageDigest == $digest) | .imageManifest' \
+    <<<"$manifest_response")"
+  if ! jq -e \
+    '([.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64")] | length) == 1
+     and ([.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "arm64")] | length) == 1
+     and ([.manifests[]?
+           | select((.platform.os // "unknown") != "unknown")
+           | select(.platform.os != "linux"
+                    or (.platform.architecture != "amd64"
+                        and .platform.architecture != "arm64"))]
+          | length) == 0' \
+    <<<"$index_manifest" \
+    >/dev/null; then
+    echo "The release index must contain exactly one Linux AMD64 and one Linux ARM64 runtime image." >&2
+    exit 1
+  fi
+  amd64_digest="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' <<<"$index_manifest")"
+  arm64_digest="$(jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64") | .digest' <<<"$index_manifest")"
+  if ! jq -e \
+    --arg amd64 "$amd64_digest" \
+    --arg arm64 "$arm64_digest" \
+    '
+      def attests($digest):
+        [.manifests[]?
+         | select((.platform.os // "") == "unknown"
+                  and (.platform.architecture // "") == "unknown"
+                  and .annotations["vnd.docker.reference.type"] == "attestation-manifest"
+                  and .annotations["vnd.docker.reference.digest"] == $digest)]
+        | length;
+      attests($amd64) == 1 and attests($arm64) == 1
+    ' \
+    <<<"$index_manifest" \
+    >/dev/null; then
+    echo "The release index must include one Buildx attestation manifest for each runtime image." >&2
+    exit 1
+  fi
+
+  for architecture in amd64 arm64; do
+    local child_digest
+    if [[ "$architecture" == "amd64" ]]; then child_digest="$amd64_digest"; else child_digest="$arm64_digest"; fi
+    child_manifest_response="$(aws_target ecr batch-get-image \
+      --repository-name "$ecr_repository_name" \
+      --image-ids "imageDigest=${child_digest}" \
+      --output json)"
+    if ! jq -e --arg digest "$child_digest" \
+      '(.failures | length) == 0
+       and ([.images[]? | select(.imageId.imageDigest == $digest)] | length) == 1' \
+      <<<"$child_manifest_response" \
+      >/dev/null; then
+      echo "The ${architecture} child manifest is missing from target ECR." >&2
+      exit 1
+    fi
+    child_manifest="$(jq -r --arg digest "$child_digest" \
+      '.images[] | select(.imageId.imageDigest == $digest) | .imageManifest' \
+      <<<"$child_manifest_response")"
+    config_digest="$(jq -r '.config.digest // empty' <<<"$child_manifest")"
+    if [[ ! "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "The ${architecture} child has no valid OCI configuration digest." >&2
+      exit 1
+    fi
+    download_url="$(aws_target ecr get-download-url-for-layer \
+      --repository-name "$ecr_repository_name" \
+      --layer-digest "$config_digest" \
+      --query downloadUrl \
+      --output text)"
+    if [[ -z "$download_url" || "$download_url" == "None" ]]; then
+      echo "Target ECR did not provide the ${architecture} configuration blob." >&2
+      exit 1
+    fi
+    if ! config_json="$(curl --fail --silent --location "$download_url")"; then
+      echo "The ${architecture} configuration blob could not be read from target ECR." >&2
+      exit 1
+    fi
+    download_url=''
+    if ! jq -e \
+      --arg architecture "$architecture" \
+      --arg revision "$reviewed_commit" \
+      --arg version "$reviewed_tag" \
+      '.os == "linux"
+       and .architecture == $architecture
+       and .config.Labels["org.opencontainers.image.revision"] == $revision
+       and .config.Labels["org.opencontainers.image.version"] == $version
+       and .config.Labels["com.mutualgpu.release.commit"] == $revision
+       and .config.Labels["com.mutualgpu.release.tag"] == $version' \
+      <<<"$config_json" \
+      >/dev/null; then
+      echo "The ${architecture} image does not carry the reviewed release provenance." >&2
+      exit 1
+    fi
+  done
+
+  jq -n \
+    --arg imageUri "$image_uri" \
+    --arg targetDigest "$image_digest" \
+    --arg releaseTag "$reviewed_tag" \
+    --arg sourceCommit "$reviewed_commit" \
+    --arg scanStatus "$scan_status" \
+    --arg amd64Digest "$amd64_digest" \
+    --arg arm64Digest "$arm64_digest" \
+    '{
+       ImageUri: $imageUri,
+       TargetIndexDigest: $targetDigest,
+       ReviewedRelease: {Commit: $sourceCommit, Tag: $releaseTag},
+       ImageScanStatus: $scanStatus,
+       TargetPlatformDigests: {LinuxAmd64: $amd64Digest, LinuxArm64: $arm64Digest}
+     }'
 }
 
 verify_live_source_release_image() {
@@ -1199,7 +1369,12 @@ show_change_set() {
     --stack-name "$stack_name" \
     --change-set-name "$change_set_name" \
     --query '{ChangeSetId:ChangeSetId,StackId:StackId,Status:Status,ExecutionStatus:ExecutionStatus,Parameters:Parameters,Changes:Changes[*].ResourceChange.{Action:Action,LogicalResourceId:LogicalResourceId,ResourceType:ResourceType,Replacement:Replacement,Scope:Scope}}' \
-    --output json
+    --output json |
+    jq 'if .Parameters then
+          .Parameters |= map(if .ParameterKey == "DeploymentSecretArn"
+                             then .ParameterValue = "[redacted]"
+                             else . end)
+        else . end'
 }
 
 create_foundation_change_set() {
@@ -1263,10 +1438,11 @@ create_service_change_set() {
   local image_uri="${MUTUALGPU_IMAGE_URI:?Set MUTUALGPU_IMAGE_URI to the reviewed target ECR URI pinned by digest.}"
   local certificate_arn="${MUTUALGPU_CERTIFICATE_ARN:?Set MUTUALGPU_CERTIFICATE_ARN to the reviewed target ACM certificate ARN.}"
   local deployment_secret_arn="${MUTUALGPU_DEPLOYMENT_SECRET_ARN:?Set MUTUALGPU_DEPLOYMENT_SECRET_ARN to the target secret ARN without exposing its value.}"
+  local active_legacy_task_definition_arn="${MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN:?Set MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN to the exact current legacy task definition ARN.}"
   local stack_type
   stack_type="$(change_set_type "$service_stack")"
-  echo "Verifying the reviewed target image and its complete source/hotfix provenance."
-  verify_live_source_release_image "$image_uri" >/dev/null
+  echo "Verifying the reviewed target image and its complete immutable-release provenance."
+  verify_release_image "$image_uri" >/dev/null
 
   local parameters=(
     "ParameterKey=FoundationStackName,ParameterValue=${foundation_stack}"
@@ -1275,14 +1451,25 @@ create_service_change_set() {
     "ParameterKey=PublicApiHost,ParameterValue=${MUTUALGPU_DOMAIN:-mutualgpu.com}"
     "ParameterKey=DeploymentSecretArn,ParameterValue=${deployment_secret_arn}"
     "ParameterKey=DesiredCount,ParameterValue=${MUTUALGPU_DESIRED_COUNT:-1}"
+    "ParameterKey=PostgresRuntimeMode,ParameterValue=${MUTUALGPU_POSTGRES_RUNTIME_MODE:-false}"
+    "ParameterKey=ActiveLegacyTaskDefinitionArn,ParameterValue=${active_legacy_task_definition_arn}"
+    "ParameterKey=MaintenanceMode,ParameterValue=${MUTUALGPU_MAINTENANCE_MODE:-false}"
+    "ParameterKey=MaintenanceOperatorIpv4Cidr,ParameterValue=${MUTUALGPU_MAINTENANCE_OPERATOR_IPV4_CIDR:-192.0.2.1/32}"
     "ParameterKey=ProviderCorsOrigin0,ParameterValue=${MUTUALGPU_PROVIDER_CORS_ORIGIN_0:-https://huggingface.co}"
     "ParameterKey=ProviderCorsOrigin1,ParameterValue=${MUTUALGPU_PROVIDER_CORS_ORIGIN_1:-https://vercel.com}"
     "ParameterKey=ProviderCorsOrigin2,ParameterValue=${MUTUALGPU_PROVIDER_CORS_ORIGIN_2:-https://yosun-triposplat-webgpu-demo.static.hf.space}"
     "ParameterKey=ProviderEnrollmentRateLimit,ParameterValue=${MUTUALGPU_PROVIDER_ENROLLMENT_RATE_LIMIT:-10}"
+    "ParameterKey=AllowArbitraryBrowserTaskWriteOrigins,ParameterValue=${MUTUALGPU_ALLOW_ARBITRARY_BROWSER_TASK_WRITE_ORIGINS:-true}"
   )
 
   echo "Creating ${stack_type} change set ${change_set_name} for ${service_stack}."
-  printf '  %s\n' "${parameters[@]}"
+  for parameter in "${parameters[@]}"; do
+    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* ]]; then
+      echo "  ParameterKey=DeploymentSecretArn,ParameterValue=[redacted]"
+    else
+      echo "  ${parameter}"
+    fi
+  done
   aws_target cloudformation create-change-set \
     --stack-name "$service_stack" \
     --change-set-name "$change_set_name" \
@@ -2113,7 +2300,7 @@ execute_change_set() {
       '.Parameters[] | select(.ParameterKey == "ImageUri") | .ParameterValue // empty' \
       <<<"$change_set_description")"
     echo "Reverifying the reviewed target image immediately before service-stack execution."
-    verify_live_source_release_image "$image_uri" >/dev/null
+    verify_release_image "$image_uri" >/dev/null
   fi
 
   aws_target cloudformation execute-change-set \
@@ -2142,6 +2329,9 @@ case "$action" in
     ;;
   execute-change-set)
     execute_change_set "$@"
+    ;;
+  verify-release-image)
+    verify_release_image "$@"
     ;;
   verify-live-source-release-image)
     verify_live_source_release_image "$@"

@@ -69,7 +69,16 @@ public sealed class PostgresOperationUnitOfWorkTests
             1,
             new string('a', 64),
             ArtifactState.Available,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        {
+            Locations =
+            [new ArtifactLocation(
+                ArtifactStorageTargetIds.AwsPrimary,
+                duplicateKey,
+                null,
+                ArtifactLocationState.Available,
+                DateTimeOffset.UtcNow)],
+        };
         await fixture.Operations.ExecuteAsync(
             (context, _) =>
             {
@@ -210,13 +219,14 @@ public sealed class PostgresOperationUnitOfWorkTests
         await using var fixture = await PostgresFixture.CreateAsync();
         var task = await fixture.InsertQueuedTaskAsync();
         var createdAt = DateTimeOffset.UtcNow;
+        var firstKey = $"mutualgpu/test/{Guid.CreateVersion7():N}/artifact.bin";
         var first = new ArtifactDescriptor(
             ArtifactId.New(),
             task.Id,
             null,
             ArtifactDirection.Input,
             "input",
-            $"mutualgpu/test/{Guid.CreateVersion7():N}/legacy-one.bin",
+            firstKey,
             "application/octet-stream",
             1,
             new string('d', 64),
@@ -227,45 +237,17 @@ public sealed class PostgresOperationUnitOfWorkTests
             [
                 new ArtifactLocation(
                     ArtifactStorageTargetIds.AwsPrimary,
-                    $"mutualgpu/test/{Guid.CreateVersion7():N}/shared.bin",
+                    firstKey,
                     "provider-etag-is-opaque",
                     ArtifactLocationState.Available,
                     createdAt),
-                new ArtifactLocation(
-                    "secondary-target",
-                    $"mutualgpu/test/{Guid.CreateVersion7():N}/secondary.bin",
-                    null,
-                    ArtifactLocationState.Failed,
-                    createdAt),
             ],
-        };
-        var second = new ArtifactDescriptor(
-            ArtifactId.New(),
-            task.Id,
-            null,
-            ArtifactDirection.Input,
-            "secondary-input",
-            $"mutualgpu/test/{Guid.CreateVersion7():N}/legacy-two.bin",
-            "application/octet-stream",
-            1,
-            new string('e', 64),
-            ArtifactState.Available,
-            createdAt)
-        {
-            Locations =
-            [new ArtifactLocation(
-                "secondary-target",
-                first.Locations![0].ObjectKey,
-                null,
-                ArtifactLocationState.Available,
-                createdAt)],
         };
 
         await fixture.Operations.ExecuteAsync(
             (context, _) =>
             {
                 context.Artifacts.Add(first);
-                context.Artifacts.Add(second);
                 return Task.FromResult(true);
             },
             CancellationToken.None);
@@ -274,21 +256,16 @@ public sealed class PostgresOperationUnitOfWorkTests
             (context, token) => context.Artifacts.GetForTaskAsync(task.Id, token),
             CancellationToken.None);
         var persistedFirst = Assert.Single(persisted, item => item.Id == first.Id);
-        Assert.Equal(2, persistedFirst.Locations?.Count);
-        Assert.Contains(
-            persistedFirst.Locations!,
-            item => item.StorageTargetId == ArtifactStorageTargetIds.AwsPrimary &&
-                    item.ProviderETag == "provider-etag-is-opaque");
-        Assert.Contains(
-            persistedFirst.Locations!,
-            item => item.StorageTargetId == "secondary-target" &&
-                    item.State == ArtifactLocationState.Failed);
+        var location = Assert.Single(persistedFirst.Locations!);
+        Assert.Equal(ArtifactStorageTargetIds.AwsPrimary, location.StorageTargetId);
+        Assert.Equal(first.S3ObjectKey, location.ObjectKey);
+        Assert.Equal("provider-etag-is-opaque", location.ProviderETag);
 
         var duplicate = first with
         {
             Id = ArtifactId.New(),
             Role = "duplicate",
-            S3ObjectKey = $"mutualgpu/test/{Guid.CreateVersion7():N}/legacy-three.bin",
+            S3ObjectKey = first.S3ObjectKey,
             Locations =
             [new ArtifactLocation(
                 ArtifactStorageTargetIds.AwsPrimary,
@@ -304,6 +281,115 @@ public sealed class PostgresOperationUnitOfWorkTests
                 return Task.FromResult(true);
             },
             CancellationToken.None));
+    }
+
+    [PostgresFact]
+    public async Task Artifact_location_reads_fail_closed_for_corrupt_target_key_or_state()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var task = await fixture.InsertQueuedTaskAsync();
+        var createdAt = DateTimeOffset.UtcNow;
+        var key = $"mutualgpu/test/{Guid.CreateVersion7():N}/artifact.bin";
+        var artifact = new ArtifactDescriptor(
+            ArtifactId.New(),
+            task.Id,
+            null,
+            ArtifactDirection.Input,
+            "input",
+            key,
+            "application/octet-stream",
+            1,
+            new string('d', 64),
+            ArtifactState.Available,
+            createdAt)
+        {
+            Locations =
+            [new ArtifactLocation(
+                ArtifactStorageTargetIds.AwsPrimary,
+                key,
+                null,
+                ArtifactLocationState.Available,
+                createdAt)],
+        };
+        await fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.Artifacts.Add(artifact);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        await using (var connection = await fixture.DataSource.OpenConnectionAsync())
+        await using (var command = new NpgsqlCommand(
+            "update artifact_locations set storage_target_id = 'unexpected-target' where artifact_id = @artifact_id",
+            connection))
+        {
+            command.Parameters.AddWithValue("artifact_id", artifact.Id.Value);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Operations.ExecuteAsync(
+            (context, token) => context.Artifacts.GetForTaskAsync(task.Id, token),
+            CancellationToken.None));
+    }
+
+    [PostgresFact]
+    public async Task Repeated_artifact_reads_preserve_a_pending_location_lifecycle_update()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var task = await fixture.InsertQueuedTaskAsync();
+        var createdAt = DateTimeOffset.UtcNow;
+        var key = $"mutualgpu/test/{Guid.CreateVersion7():N}/staged.bin";
+        var artifact = new ArtifactDescriptor(
+            ArtifactId.New(),
+            task.Id,
+            null,
+            ArtifactDirection.Input,
+            "input",
+            key,
+            "application/octet-stream",
+            1,
+            new string('e', 64),
+            ArtifactState.Staged,
+            createdAt)
+        {
+            Locations =
+            [new ArtifactLocation(
+                ArtifactStorageTargetIds.AwsPrimary,
+                key,
+                "opaque-provider-etag",
+                ArtifactLocationState.Staged,
+                createdAt)],
+        };
+        await fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.Artifacts.Add(artifact);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        await fixture.Operations.ExecuteAsync(
+            async (context, token) =>
+            {
+                var loaded = Assert.Single(await context.Artifacts.GetForTaskAsync(task.Id, token));
+                context.Artifacts.Update(loaded with { State = ArtifactState.Available });
+
+                var reloaded = Assert.Single(await context.Artifacts.GetForTaskAsync(task.Id, token));
+                Assert.Equal(ArtifactState.Available, reloaded.State);
+                Assert.Equal(ArtifactLocationState.Available, Assert.Single(reloaded.Locations!).State);
+                Assert.Equal("opaque-provider-etag", Assert.Single(reloaded.Locations!).ProviderETag);
+                return true;
+            },
+            CancellationToken.None);
+
+        var persisted = await fixture.Operations.ExecuteAsync(
+            (context, token) => context.Artifacts.GetForTaskAsync(task.Id, token),
+            CancellationToken.None);
+        var persistedArtifact = Assert.Single(persisted);
+        Assert.Equal(ArtifactState.Available, persistedArtifact.State);
+        Assert.Equal(ArtifactLocationState.Available, Assert.Single(persistedArtifact.Locations!).State);
+        Assert.Equal("opaque-provider-etag", Assert.Single(persistedArtifact.Locations!).ProviderETag);
     }
 
     [PostgresFact]
@@ -328,6 +414,68 @@ public sealed class PostgresOperationUnitOfWorkTests
         Assert.NotNull(first.NextCursor);
         Assert.Equal([oldest.Id], second.Items.Select(static item => item.TaskId));
         Assert.Null(second.NextCursor);
+    }
+
+    [PostgresFact]
+    public async Task Requestor_task_reader_pages_high_cardinality_history_without_duplicates_or_omissions()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var requestorId = RequestorId.New();
+        var capability = new CapabilityDefinition(
+            CapabilityId.New(),
+            $"high-cardinality-pagination-{Guid.CreateVersion7():N}",
+            [],
+            new OutputDefinition(),
+            "high-cardinality-pagination-contract");
+        var createdAt = DateTimeOffset.UtcNow;
+        var tasks = Enumerable.Range(0, 51)
+            .Select(index => new TaskRequest(
+                TaskId.New(),
+                requestorId,
+                capability,
+                new MachineSpecifications(ResourceTier.Small, 8),
+                new TaskParameters(new Dictionary<string, string>(), null),
+                createdAt.AddSeconds(-index)))
+            .ToArray();
+        await fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.Capabilities.Add(capability);
+                foreach (var task in tasks) context.Tasks.Add(task);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        var first = await fixture.Tasks.ListSummariesPageAsync(
+            requestorId,
+            new PageRequest(17),
+            CancellationToken.None);
+        var replay = await fixture.Tasks.ListSummariesPageAsync(
+            requestorId,
+            new PageRequest(17),
+            CancellationToken.None);
+        Assert.Equal(first.Items.Select(static item => item.TaskId), replay.Items.Select(static item => item.TaskId));
+        Assert.Equal(first.NextCursor, replay.NextCursor);
+
+        var actual = new List<TaskId>();
+        PageResult<TaskSummary> page = first;
+        while (true)
+        {
+            actual.AddRange(page.Items.Select(static item => item.TaskId));
+            if (page.NextCursor is null) break;
+            page = await fixture.Tasks.ListSummariesPageAsync(
+                requestorId,
+                new PageRequest(17, page.NextCursor),
+                CancellationToken.None);
+        }
+
+        var expected = tasks
+            .OrderByDescending(static task => task.CreatedAt)
+            .ThenByDescending(static task => task.Id.Value)
+            .Select(static task => task.Id)
+            .ToArray();
+        Assert.Equal(expected, actual);
+        Assert.Equal(actual.Count, actual.Distinct().Count());
     }
 
     [PostgresFact]
@@ -441,7 +589,10 @@ public sealed class PostgresOperationUnitOfWorkTests
             ResultUploadState.Expired,
             now.AddHours(-1),
             1,
-            now.AddHours(-2));
+            now.AddHours(-2))
+        {
+            WriteStorageTargetId = ArtifactStorageTargetIds.AwsPrimary,
+        };
         var key = fixture.ObjectKeys.ResultZip(task.RequestorId, task.Id, attemptId);
         await fixture.Operations.ExecuteAsync(
             (context, _) =>
@@ -458,7 +609,16 @@ public sealed class PostgresOperationUnitOfWorkTests
                     1,
                     new string('c', 64),
                     ArtifactState.Available,
-                    now.AddHours(-1)));
+                    now.AddHours(-1))
+                {
+                    Locations =
+                    [new ArtifactLocation(
+                        ArtifactStorageTargetIds.AwsPrimary,
+                        key.Value,
+                        null,
+                        ArtifactLocationState.Available,
+                        now.AddHours(-1))],
+                });
                 return Task.FromResult(true);
             },
             CancellationToken.None);
@@ -477,6 +637,7 @@ public sealed class PostgresOperationUnitOfWorkTests
             objects,
             fixture.ObjectKeys,
             new FixedTimeProvider(now),
+            new OrphanArtifactReconciliationOptions(),
             NullLogger<PostgresOrphanArtifactReconciler>.Instance);
         await reconciler.ReconcileOnceAsync(CancellationToken.None);
 
@@ -485,7 +646,7 @@ public sealed class PostgresOperationUnitOfWorkTests
     }
 
     [PostgresFact]
-    public async Task Orphan_reconciliation_only_processes_operations_recorded_for_its_storage_target()
+    public async Task Orphan_reconciliation_report_only_leaves_expired_upload_and_object_untouched()
     {
         await using var fixture = await PostgresFixture.CreateAsync();
         var (task, unitId, attemptId, handle) = await fixture.InsertAcceptedTaskAsync();
@@ -503,7 +664,7 @@ public sealed class PostgresOperationUnitOfWorkTests
             1,
             now.AddHours(-2))
         {
-            WriteStorageTargetId = "secondary-target",
+            WriteStorageTargetId = ArtifactStorageTargetIds.AwsPrimary,
         };
         await fixture.Operations.ExecuteAsync(
             (context, _) =>
@@ -512,20 +673,6 @@ public sealed class PostgresOperationUnitOfWorkTests
                 return Task.FromResult(true);
             },
             CancellationToken.None);
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Operations.ExecuteAsync(
-            async (context, token) =>
-            {
-                var persisted = await context.ResultUploads.GetAsync(operation.Id, token);
-                Assert.NotNull(persisted);
-                context.ResultUploads.Update(persisted with
-                {
-                    WriteStorageTargetId = "unexpected-target",
-                    Version = persisted.Version + 1,
-                });
-                return true;
-            },
-            CancellationToken.None));
-
         var key = fixture.ObjectKeys.ResultZip(task.RequestorId, task.Id, attemptId);
         var objects = new InMemoryObjectStore();
         await using (var content = new MemoryStream([1]))
@@ -537,6 +684,7 @@ public sealed class PostgresOperationUnitOfWorkTests
             objects,
             fixture.ObjectKeys,
             new FixedTimeProvider(now),
+            new OrphanArtifactReconciliationOptions { Enabled = true, ReportOnly = true },
             NullLogger<PostgresOrphanArtifactReconciler>.Instance);
 
         await reconciler.ReconcileOnceAsync(CancellationToken.None);
@@ -551,7 +699,62 @@ public sealed class PostgresOperationUnitOfWorkTests
         await using var reader = await command.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal("expired", reader.GetString(0));
-        Assert.Equal("secondary-target", reader.GetString(1));
+        Assert.Equal(ArtifactStorageTargetIds.AwsPrimary, reader.GetString(1));
+    }
+
+    [PostgresFact]
+    public async Task Explicit_destructive_reconciliation_removes_only_an_unreferenced_expired_result()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var (task, unitId, attemptId, handle) = await fixture.InsertAcceptedTaskAsync();
+        var now = DateTimeOffset.UtcNow.AddDays(1);
+        var operation = new ResultUploadOperation(
+            ResultUploadOperationId.New(),
+            task.Id,
+            attemptId,
+            unitId,
+            new HandleCipher(fixture.Options).Digest(handle),
+            null,
+            null,
+            ResultUploadState.Expired,
+            now.AddHours(-1),
+            1,
+            now.AddHours(-2))
+        {
+            WriteStorageTargetId = ArtifactStorageTargetIds.AwsPrimary,
+        };
+        await fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.ResultUploads.Add(operation);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        var key = fixture.ObjectKeys.ResultZip(task.RequestorId, task.Id, attemptId);
+        var objects = new InMemoryObjectStore();
+        await using (var content = new MemoryStream([1]))
+        {
+            await objects.PutAsync(key, content, ObjectWriteConditions.IfNotExists, CancellationToken.None);
+        }
+        var reconciler = new PostgresOrphanArtifactReconciler(
+            fixture.DataSource,
+            objects,
+            fixture.ObjectKeys,
+            new FixedTimeProvider(now),
+            new OrphanArtifactReconciliationOptions { Enabled = true, ReportOnly = false },
+            NullLogger<PostgresOrphanArtifactReconciler>.Instance);
+
+        await reconciler.ReconcileOnceAsync(CancellationToken.None);
+
+        await using var removed = await objects.GetAsync(key, CancellationToken.None);
+        Assert.Null(removed);
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            "select state::text from result_upload_operations where id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", operation.Id.Value);
+        Assert.Equal("failed", await command.ExecuteScalarAsync());
     }
 
     private sealed class PostgresFixture : IAsyncDisposable
@@ -580,6 +783,9 @@ public sealed class PostgresOperationUnitOfWorkTests
 
         public MutualGpuObjectKeys ObjectKeys { get; }
 
+        public ArtifactStorageTargetSelection StorageTarget { get; } =
+            new(ArtifactStorageTargetIds.AwsPrimary);
+
         public static async Task<PostgresFixture> CreateAsync()
         {
             var connectionString = Environment.GetEnvironmentVariable("MUTUALGPU_TEST_POSTGRES")
@@ -596,7 +802,8 @@ public sealed class PostgresOperationUnitOfWorkTests
             var operations = new PostgresOperationUnitOfWork(
                 dataSource,
                 new HandleCipher(options),
-                objectKeys);
+                objectKeys,
+                new ArtifactStorageTargetSelection(ArtifactStorageTargetIds.AwsPrimary));
             return new PostgresFixture(
                 dataSource,
                 operations,
@@ -606,7 +813,7 @@ public sealed class PostgresOperationUnitOfWorkTests
         }
 
         public PostgresResultUploadStore CreateUploadStore() =>
-            new(DataSource, Operations, new HandleCipher(Options), ObjectKeys);
+            new(DataSource, Operations, new HandleCipher(Options), ObjectKeys, StorageTarget);
 
         public async Task<TaskRequest> InsertQueuedTaskAsync(
             RequestorId? requestorId = null,

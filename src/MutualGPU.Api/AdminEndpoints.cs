@@ -57,20 +57,30 @@ public static class AdminEndpoints
         NoStore(context.Response);
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
 
-        PageResult<TaskRequest> taskPage;
+        IReadOnlyList<TaskRequest> taskRequests;
         try
         {
-            taskPage = await tasks.GetPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken).ConfigureAwait(false);
+            if (limit is null && cursor is null)
+            {
+                // The shipped admin client historically makes this no-query
+                // request once. Keep that response complete; pagination is an
+                // explicit client opt-in.
+                taskRequests = await tasks.GetAllAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                var taskPage = await tasks.GetPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken).ConfigureAwait(false);
+                if (taskPage.NextCursor is not null)
+                {
+                    context.Response.Headers["X-MutualGPU-Next-Cursor"] = taskPage.NextCursor;
+                }
+                taskRequests = taskPage.Items;
+            }
         }
         catch (ArgumentException)
         {
             return Results.BadRequest(new { code = "pagination_cursor_invalid" });
         }
-        if (taskPage.NextCursor is not null)
-        {
-            context.Response.Headers["X-MutualGPU-Next-Cursor"] = taskPage.NextCursor;
-        }
-        var taskRequests = taskPage.Items;
         var diagnostics = connections.Snapshot();
         var sessions = MergeSessions(diagnostics.Sessions, taskRequests);
         var transactions = taskRequests.Select(static task => new AdminTransactionDto(
@@ -220,6 +230,12 @@ public static class AdminEndpoints
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
         try
         {
+            if (limit is null && cursor is null)
+            {
+                var allRequests = await registry.ListPendingAsync(cancellationToken).ConfigureAwait(false);
+                return Results.Ok(allRequests.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+            }
+
             var requests = await registry
                 .ListPendingPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken)
                 .ConfigureAwait(false);
@@ -260,6 +276,12 @@ public static class AdminEndpoints
         if (!access.IsAuthorized(context.Request.Cookies[AdminAccessService.CookieName])) return Results.Unauthorized();
         try
         {
+            if (limit is null && cursor is null)
+            {
+                var allRequests = await registry.ListApprovedAsync(cancellationToken).ConfigureAwait(false);
+                return Results.Ok(allRequests.Select(static request => PartnerResourceRequestDto.From(request)).ToArray());
+            }
+
             var requests = await registry
                 .ListApprovedPageAsync(new PageRequest(limit ?? 100, cursor), cancellationToken)
                 .ConfigureAwait(false);

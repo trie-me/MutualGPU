@@ -1,7 +1,9 @@
 # MutualGPU PostgreSQL release migration and go-live plan
 
-- Status: **draft for user review; no production execution is authorized**
+- Status: **approved for Phase 0 read-only verification and local implementation;
+  no AWS mutation, import, release, or cleanup is authorized**
 - Prepared: 2026-08-02 (Europe/London)
+- Local-worker dispatch approved by the user: 2026-08-02
 - Plan marker: `mutualgpu.postgres_release_cutover_plan.v1`
 - Production target: Quinn-MutualCompute AWS account `428590861908`, `us-east-1`
 - Public site: `https://mutualgpu.com`
@@ -14,10 +16,12 @@ PostgreSQL application release. It complements, rather than replaces,
 which defines the persistence design.
 
 The plan is deliberately fail-closed. An unresolved condition is **RED**, not
-implicitly acceptable. The document does not authorize an AWS mutation, a data
-import, a source-account read, a release, or a cleanup operation. Those actions
-begin only after the decisions below are reviewed and this status is changed to
-approved.
+implicitly acceptable. The user authorized a Terra worker to perform target-only
+read-only Phase 0 verification and local implementation/testing. That dispatch
+does not approve D1–D9 as production decisions and does not authorize an AWS
+mutation, data import, source-account read, release, maintenance activation,
+snapshot restore, public opening, or cleanup. Each later gate still requires the
+review and approval stated below.
 
 ## 1. Intended outcome
 
@@ -43,12 +47,15 @@ side on the existing host.
 
 ## 2. Current evidence state (must be repaired and reverified in Phase 0)
 
-The shared branch advanced while this plan was being prepared. At final local
-validation it was on branch `alpha` at
-`d57035ceca679aed90d31a727669983092cd5c5d`. The active checkout also contained
-an unrelated modification to `AGENTS.md` plus this untracked plan; the
-`AGENTS.md` change was left untouched. That commit is not automatically the
-PostgreSQL release candidate.
+The shared branch advanced while this plan was being prepared. The
+pre-correction review checkpoint was branch `alpha` at
+`6d6b68441d472d1995211951a02f33310dbddda9`, one commit ahead of
+`mutualgpu/alpha`, with a clean working tree. The root reviewer then made
+intentional, uncommitted plan-only corrections to this document and the
+multi-provider strategy; preserve them. The pre-work commit includes this plan,
+the reviewed opt-in storage boundary, migration `0004`, additive
+artifact-location repository changes, and tests. It is a starting point, not an
+approved PostgreSQL release candidate.
 
 The currently tracked
 [`mutualgpu-quinn-mutualcompute-deployment-record.md`](mutualgpu-quinn-mutualcompute-deployment-record.md)
@@ -101,7 +108,10 @@ reset, switched, or overwritten.
    providers, tasks, approvals, or artifacts.
 6. The only possible data-preservation path in this plan is **current target S3
    to current target RDS**, after explicit user approval.
-7. MutualGPU uses AWS S3 only. Backblaze/B2 must never be accessed.
+7. This cutover's selected object-storage target is AWS S3 `aws-primary`.
+   Backblaze/B2 must not be configured, initialized, or contacted during this
+   cutover. Any later B2 use requires an explicitly selected, separately reviewed
+   opt-in configuration.
 8. Resource identifiers are resolved from live CloudFormation/ECS configuration,
    not inferred from legacy documentation or adapters.
 9. Credentials, secret values, task handles, upload tokens, provider keys,
@@ -248,8 +258,14 @@ Required closure:
 - package the exact reviewed migrator in the release image or a separately
   pinned migration image;
 - define a one-off ECS/EC2 migration task with no public ports, target-private RDS
-  reachability, secret injection, CloudWatch logging, and a dedicated role that
-  can only list/get the reviewed target S3 prefixes;
+  reachability, secret injection, CloudWatch logging, and a dedicated role with
+  only List/Get on the reviewed target S3 prefixes plus narrowly scoped
+  `cloudformation:DescribeStacks`, `rds:DescribeDBInstances`,
+  `secretsmanager:DescribeSecret`, and STS identity access needed for the
+  attestations above; it must have no S3 write/delete permission;
+- alternatively supply immutable expected resource/secret-version metadata in a
+  signed, operator-reviewed attestation manifest when an AWS describe permission
+  is deliberately omitted;
 - run it while the singleton API service is stopped so the `t4g.nano` has enough
   capacity and no S3 writer remains.
 
@@ -277,6 +293,10 @@ existence/length, not full descriptor integrity. Required closure:
 - compare queue order, not only membership;
 - compare artifact key, role, direction, size, content type, SHA-256, owner, task,
   attempt, and availability state;
+- for migration `0004`, require exactly one `aws-primary` location for every
+  artifact, with object-key and lifecycle-state parity with the compatibility
+  artifact row, every result upload write target equal to `aws-primary`, and zero
+  missing, duplicate, unknown, or non-AWS target IDs;
 - allow the verifier to stream target S3 bodies read-only to compute hashes, but
   never copy, persist, move, or rewrite them;
 - prove every legacy input/result object is either represented by a committed
@@ -327,8 +347,9 @@ Required closure:
 - cover web, native gRPC, and WebSocket routes; a default HTTP action alone must
   not leave the existing gRPC listener rule public;
 - add a machine-readable, unpaginated freeze probe that accounts for every task
-  state plus issued, uploading, staged, and completing result operations; the
-  current process-local legacy upload registry and one-page admin view are not
+  state, requires zero `authorized`, `uploading`, or `uploaded` result-upload
+  operations, and separately requires zero `staged` artifacts; the current
+  process-local legacy upload registry and one-page admin view are not
   authoritative freeze evidence;
 - fail closed if the operator source address changes or the barrier cannot be
   proven externally.
@@ -457,6 +478,41 @@ instance and endpoint. Before relying on a snapshot for RG-6 recovery:
 - if this path is not proven, make RG-6 recovery correct-forward-only rather than
   claiming an immediate snapshot rollback.
 
+### B14. Artifact-location pre-work is not yet cutover-safe
+
+Commit `6d6b6844` adds migration `0004`, `artifact_locations`, and upload target
+metadata. The forward migration and repository tests pass against PostgreSQL 18,
+but the cutover verifier still ignores location rows, new writes can silently
+default to AWS, task completion can manufacture an AWS location for a different
+target, location-level updates can be lost or over-promoted, and a second
+artifact read in one unit of work can discard a pending update. Runtime download
+paths also still use the singleton AWS store and reconstructed keys.
+
+Required closure for this AWS cutover:
+
+- explicitly scope the release to the `aws-primary` compatibility slice; fail
+  startup, import, and verification on any other target ID without initializing
+  or contacting B2;
+- retain the metadata-only AWS backfill, but require every new upload and
+  location to name an allow-listed target explicitly rather than relying on a
+  database, domain, or repository fallback;
+- make task completion target-consistent and either implement explicit
+  per-location lifecycle/concurrency semantics or reject multi-location mutation
+  until those semantics exist;
+- preserve tracked mutations across repeated repository reads and add a
+  load-update-reload-commit regression test;
+- update importer summaries and independent verification with the B4 location
+  parity gates, including a deliberately corrupted-location failure test;
+- test empty-schema startup through the production data-source factory, migration
+  idempotency/checksums, positive AWS reconciliation, and every default-off
+  cleanup path;
+- before destructive reconciliation is ever enabled, bind `aws-primary` to an
+  attested immutable provider/account/bucket/region identity and fail closed on
+  drift;
+- record under B10 that a three-migration PostgreSQL image rejects the
+  four-migration schema; this first release has no implicit PostgreSQL binary
+  rollback.
+
 ## 7. Implementation sequence
 
 ### Phase 0 — Reverify and approve the plan
@@ -479,15 +535,20 @@ Then:
    one-shot outage duration.
 6. Reconcile the stale deployment/handoff records or create a new authoritative
    live checkpoint with the verified values.
-7. Resolve D1–D9 and every security acceptance with the user.
-8. Update this document to `approved` and record the approved release strategy.
+7. Present D1–D9 and every security acceptance with the reconciled evidence;
+   retain their `Pending` state until the user gives explicit production
+   decisions.
+8. Record the Phase 0 checkpoint and distinguish gates that block cloud
+   progression from work that can be completed and tested locally.
 
 Any identity mismatch, unexpected stack drift, source-account dependency,
-unreviewed data scope, or unresolved decision is RED.
+unreviewed data scope, or unresolved decision is RED for cloud progression; it
+does not prevent safe local blocker implementation.
 
 ### Phase 1 — Close code, safety, and compatibility blockers
 
-Implement B1–B13 in backward-compatible commits. At minimum, deliver:
+Implement the local portions of B1–B14 as backward-compatible changes. Leave
+cloud-dependent validation and rehearsals visibly pending. At minimum, deliver:
 
 - generic immutable release build/deploy provenance;
 - target-only one-off migrator task and IAM;
@@ -496,8 +557,11 @@ Implement B1–B13 in backward-compatible commits. At minimum, deliver:
 - independent ingress maintenance mode;
 - pagination compatibility;
 - PostgreSQL-backed API/import/restart coverage;
-- restricted PostgreSQL runtime S3 IAM and rehearsed snapshot endpoint switch;
+- restricted PostgreSQL runtime S3 IAM plus local snapshot endpoint-switch
+  runbook/templates/tests, with the cloud rehearsal pending approval;
 - temporary go-live observability and a production canary orchestrator.
+- AWS-only artifact-location parity, fail-closed target selection, and repository
+  regression coverage for migration `0004`.
 
 Do not mutate AWS application infrastructure in this phase. Local tests may use
 the repository PostgreSQL 18 composition.
@@ -662,9 +726,9 @@ release notice, secret exposure, or unreviewed scan finding.
 - Maintenance is externally proven for ordinary clients across HTTP, gRPC, and
   WebSocket paths.
 - ECS is `0/0`, target groups are drained, the unpaginated freeze probe reports
-  no assigned/accepted/disconnected task or issued/uploading/staged/completing
-  result operation, queued-task ordering is recorded, and two post-stop target
-  S3 inventories are identical.
+  no assigned/accepted/disconnected task, zero `authorized`, `uploading`, or
+  `uploaded` result-upload operations, and zero `staged` artifacts; queued-task
+  ordering is recorded, and two post-stop target S3 inventories are identical.
 - Pre-import snapshot is available and the exact old release evidence is saved.
 
 **RED:** any continuing writer/stream, changing S3 inventory, active-work policy
@@ -682,6 +746,9 @@ violation, missing snapshot, or unproven maintenance path.
   transaction and exits zero with `hasUnexplainedDiscrepancies=false`.
 - Aggregate fields, counts, statuses, versions, provider bindings, enrollments,
   partner reviews, queue order, and artifact descriptors/checksums match.
+- Every artifact has exactly one `aws-primary` location matching its compatibility
+  key/state, every upload write target is `aws-primary`, and there are zero
+  missing, duplicate, unknown, or non-AWS target IDs.
 - Every legacy object is represented or explicitly retained/classified; no S3
   object was deleted, copied, moved, or overwritten.
 - Post-import/pre-application-write snapshot is available.
@@ -814,7 +881,7 @@ do not fit the verified baseline.
 | Continuous S3/PostgreSQL probe | Dedicated probe every 30 seconds | Both pass | Two consecutive failures |
 | ALB target 5xx | CloudWatch one-minute sum | `0`, excluding an exact recorded negative canary request | Any unexplained target 5xx |
 | ALB target latency | CloudWatch p95 each minute | Under 2 seconds and no more than 2× the approved pre-open baseline | Breach for five consecutive samples |
-| PostgreSQL connections/pool | RDS plus app logs every 60 seconds | Fewer than 5 DB connections; no pool/command timeout | 5 or more for two samples, or any pool/command timeout |
+| PostgreSQL connections/pool | Role-scoped SQL, RDS, and app logs every 60 seconds | Application-role connections at or below the configured pool maximum of 5; total RDS connections at or below 80% of `max_connections`; no pool wait/command timeout | Application role above 5 or total above 80% for two samples, or any pool wait/command timeout |
 | RDS capacity | CloudWatch every 60 seconds | CPU below 80%, freeable memory at least 128 MiB, free storage at least 4 GiB | CPU/memory breach for five samples, or storage breach once |
 | Outbox | Read-only SQL every 60 seconds | No available unprocessed row older than 30 seconds; attempt count below 6; zero pending within 60 seconds of quiet | Age/attempt breach for two samples or failure to drain after quiet |
 | Task invariants | Read-only SQL every 5 minutes | Zero duplicate active attempts; zero accepted/disconnected task without a live/recovering provider beyond 180 seconds | Any violating row |
@@ -876,28 +943,35 @@ without secrets:
 Never include secret values, raw keys, task handles, tokens, presigned URLs,
 provider passcodes, administrator passwords, or raw user scalar parameters.
 
-## 11. Terra xhigh execution handoff (use only after approval)
+## 11. Terra xhigh execution handoff
 
-The execution worker must be started only after this plan is approved. Its
-starting instruction should include:
+The user approved Phase 0 target-only read-only verification and local
+implementation on 2026-08-02. This is not approval for an AWS mutation or any
+later production gate. The worker's starting instruction should include:
 
 > Use `gpt-5.6-terra` with `xhigh` reasoning. Read `AGENTS.md`,
 > `docs/mutualgpu-postgres-release-cutover-plan.md`,
 > `docs/mutualgpu-quinn-mutualcompute-migration-handoff.md`,
 > `docs/mutualgpu-quinn-mutualcompute-deployment-record.md`, and
-> `docs/transactional-data-postgres-migration-plan.md` completely. Preserve the
+> `docs/transactional-data-postgres-migration-plan.md`, and
+> `docs/multi-provider-artifact-storage-strategy.md` completely. Preserve the
 > shared checkout and build release artifacts only from a clean detached
 > release worktree. Treat handoff/deployment claims as stale until Phase 0
-> read-only AWS evidence reconciles them. Resolve D1–D9 and close all B1–B13
-> blockers locally, then present test evidence and exact AWS change sets for
-> review before the first target mutation. Never access Backblaze/B2 or
-> old-account application data. Use `ai-quinn` only if a newly reviewed plan
-> explicitly authorizes a minimum descriptive read; otherwise make no
-> source-account call. Do not accept the first public PostgreSQL application
-> write until RG-0 through RG-6 are green and the user approves the point of no
-> return.
+> target-only read-only AWS evidence reconciles them. Record D1–D9 for later
+> production approval and implement/test the local portions of B1–B14, leaving
+> cloud-dependent validation explicitly pending. For this cutover, select only
+> `aws-primary`; do not configure, initialize, or contact Backblaze/B2. Never
+> access old-account application data. Use `ai-quinn` only if a newly reviewed
+> plan explicitly authorizes a minimum descriptive read; otherwise make no
+> source-account call. Present local test evidence and exact proposed template
+> diffs/parameters first. Before ECR push or CloudFormation change-set creation,
+> pause for explicit target-mutation approval. After creation, present exact
+> image digests and change-set ARNs for separate execution approval. Do not
+> accept the first public PostgreSQL application write until RG-0 through RG-6
+> are green and the user approves the point of no return.
 
-The worker may implement and test local changes autonomously within this plan.
-It must pause for user review before any new data scope, target mutation batch,
-secret-handling exception, maintenance activation, import, snapshot restore,
-public opening, or destructive cleanup.
+The worker may perform target-only read-only Phase 0 checks and implement/test
+local changes autonomously within this plan. It must pause for user review before
+any source read, new data scope, target mutation batch (including ECR push or
+change-set creation), secret-handling exception, maintenance activation, import,
+snapshot creation/restore, public opening, or destructive cleanup.

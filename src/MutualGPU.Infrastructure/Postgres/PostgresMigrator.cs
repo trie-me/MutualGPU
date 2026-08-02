@@ -23,10 +23,21 @@ public sealed class PostgresMigrator(NpgsqlDataSource dataSource)
         try
         {
             await EnsureLedgerAsync(connection, cancellationToken).ConfigureAwait(false);
-            foreach (var migration in LoadMigrations())
+            var migrations = LoadMigrations();
+            var ledger = await ReadLedgerAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (!LedgerContainsOnlyExpectedMigrations(ledger, migrations))
+            {
+                throw new InvalidOperationException("The PostgreSQL migration ledger does not match this MutualGPU build.");
+            }
+
+            foreach (var migration in migrations)
             {
                 await ApplyAsync(connection, migration, cancellationToken).ConfigureAwait(false);
             }
+            // The datasource is constructed before the startup migrator runs.
+            // Refresh its type metadata after creating PostgreSQL enum types so
+            // an empty database can serve enum-backed writes without a restart.
+            await dataSource.ReloadTypesAsync(cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -39,14 +50,17 @@ public sealed class PostgresMigrator(NpgsqlDataSource dataSource)
     public async Task<bool> IsCompatibleAsync(CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = new NpgsqlCommand(
-            """
-            select to_regclass('public.schema_migrations') is not null
-               and (select count(*) from schema_migrations) = @expected
-            """,
-            connection);
-        command.Parameters.AddWithValue("expected", LoadMigrations().Count);
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is true;
+        try
+        {
+            var migrations = LoadMigrations();
+            var ledger = await ReadLedgerAsync(connection, cancellationToken).ConfigureAwait(false);
+            return ledger.Count == migrations.Count &&
+                   LedgerContainsOnlyExpectedMigrations(ledger, migrations);
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.UndefinedTable)
+        {
+            return false;
+        }
     }
 
     private static async Task EnsureLedgerAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
@@ -70,17 +84,20 @@ public sealed class PostgresMigrator(NpgsqlDataSource dataSource)
         CancellationToken cancellationToken)
     {
         await using var check = new NpgsqlCommand(
-            "select sha256 from schema_migrations where version = @version",
+            "select name, sha256 from schema_migrations where version = @version",
             connection);
         check.Parameters.AddWithValue("version", migration.Version);
-        var existing = await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) as string;
-        if (existing is not null)
         {
-            if (!StringComparer.Ordinal.Equals(existing.Trim(), migration.Sha256))
+            await using var reader = await check.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
             {
-                throw new InvalidOperationException($"PostgreSQL migration {migration.Version} checksum does not match the applied schema.");
+                if (!StringComparer.Ordinal.Equals(reader.GetString(0), migration.Name) ||
+                    !StringComparer.Ordinal.Equals(reader.GetString(1).Trim(), migration.Sha256))
+                {
+                    throw new InvalidOperationException($"PostgreSQL migration {migration.Version} checksum does not match the applied schema.");
+                }
+                return;
             }
-            return;
         }
 
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
@@ -138,7 +155,38 @@ public sealed class PostgresMigrator(NpgsqlDataSource dataSource)
             .ToArray();
     }
 
+    private static async Task<IReadOnlyList<AppliedMigration>> ReadLedgerAsync(
+        NpgsqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            "select version, name, sha256 from schema_migrations order by version",
+            connection);
+        var ledger = new List<AppliedMigration>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            ledger.Add(new AppliedMigration(
+                reader.GetInt32(0),
+                reader.GetString(1),
+                reader.GetString(2).Trim()));
+        }
+        return ledger;
+    }
+
+    private static bool LedgerContainsOnlyExpectedMigrations(
+        IReadOnlyList<AppliedMigration> ledger,
+        IReadOnlyList<Migration> migrations)
+    {
+        var expected = migrations.ToDictionary(static migration => migration.Version);
+        return ledger.All(applied =>
+            expected.TryGetValue(applied.Version, out var migration) &&
+            StringComparer.Ordinal.Equals(applied.Name, migration.Name) &&
+            StringComparer.Ordinal.Equals(applied.Sha256, migration.Sha256));
+    }
+
     private sealed record Migration(int Version, string Name, string Sha256, string Sql);
+    private sealed record AppliedMigration(int Version, string Name, string Sha256);
 }
 
 public interface IPostgresHealth

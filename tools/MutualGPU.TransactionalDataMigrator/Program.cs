@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -8,7 +9,6 @@ using MutualGPU.Infrastructure;
 using Npgsql;
 using NpgsqlTypes;
 
-const string RequiredAwsProfile = "ai-quinn";
 var mode = args switch
 {
     ["import"] => MigrationMode.Import,
@@ -16,10 +16,25 @@ var mode = args switch
     _ => throw new ArgumentException("Usage: MutualGPU.TransactionalDataMigrator import | verify"),
 };
 
+if (!StringComparer.Ordinal.Equals(Environment.GetEnvironmentVariable("MUTUALGPU_TARGET_TASK_MODE"), "true"))
+{
+    throw new InvalidOperationException("The transactional migrator may run only in the reviewed target ECS task mode.");
+}
 var applicationBucket = RequiredEnvironmentVariable("MUTUALGPU_MIGRATION_APPLICATION_BUCKET");
 var providerBucket = Environment.GetEnvironmentVariable("MUTUALGPU_MIGRATION_PROVIDER_BUCKET");
 if (String.IsNullOrWhiteSpace(providerBucket)) providerBucket = applicationBucket;
-var region = Environment.GetEnvironmentVariable("AWS_REGION") ?? "us-east-1";
+var region = RequiredEnvironmentVariable("AWS_REGION");
+if (!StringComparer.Ordinal.Equals(region, "us-east-1"))
+{
+    throw new InvalidOperationException("The target-only migration utility supports us-east-1 only.");
+}
+if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AWS_PROFILE")) ||
+    !String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AWS_DEFAULT_PROFILE")))
+{
+    throw new InvalidOperationException("Target-task mode requires the ECS task-role credential chain; AWS profile overrides are forbidden.");
+}
+var storageTarget = new ArtifactStorageTargetSelection(
+    RequiredEnvironmentVariable("MUTUALGPU_MIGRATION_WRITE_STORAGE_TARGET_ID"));
 var postgres = PostgresEnvironment();
 if (mode is MigrationMode.Import)
 {
@@ -40,16 +55,16 @@ else if (!await migrator.IsCompatibleAsync(CancellationToken.None))
 }
 
 using var applicationStore = new AwsS3ObjectStore(
-    new AwsS3ObjectStoreOptions(applicationBucket, region, RequiredAwsProfile));
+    new AwsS3ObjectStoreOptions(applicationBucket, region));
 using var providerStore = StringComparer.Ordinal.Equals(providerBucket, applicationBucket)
     ? null
-    : new AwsS3ObjectStore(new AwsS3ObjectStoreOptions(providerBucket, region, RequiredAwsProfile));
+    : new AwsS3ObjectStore(new AwsS3ObjectStoreOptions(providerBucket, region));
 var providerSource = providerStore ?? applicationStore;
 var objectKeys = new MutualGpuObjectKeys();
 var runner = new TransactionalDataMigration(
     dataSource,
     mode is MigrationMode.Import
-        ? new PostgresOperationUnitOfWork(dataSource, new HandleCipher(postgres), objectKeys)
+        ? new PostgresOperationUnitOfWork(dataSource, new HandleCipher(postgres), objectKeys, storageTarget)
         : null,
     applicationStore,
     providerSource,
@@ -61,6 +76,10 @@ var report = mode is MigrationMode.Import
     ? await runner.ImportAsync(CancellationToken.None)
     : await runner.VerifyAsync(CancellationToken.None);
 Console.WriteLine(JsonSerializer.Serialize(report, MigrationJson.Options));
+if (report.HasUnexplainedDiscrepancies)
+{
+    Environment.ExitCode = 1;
+}
 
 static PostgresOptions PostgresEnvironment() => new()
 {
@@ -115,12 +134,14 @@ internal sealed class TransactionalDataMigration(
     private readonly MigrationReport report = new();
     private readonly string applicationSource = $"aws-s3:{applicationBucket}";
     private readonly string providerSource = $"aws-s3:{providerBucket}";
-    private readonly Dictionary<Guid, string> providerDigests = [];
+    private readonly Dictionary<Guid, ProviderBindingSource> providerBindings = [];
     private readonly List<ObjectEntry> requestorEntries = [];
+    private bool providerBindingsLoaded;
 
     public async Task<MigrationReport> ImportAsync(CancellationToken cancellationToken)
     {
         if (operations is null) throw new InvalidOperationException("Import operations are unavailable.");
+        await LoadProviderBindingsAsync(cancellationToken).ConfigureAwait(false);
         await ImportProviderBindingsAsync(cancellationToken).ConfigureAwait(false);
         await ImportCapabilitiesAsync(cancellationToken).ConfigureAwait(false);
         await ImportExecutionUnitsAsync(cancellationToken).ConfigureAwait(false);
@@ -129,6 +150,7 @@ internal sealed class TransactionalDataMigration(
         await ImportPartnerResourcesAsync(cancellationToken).ConfigureAwait(false);
         await CrossCheckCommitMarkersAsync(cancellationToken).ConfigureAwait(false);
         await PopulateDatabaseSummaryAsync(cancellationToken).ConfigureAwait(false);
+        await VerifyProviderBindingParityAsync(cancellationToken).ConfigureAwait(false);
         await VerifyArtifactDescriptorsAsync(cancellationToken).ConfigureAwait(false);
         return report;
     }
@@ -138,6 +160,7 @@ internal sealed class TransactionalDataMigration(
         await InventorySourceAsync(cancellationToken).ConfigureAwait(false);
         await PopulateDatabaseSummaryAsync(cancellationToken).ConfigureAwait(false);
         await VerifyLedgerAsync(cancellationToken).ConfigureAwait(false);
+        await VerifyProviderBindingParityAsync(cancellationToken).ConfigureAwait(false);
         await VerifyQueueParityAsync(cancellationToken).ConfigureAwait(false);
         await VerifyArtifactDescriptorsAsync(cancellationToken).ConfigureAwait(false);
         return report;
@@ -145,33 +168,12 @@ internal sealed class TransactionalDataMigration(
 
     private async Task ImportProviderBindingsAsync(CancellationToken cancellationToken)
     {
-        await foreach (var entry in providerStore.ListAsync(objectKeys.ProviderKeys(), cancellationToken))
+        foreach (var source in providerBindings.Values.OrderBy(static source => source.Digest, StringComparer.Ordinal))
         {
-            report.Source("provider_binding");
-            if (!entry.Key.Value.EndsWith(".json", StringComparison.Ordinal)) continue;
-            var digest = Path.GetFileNameWithoutExtension(entry.Key.Value);
-            if (!Regex.IsMatch(digest, "^[0-9a-f]{64}$", RegexOptions.CultureInvariant))
+            if (await AlreadyImportedAsync(providerSource, source.Entry, cancellationToken).ConfigureAwait(false))
             {
-                await RecordDiscrepancyAsync(
-                    providerSource,
-                    entry,
-                    "provider_binding",
-                    null,
-                    "provider_digest_invalid",
-                    cancellationToken).ConfigureAwait(false);
-                continue;
-            }
-            if (await AlreadyImportedAsync(providerSource, entry, cancellationToken).ConfigureAwait(false)) continue;
-            var binding = await ReadAsync<ProviderKeyBinding>(providerStore, entry.Key, cancellationToken).ConfigureAwait(false);
-            if (binding is null || binding.ExecutionUnitId.Value == Guid.Empty)
-            {
-                await RecordDiscrepancyAsync(
-                    providerSource,
-                    entry,
-                    "provider_binding",
-                    null,
-                    "provider_binding_invalid",
-                    cancellationToken).ConfigureAwait(false);
+                if (!await ProviderBindingExistsAsync(source, cancellationToken).ConfigureAwait(false))
+                    report.Discrepancy("provider_binding_missing_after_resume", source.ExecutionUnitId);
                 continue;
             }
 
@@ -187,9 +189,9 @@ internal sealed class TransactionalDataMigration(
                 connection,
                 transaction))
             {
-                insert.Parameters.Add("digest", NpgsqlDbType.Char).Value = digest;
-                insert.Parameters.AddWithValue("execution_unit_id", binding.ExecutionUnitId.Value);
-                insert.Parameters.AddWithValue("created_at", entry.LastModified.UtcDateTime);
+                insert.Parameters.Add("digest", NpgsqlDbType.Char).Value = source.Digest;
+                insert.Parameters.AddWithValue("execution_unit_id", source.ExecutionUnitId);
+                insert.Parameters.AddWithValue("created_at", source.Entry.LastModified.UtcDateTime);
                 await insert.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -204,8 +206,8 @@ internal sealed class TransactionalDataMigration(
                 connection,
                 transaction))
             {
-                check.Parameters.Add("digest", NpgsqlDbType.Char).Value = digest;
-                check.Parameters.AddWithValue("execution_unit_id", binding.ExecutionUnitId.Value);
+                check.Parameters.Add("digest", NpgsqlDbType.Char).Value = source.Digest;
+                check.Parameters.AddWithValue("execution_unit_id", source.ExecutionUnitId);
                 matches = (bool)(await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
             }
             var discrepancy = matches ? null : "provider_binding_conflict";
@@ -213,15 +215,14 @@ internal sealed class TransactionalDataMigration(
                 connection,
                 transaction,
                 providerSource,
-                entry,
+                source.Entry,
                 "provider_binding",
-                binding.ExecutionUnitId.Value,
+                source.ExecutionUnitId,
                 discrepancy,
                 cancellationToken).ConfigureAwait(false);
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-            providerDigests[binding.ExecutionUnitId.Value] = digest;
             report.Imported("provider_binding");
-            if (discrepancy is not null) report.Discrepancy(discrepancy, binding.ExecutionUnitId.Value);
+            if (discrepancy is not null) report.Discrepancy(discrepancy, source.ExecutionUnitId);
         }
     }
 
@@ -265,10 +266,6 @@ internal sealed class TransactionalDataMigration(
 
     private async Task ImportExecutionUnitsAsync(CancellationToken cancellationToken)
     {
-        if (providerDigests.Count == 0)
-        {
-            await LoadProviderDigestMapAsync(cancellationToken).ConfigureAwait(false);
-        }
         var identities = new List<(ObjectEntry Entry, string Digest)>();
         await foreach (var entry in applicationStore.ListAsync(
             new ObjectPrefix($"{Root}/nodes"),
@@ -313,11 +310,11 @@ internal sealed class TransactionalDataMigration(
                 continue;
             }
             var executionUnitId = identity.Id.Value;
-            if (!providerDigests.TryGetValue(executionUnitId, out var boundDigest))
+            if (!providerBindings.TryGetValue(executionUnitId, out var binding))
             {
                 report.Discrepancy("execution_unit_provider_binding_missing", executionUnitId);
             }
-            else if (!StringComparer.Ordinal.Equals(boundDigest, digest))
+            else if (!StringComparer.Ordinal.Equals(binding.Digest, digest))
             {
                 report.Discrepancy("execution_unit_provider_digest_mismatch", executionUnitId);
             }
@@ -685,8 +682,7 @@ internal sealed class TransactionalDataMigration(
 
     private async Task InventorySourceAsync(CancellationToken cancellationToken)
     {
-        await InventoryPrefixAsync(providerStore, objectKeys.ProviderKeys(), "provider_binding", cancellationToken)
-            .ConfigureAwait(false);
+        await LoadProviderBindingsAsync(cancellationToken).ConfigureAwait(false);
         await InventoryPrefixAsync(applicationStore, objectKeys.Capabilities(), "capability", cancellationToken)
             .ConfigureAwait(false);
         await InventoryPrefixAsync(applicationStore, new ObjectPrefix($"{Root}/nodes"), "node_record", cancellationToken)
@@ -759,6 +755,106 @@ internal sealed class TransactionalDataMigration(
         }
     }
 
+    /// <summary>
+    /// Verifies that the immutable provider-key digest addressing in S3 and the
+    /// PostgreSQL authentication index describe exactly the same bindings. The
+    /// credential itself is never read, stored, or emitted.
+    /// </summary>
+    private async Task VerifyProviderBindingParityAsync(CancellationToken cancellationToken)
+    {
+        await LoadProviderBindingsAsync(cancellationToken).ConfigureAwait(false);
+        var databaseBindings = new Dictionary<Guid, DatabaseProviderBinding>();
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using (var command = new NpgsqlCommand(
+            "select digest, execution_unit_id, revoked_at is not null from provider_credentials order by execution_unit_id",
+            connection))
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
+        {
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var executionUnitId = reader.GetGuid(1);
+                var digest = reader.GetString(0).Trim();
+                if (!databaseBindings.TryAdd(executionUnitId, new DatabaseProviderBinding(digest, reader.GetBoolean(2))))
+                {
+                    report.Discrepancy("database_provider_binding_execution_unit_duplicate", executionUnitId);
+                }
+            }
+        }
+
+        foreach (var (executionUnitId, source) in providerBindings)
+        {
+            if (!databaseBindings.TryGetValue(executionUnitId, out var database))
+            {
+                report.Discrepancy("provider_binding_missing_in_database", executionUnitId);
+            }
+            else if (!StringComparer.Ordinal.Equals(source.Digest, database.Digest))
+            {
+                report.Discrepancy("provider_binding_digest_mismatch", executionUnitId);
+            }
+            else if (database.Revoked)
+            {
+                report.Discrepancy("provider_binding_revoked_in_database", executionUnitId);
+            }
+        }
+        foreach (var executionUnitId in databaseBindings.Keys.Except(providerBindings.Keys))
+        {
+            report.Discrepancy("database_provider_binding_not_in_source", executionUnitId);
+        }
+
+        var ledgerBindings = new Dictionary<string, ProviderBindingLedger>(StringComparer.Ordinal);
+        await using (var command = new NpgsqlCommand(
+            """
+            select source_key, source_etag, destination_id
+            from migration_ledger
+            where source_store = @source_store and destination_type = 'provider_binding'
+            order by source_key
+            """,
+            connection))
+        {
+            command.Parameters.AddWithValue("source_store", providerSource);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                var sourceKey = reader.GetString(0);
+                if (!ledgerBindings.TryAdd(
+                    sourceKey,
+                    new ProviderBindingLedger(
+                        reader.IsDBNull(1) ? null : reader.GetString(1),
+                        reader.IsDBNull(2) ? null : reader.GetGuid(2))))
+                {
+                    report.Discrepancy("provider_binding_ledger_duplicate", null);
+                }
+            }
+        }
+
+        foreach (var source in providerBindings.Values)
+        {
+            if (!ledgerBindings.TryGetValue(source.Entry.Key.Value, out var ledger))
+            {
+                report.Discrepancy("provider_binding_ledger_missing", source.ExecutionUnitId);
+                continue;
+            }
+            if (ledger.DestinationId != source.ExecutionUnitId)
+            {
+                report.Discrepancy("provider_binding_ledger_destination_mismatch", source.ExecutionUnitId);
+            }
+            if (ledger.ETag is null || source.Entry.ETag is null)
+            {
+                report.Discrepancy("provider_binding_source_etag_unavailable", source.ExecutionUnitId);
+            }
+            else if (!StringComparer.Ordinal.Equals(ledger.ETag, source.Entry.ETag))
+            {
+                report.Discrepancy("provider_binding_source_changed_after_import", source.ExecutionUnitId);
+            }
+        }
+        foreach (var sourceKey in ledgerBindings.Keys.Except(
+                     providerBindings.Values.Select(static source => source.Entry.Key.Value),
+                     StringComparer.Ordinal))
+        {
+            report.Discrepancy("provider_binding_ledger_not_in_source", null);
+        }
+    }
+
     private async Task VerifyQueueParityAsync(CancellationToken cancellationToken)
     {
         var sourceQueued = new HashSet<Guid>();
@@ -801,10 +897,13 @@ internal sealed class TransactionalDataMigration(
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new NpgsqlCommand(
             """
-            select id, s3_object_key, length, state::text
-            from artifacts
-            where state in ('staged', 'available')
-            order by s3_object_key
+            select a.id, a.s3_object_key, a.length, a.sha256, a.state::text,
+                   count(l.artifact_id), min(l.storage_target_id),
+                   min(l.object_key), min(l.state::text)
+            from artifacts a
+            left join artifact_locations l on l.artifact_id = a.id
+            group by a.id, a.s3_object_key, a.length, a.sha256, a.state
+            order by a.s3_object_key
             """,
             connection);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -813,6 +912,35 @@ internal sealed class TransactionalDataMigration(
             var id = reader.GetGuid(0);
             var key = reader.GetString(1);
             var expectedLength = reader.GetInt64(2);
+            var expectedSha256 = reader.GetString(3).Trim();
+            var logicalState = reader.GetString(4);
+            var locationCount = reader.GetInt64(5);
+            if (locationCount != 1)
+            {
+                report.Discrepancy("artifact_location_count_mismatch", id);
+                continue;
+            }
+
+            var storageTargetId = reader.GetString(6);
+            var locationKey = reader.GetString(7);
+            var locationState = reader.GetString(8);
+            if (!StringComparer.Ordinal.Equals(storageTargetId, ArtifactStorageTargetIds.AwsPrimary))
+            {
+                report.Discrepancy("artifact_location_target_not_aws_primary", id);
+            }
+            if (!StringComparer.Ordinal.Equals(locationKey, key))
+            {
+                report.Discrepancy("artifact_location_key_mismatch", id);
+            }
+            if (!StringComparer.Ordinal.Equals(locationState, logicalState))
+            {
+                report.Discrepancy("artifact_location_state_mismatch", id);
+            }
+            if (logicalState is not ("staged" or "available"))
+            {
+                continue;
+            }
+
             if (!objects.TryGetValue(key, out var entry))
             {
                 report.Discrepancy("artifact_object_missing", id);
@@ -821,6 +949,42 @@ internal sealed class TransactionalDataMigration(
             {
                 report.Discrepancy("artifact_length_mismatch", id);
             }
+            else
+            {
+                var read = await applicationStore.GetAsync(entry.Key, cancellationToken).ConfigureAwait(false);
+                if (read is null)
+                {
+                    report.Discrepancy("artifact_object_missing", id);
+                    continue;
+                }
+
+                await using (read)
+                {
+                    var sha256 = Convert.ToHexString(
+                        await SHA256.HashDataAsync(read.Content, cancellationToken).ConfigureAwait(false))
+                        .ToLowerInvariant();
+                    if (!StringComparer.Ordinal.Equals(sha256, expectedSha256))
+                    {
+                        report.Discrepancy("artifact_sha256_mismatch", id);
+                    }
+                }
+            }
+        }
+
+        await reader.DisposeAsync().ConfigureAwait(false);
+        await using var uploads = new NpgsqlCommand(
+            """
+            select id
+            from result_upload_operations
+            where write_storage_target_id <> @storage_target_id
+            order by id
+            """,
+            connection);
+        uploads.Parameters.AddWithValue("storage_target_id", ArtifactStorageTargetIds.AwsPrimary);
+        await using var uploadReader = await uploads.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await uploadReader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            report.Discrepancy("result_upload_target_not_aws_primary", uploadReader.GetGuid(0));
         }
     }
 
@@ -893,15 +1057,64 @@ internal sealed class TransactionalDataMigration(
         return true;
     }
 
-    private async Task LoadProviderDigestMapAsync(CancellationToken cancellationToken)
+    private async Task LoadProviderBindingsAsync(CancellationToken cancellationToken)
     {
+        if (providerBindingsLoaded) return;
+        var prefix = objectKeys.ProviderKeys().Value;
+        var seenDigests = new HashSet<string>(StringComparer.Ordinal);
         await foreach (var entry in providerStore.ListAsync(objectKeys.ProviderKeys(), cancellationToken))
         {
-            var digest = Path.GetFileNameWithoutExtension(entry.Key.Value);
+            report.Source("provider_binding");
+            var digest = ProviderDigestFromKey(entry.Key.Value, prefix);
+            if (digest is null)
+            {
+                report.Discrepancy("provider_binding_key_invalid", null);
+                continue;
+            }
+            if (!seenDigests.Add(digest))
+            {
+                report.Discrepancy("provider_binding_digest_duplicate", null);
+                continue;
+            }
             var binding = await ReadAsync<ProviderKeyBinding>(providerStore, entry.Key, cancellationToken).ConfigureAwait(false);
-            if (binding is not null && Regex.IsMatch(digest, "^[0-9a-f]{64}$", RegexOptions.CultureInvariant))
-                providerDigests[binding.ExecutionUnitId.Value] = digest;
+            if (binding is null || binding.ExecutionUnitId.Value == Guid.Empty)
+            {
+                report.Discrepancy("provider_binding_invalid", null);
+                continue;
+            }
+            var source = new ProviderBindingSource(entry, digest, binding.ExecutionUnitId.Value);
+            if (!providerBindings.TryAdd(source.ExecutionUnitId, source))
+            {
+                report.Discrepancy("provider_binding_execution_unit_duplicate", source.ExecutionUnitId);
+            }
         }
+        providerBindingsLoaded = true;
+    }
+
+    private async Task<bool> ProviderBindingExistsAsync(
+        ProviderBindingSource source,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(
+            """
+            select exists(
+                select 1 from provider_credentials
+                where digest = @digest and execution_unit_id = @execution_unit_id)
+            """,
+            connection);
+        command.Parameters.Add("digest", NpgsqlDbType.Char).Value = source.Digest;
+        command.Parameters.AddWithValue("execution_unit_id", source.ExecutionUnitId);
+        return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
+    }
+
+    private static string? ProviderDigestFromKey(string key, string prefix)
+    {
+        if (!key.StartsWith(prefix, StringComparison.Ordinal)) return null;
+        var suffix = key[prefix.Length..];
+        return Regex.IsMatch(suffix, "^[0-9a-f]{64}\\.json$", RegexOptions.CultureInvariant)
+            ? suffix[..64]
+            : null;
     }
 
     private async Task LoadRequestorEntriesAsync(CancellationToken cancellationToken)
@@ -1135,10 +1348,14 @@ internal sealed class TransactionalDataMigration(
         CapabilityId CapabilityId,
         MachineSpecifications Resources,
         DateTimeOffset CreatedAt);
+    private sealed record ProviderBindingSource(ObjectEntry Entry, string Digest, Guid ExecutionUnitId);
+    private sealed record DatabaseProviderBinding(string Digest, bool Revoked);
+    private sealed record ProviderBindingLedger(string? ETag, Guid? DestinationId);
 }
 
 internal sealed class MigrationReport
 {
+    public int ReportVersion => 1;
     public SortedDictionary<string, long> SourceRecords { get; } = new(StringComparer.Ordinal);
     public SortedDictionary<string, long> ImportedRecords { get; } = new(StringComparer.Ordinal);
     public SortedDictionary<string, long> DatabaseRows { get; } = new(StringComparer.Ordinal);
@@ -1151,13 +1368,14 @@ internal sealed class MigrationReport
     public void Source(string type) => Increment(SourceRecords, type);
     public void Imported(string type) => Increment(ImportedRecords, type);
 
-    public void Discrepancy(string code, Guid? id, long count = 1)
+    public void Discrepancy(string code, Guid? _, long count = 1)
     {
         if (!Discrepancies.TryGetValue(code, out var existing))
-            existing = new DiscrepancySummary(0, []);
-        var ids = existing.ExampleIds.ToList();
-        if (id is not null && ids.Count < 10 && !ids.Contains(id.Value)) ids.Add(id.Value);
-        Discrepancies[code] = new DiscrepancySummary(existing.Count + count, ids);
+            existing = new DiscrepancySummary(0);
+        // IDs, object keys, handles, and provider-key digests must stay out of
+        // migration output. The classified aggregate is sufficient to fail the
+        // release gate and direct an operator to the restricted execution log.
+        Discrepancies[code] = new DiscrepancySummary(existing.Count + count);
     }
 
     private static void Increment(IDictionary<string, long> values, string key)
@@ -1168,4 +1386,4 @@ internal sealed class MigrationReport
 }
 
 internal sealed record LedgerSummary(long Count, long ClassifiedCount);
-internal sealed record DiscrepancySummary(long Count, IReadOnlyList<Guid> ExampleIds);
+internal sealed record DiscrepancySummary(long Count);

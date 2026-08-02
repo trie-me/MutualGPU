@@ -1,7 +1,9 @@
 # Multi-provider artifact storage strategy
 
-Status: proposed  
-Date: 2026-08-02  
+Status: proposed
+
+Date: 2026-08-02
+
 Scope: artifact bytes, storage-target routing, and presigned downloads
 
 ## Decisions

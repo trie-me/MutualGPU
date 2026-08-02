@@ -7,42 +7,34 @@ if [[ $# -ne 1 || ("$1" != "import" && "$1" != "verify") ]]; then
 fi
 
 mode="$1"
-region="${AWS_REGION:-us-east-1}"
-foundation_stack="${MUTUALGPU_FOUNDATION_STACK:-mutualgpu-foundation}"
-service_stack="${MUTUALGPU_SERVICE_STACK:-mutualgpu-service}"
-aws_cli() { aws --profile ai-quinn --region "$region" "$@"; }
-
-stack_parameter() {
-  local stack="$1"
-  local parameter="$2"
-  aws_cli cloudformation describe-stacks \
-    --stack-name "$stack" \
-    --query "Stacks[0].Parameters[?ParameterKey=='${parameter}'].ParameterValue | [0]" \
-    --output text
-}
-
-application_bucket="$(stack_parameter "$service_stack" ApplicationDataBucketName)"
-if [[ -z "$application_bucket" || "$application_bucket" == "None" ]]; then
-  application_bucket="$(stack_parameter "$foundation_stack" ApplicationDataBucketName)"
+if [[ "${MUTUALGPU_TARGET_TASK_MODE:-}" != "true" ]]; then
+  echo "The transactional migrator may run only inside the reviewed target ECS task." >&2
+  exit 1
 fi
-if [[ -z "$application_bucket" || "$application_bucket" == "None" ]]; then
-  echo "Could not resolve ApplicationDataBucketName from the current CloudFormation stacks." >&2
+if [[ "${AWS_REGION:-}" != "us-east-1" ]]; then
+  echo "Target-task migration requires AWS_REGION=us-east-1." >&2
+  exit 1
+fi
+if [[ -n "${AWS_PROFILE:-}" || -n "${AWS_DEFAULT_PROFILE:-}" ]]; then
+  echo "Target-task migration must use the ECS task-role credential chain, not an AWS profile." >&2
   exit 1
 fi
 
-provider_bucket="$(stack_parameter "$service_stack" ProviderKeyBucketName)"
-if [[ -z "$provider_bucket" || "$provider_bucket" == "None" ]]; then
-  provider_bucket="$(stack_parameter "$foundation_stack" ProviderKeyBucketName)"
-fi
-if [[ -z "$provider_bucket" || "$provider_bucket" == "None" ]]; then
-  provider_bucket="$application_bucket"
-fi
+required=(
+  MUTUALGPU_MIGRATION_APPLICATION_BUCKET
+  MUTUALGPU_MIGRATION_WRITE_STORAGE_TARGET_ID
+  MutualGPU__Postgres__Host
+  MutualGPU__Postgres__Database
+  MutualGPU__Postgres__Password
+  MutualGPU__Postgres__HandleEncryptionKey
+)
+for name in "${required[@]}"; do
+  if [[ -z "${!name:-}" ]]; then
+    echo "${name} is required in the reviewed target migration task." >&2
+    exit 1
+  fi
+done
 
-export AWS_PROFILE=ai-quinn
-export AWS_REGION="$region"
-export MUTUALGPU_MIGRATION_APPLICATION_BUCKET="$application_bucket"
-export MUTUALGPU_MIGRATION_PROVIDER_BUCKET="$provider_bucket"
-
-dotnet run \
+exec dotnet run \
   --project tools/MutualGPU.TransactionalDataMigrator/MutualGPU.TransactionalDataMigrator.csproj \
   -- "$mode"

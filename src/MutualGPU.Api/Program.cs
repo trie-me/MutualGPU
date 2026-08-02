@@ -27,6 +27,8 @@ var providerCorsOrigins = (builder.Configuration.GetSection("MutualGPU:ProviderC
     .ToArray();
 var allowArbitraryBrowserTaskWriteOrigins =
     builder.Configuration.GetValue("MutualGPU:Security:AllowArbitraryBrowserTaskWriteOrigins", false);
+var synchronizeBrowserObjectCors =
+    builder.Configuration.GetValue("MutualGPU:ObjectStorage:SynchronizeBrowserCors", true);
 var s3ImageOriginConfiguration = builder.Configuration["MutualGPU:Csp:S3ImageOrigin"];
 var s3ImageOrigin = String.IsNullOrWhiteSpace(s3ImageOriginConfiguration)
     ? null
@@ -92,6 +94,15 @@ var postgres = postgresConfigured
     ? builder.Configuration.GetRequiredSection("MutualGPU:Postgres").Get<PostgresOptions>()
         ?? throw new InvalidOperationException("MutualGPU PostgreSQL configuration is invalid.")
     : null;
+var artifactWriteTarget = postgres is not null
+    ? new ArtifactStorageTargetSelection(
+        builder.Configuration["MutualGPU:ObjectStorage:WriteTargetId"]
+        ?? throw new InvalidOperationException("MutualGPU:ObjectStorage:WriteTargetId is required with PostgreSQL."))
+    : null;
+var orphanArtifactReconciliation = builder.Configuration
+    .GetSection("MutualGPU:Postgres:OrphanArtifactReconciliation")
+    .Get<OrphanArtifactReconciliationOptions>()
+    ?? new OrphanArtifactReconciliationOptions();
 var allowLegacyTestPersistence =
     builder.Environment.IsDevelopment() &&
     builder.Configuration.GetValue("MutualGPU:Testing:AllowLegacyObjectStorePersistence", false);
@@ -108,8 +119,15 @@ if (s3 is not null)
     builder.Services.AddSingleton<AwsS3ObjectStore>();
     builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<AwsS3ObjectStore>());
     builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<AwsS3ObjectStore>());
-    builder.Services.AddSingleton<AwsS3BrowserObjectCorsPolicy>();
-    builder.Services.AddSingleton<IBrowserObjectCorsPolicy>(static services => services.GetRequiredService<AwsS3BrowserObjectCorsPolicy>());
+    if (synchronizeBrowserObjectCors)
+    {
+        builder.Services.AddSingleton<AwsS3BrowserObjectCorsPolicy>();
+        builder.Services.AddSingleton<IBrowserObjectCorsPolicy>(static services => services.GetRequiredService<AwsS3BrowserObjectCorsPolicy>());
+    }
+    else
+    {
+        builder.Services.AddSingleton<IBrowserObjectCorsPolicy, NoOpBrowserObjectCorsPolicy>();
+    }
 }
 else
 {
@@ -132,6 +150,8 @@ if (postgres is not null)
 {
     postgres.Validate(builder.Environment.IsProduction());
     builder.Services.AddSingleton(postgres);
+    builder.Services.AddSingleton(artifactWriteTarget!);
+    builder.Services.AddSingleton(orphanArtifactReconciliation);
     builder.Services.AddSingleton(_ => PostgresDataSourceFactory.Create(postgres));
     builder.Services.AddSingleton<HandleCipher>();
     builder.Services.AddSingleton<PostgresMigrator>();
@@ -240,10 +260,14 @@ builder.Services.AddSingleton<DisconnectRecoveryService>();
 builder.Services.AddHostedService(static services => services.GetRequiredService<DisconnectRecoveryService>());
 builder.Services.AddSingleton<StartupProjectionState>();
 builder.Services.AddHostedService<StartupProjectionHostedService>();
+builder.Services.AddHostedService<RuntimeDependencyHealthHostedService>();
 if (postgres is not null)
 {
     builder.Services.AddHostedService<PostgresOutboxDispatcher>();
-    builder.Services.AddHostedService<PostgresOrphanArtifactReconciler>();
+    if (orphanArtifactReconciliation.Enabled)
+    {
+        builder.Services.AddHostedService<PostgresOrphanArtifactReconciler>();
+    }
 }
 
 // Diagnostics are not part of the normal request path. Enable explicitly with

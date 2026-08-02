@@ -9,19 +9,23 @@ readonly target_region="us-east-1"
 readonly target_role_arn="arn:aws:sts::428590861908:assumed-role/MutualGPUMigrationAdmin/mutual-ai-automation"
 readonly repository_name="mutualgpu-api"
 readonly repository_uri="${target_account}.dkr.ecr.${target_region}.amazonaws.com/${repository_name}"
-readonly live_source_release_commit="f96854d9429b398421fe15bbce89a8a741e1c769"
-readonly live_source_release_tag="cors-all-origins-20260727-r2"
-readonly live_source_index_digest="sha256:519b123233e0940c5f4b579e119ec8de3d4e168b6385af19b1c15d9f9d97ac31"
-readonly reviewed_commit="$live_source_release_commit"
-readonly image_tag="$live_source_release_tag"
 readonly controller_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-if [[ -n "${MUTUALGPU_REVIEWED_COMMIT:-}" || -n "${MUTUALGPU_IMAGE_TAG:-}" ]]; then
-  echo "Commit and tag overrides are disabled for the first Quinn-MutualCompute release." >&2
+reviewed_commit="${MUTUALGPU_REVIEWED_COMMIT:?Set MUTUALGPU_REVIEWED_COMMIT to the exact reviewed release commit.}"
+image_tag="${MUTUALGPU_REVIEWED_RELEASE_TAG:?Set MUTUALGPU_REVIEWED_RELEASE_TAG to the immutable reviewed release tag.}"
+if [[ ! "$reviewed_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "MUTUALGPU_REVIEWED_COMMIT must be an exact 40-character lowercase Git commit." >&2
   exit 1
 fi
-source_worktree_input="${MUTUALGPU_SOURCE_WORKTREE:?Set MUTUALGPU_SOURCE_WORKTREE to a clean detached worktree at ${live_source_release_commit}.}"
+if [[ ! "$image_tag" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+  echo "MUTUALGPU_REVIEWED_RELEASE_TAG must be a valid immutable container tag." >&2
+  exit 1
+fi
+source_worktree_input="${MUTUALGPU_SOURCE_WORKTREE:?Set MUTUALGPU_SOURCE_WORKTREE to a clean detached worktree at ${reviewed_commit}.}"
 source_worktree="$(cd "$source_worktree_input" && pwd -P)"
+if [[ ! -f "$source_worktree/vendor/NetCats/src/NetCats.Core/NetCats.Core.csproj" ]]; then
+  git -C "$source_worktree" submodule update --init --recursive
+fi
 
 if [[ "${AWS_PROFILE:-$target_profile}" != "$target_profile" ]]; then
   echo "AWS_PROFILE must be exactly ${target_profile}." >&2
@@ -50,7 +54,16 @@ fi
 
 head_commit="$(git -C "$source_worktree" rev-parse HEAD)"
 if [[ "$head_commit" != "$reviewed_commit" ]]; then
-  echo "Source-worktree HEAD ${head_commit} does not equal the live release commit ${reviewed_commit}." >&2
+  echo "Source-worktree HEAD ${head_commit} does not equal reviewed commit ${reviewed_commit}." >&2
+  exit 1
+fi
+if git -C "$source_worktree" symbolic-ref --quiet HEAD >/dev/null; then
+  echo "The source worktree must be detached at the reviewed release commit." >&2
+  exit 1
+fi
+tag_commit="$(git -C "$source_worktree" rev-parse "${image_tag}^{commit}" 2>/dev/null || true)"
+if [[ "$tag_commit" != "$reviewed_commit" ]]; then
+  echo "Release tag ${image_tag} must resolve exactly to reviewed commit ${reviewed_commit}." >&2
   exit 1
 fi
 if [[ -n "$(git -C "$source_worktree" status --porcelain --untracked-files=all)" ]]; then
@@ -65,7 +78,7 @@ fi
 
 aws_target ecr describe-repositories --repository-names "$repository_name" >/dev/null
 if aws_target ecr describe-images --repository-name "$repository_name" --image-ids "imageTag=${image_tag}" >/dev/null 2>&1; then
-  echo "The immutable first-release tag ${image_tag} already exists; refusing to overwrite or silently replace it." >&2
+  echo "The immutable release tag ${image_tag} already exists; refusing to overwrite or silently replace it." >&2
   exit 1
 fi
 
@@ -75,7 +88,7 @@ if [[ "$builder_platforms" != *"linux/amd64"* || "$builder_platforms" != *"linux
   exit 1
 fi
 
-build_context="$(mktemp -d "${TMPDIR:-/tmp}/mutualgpu-first-release.XXXXXX")"
+build_context="$(mktemp -d "${TMPDIR:-/tmp}/mutualgpu-release.XXXXXX")"
 cleanup() {
   rm -rf -- "$build_context"
 }
@@ -84,6 +97,12 @@ trap cleanup EXIT
 dotnet publish "$source_worktree/src/MutualGPU.Api/MutualGPU.Api.csproj" \
   --configuration Release \
   --output "$build_context/artifacts/mutualgpu-api" \
+  --artifacts-path "$build_context/dotnet-artifacts" \
+  /p:UseAppHost=false
+
+dotnet publish "$source_worktree/tools/MutualGPU.TransactionalDataMigrator/MutualGPU.TransactionalDataMigrator.csproj" \
+  --configuration Release \
+  --output "$build_context/artifacts/mutualgpu-transactional-data-migrator" \
   --artifacts-path "$build_context/dotnet-artifacts" \
   /p:UseAppHost=false
 
@@ -101,8 +120,8 @@ docker buildx build \
   --sbom=true \
   --label "org.opencontainers.image.revision=${reviewed_commit}" \
   --label "org.opencontainers.image.version=${image_tag}" \
-  --label "com.mutualgpu.live-source.index=${live_source_index_digest}" \
-  --label "com.mutualgpu.live-source.tag=${live_source_release_tag}" \
+  --label "com.mutualgpu.release.commit=${reviewed_commit}" \
+  --label "com.mutualgpu.release.tag=${image_tag}" \
   --push \
   --tag "${repository_uri}:${image_tag}" \
   "$build_context"
@@ -138,11 +157,11 @@ if ! jq -e --arg digest "$image_digest" \
   exit 1
 fi
 image_uri="${repository_uri}@${image_digest}"
-verification="$("$controller_root/scripts/deploy-aws-service.sh" \
-  verify-live-source-release-image \
-  "$image_uri")"
+verification="$(MUTUALGPU_REVIEWED_COMMIT="$reviewed_commit" \
+  MUTUALGPU_REVIEWED_RELEASE_TAG="$image_tag" \
+  "$controller_root/scripts/deploy-aws-service.sh" verify-release-image "$image_uri")"
 receipt="$(jq -n \
-  --arg kind "MutualGPUQuinnMutualComputeFirstRelease" \
+  --arg kind "MutualGPUReviewedRelease" \
   --argjson verification "$verification" \
   '{
      Kind: $kind,

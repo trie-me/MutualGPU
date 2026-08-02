@@ -10,7 +10,8 @@ public sealed class PostgresResultUploadStore(
     NpgsqlDataSource dataSource,
     IOperationUnitOfWork operations,
     HandleCipher handles,
-    MutualGpuObjectKeys objectKeys)
+    MutualGpuObjectKeys objectKeys,
+    ArtifactStorageTargetSelection storageTarget)
     : IResultUploadAuthorizations, IStagedResults
 {
     public ResultUploadAuthorization Issue(
@@ -86,7 +87,7 @@ public sealed class PostgresResultUploadStore(
             1,
             now)
         {
-            WriteStorageTargetId = ArtifactStorageTargetIds.AwsPrimary,
+            WriteStorageTargetId = storageTarget.WriteStorageTargetId,
         };
         await operations.ExecuteAsync(
             (context, _) =>
@@ -148,6 +149,9 @@ public sealed class PostgresResultUploadStore(
                     .GetUploadingAsync(taskId, attemptId, unitId, handleDigest, token)
                     .ConfigureAwait(false)
                     ?? throw new InvalidOperationException("No consumed upload operation is available for staging.");
+                ArtifactStorageTargetIds.RequireAwsPrimary(
+                    upload.WriteStorageTargetId,
+                    nameof(upload.WriteStorageTargetId));
                 var task = await context.Tasks.GetAsync(taskId, token).ConfigureAwait(false)
                     ?? throw new InvalidOperationException("The result task is unavailable.");
                 context.ResultUploads.Update(upload with

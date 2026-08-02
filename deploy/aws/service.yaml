@@ -30,6 +30,29 @@ Parameters:
       - 0
       - 1
     Description: Use 1 for the approved steady state; 0 is available for a reviewed stop-before-start operation.
+  PostgresRuntimeMode:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'false'
+      - 'true'
+    Description: Keep false while support is installed and import is verified. Switch to true only after the approved write freeze and migration gates pass.
+  ActiveLegacyTaskDefinitionArn:
+    Type: String
+    AllowedPattern: '^arn:aws:ecs:us-east-1:428590861908:task-definition/mutualgpu-api:[0-9]+$'
+    Description: Exact currently deployed legacy task definition retained while PostgresRuntimeMode is false.
+  MaintenanceMode:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'false'
+      - 'true'
+    Description: Independent ALB barrier. Set true before stopping writers or importing data; it returns 503 except for the reviewed operator /32.
+  MaintenanceOperatorIpv4Cidr:
+    Type: String
+    Default: 192.0.2.1/32
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/32$'
+    Description: Exact reviewed operator IPv4 /32 allowed through the maintenance barrier. The documentation example address is intentionally unusable.
   ProviderCorsOrigin0:
     Type: String
     Default: 'https://huggingface.co'
@@ -47,11 +70,20 @@ Parameters:
     Default: 10
     MinValue: 10
     Description: Maximum provider-identifier mints per source IP during one minute.
+  AllowArbitraryBrowserTaskWriteOrigins:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'false'
+      - 'true'
+    Description: Preserve the deployed permissive task-write-origin behavior; changing it requires an explicit reviewed D9 decision.
 
 Conditions:
   HasProviderCorsOrigin0: !Not [!Equals [!Ref ProviderCorsOrigin0, '']]
   HasProviderCorsOrigin1: !Not [!Equals [!Ref ProviderCorsOrigin1, '']]
   HasProviderCorsOrigin2: !Not [!Equals [!Ref ProviderCorsOrigin2, '']]
+  UsePostgresRuntime: !Equals [!Ref PostgresRuntimeMode, 'true']
+  MaintenanceEnabled: !Equals [!Ref MaintenanceMode, 'true']
 
 Resources:
   LoadBalancer:
@@ -287,8 +319,15 @@ Resources:
       Certificates:
         - CertificateArn: !Ref CertificateArn
       DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref WebTargetGroup
+        - !If
+          - MaintenanceEnabled
+          - Type: fixed-response
+            FixedResponseConfig:
+              StatusCode: '503'
+              ContentType: application/json
+              MessageBody: '{"code":"maintenance"}'
+          - Type: forward
+            TargetGroupArn: !Ref WebTargetGroup
       ListenerAttributes:
         - Key: routing.http.response.content_security_policy.header_value
           Value:
@@ -326,8 +365,15 @@ Resources:
             Values:
               - /mutualgpu.v1.ProviderControl/*
       Actions:
-        - Type: forward
-          TargetGroupArn: !Ref GrpcTargetGroup
+        - !If
+          - MaintenanceEnabled
+          - Type: fixed-response
+            FixedResponseConfig:
+              StatusCode: '503'
+              ContentType: application/json
+              MessageBody: '{"code":"maintenance"}'
+          - Type: forward
+            TargetGroupArn: !Ref GrpcTargetGroup
       Tags:
         - Key: Name
           Value: mutualgpu-grpc
@@ -346,6 +392,40 @@ Resources:
         - Key: Lifecycle
           Value: Persistent
 
+  MaintenanceOperatorWebRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: MaintenanceEnabled
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Priority: 5
+      Conditions:
+        - Field: source-ip
+          SourceIpConfig:
+            Values:
+              - !Ref MaintenanceOperatorIpv4Cidr
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+
+  MaintenanceOperatorGrpcRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Condition: MaintenanceEnabled
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Priority: 4
+      Conditions:
+        - Field: source-ip
+          SourceIpConfig:
+            Values:
+              - !Ref MaintenanceOperatorIpv4Cidr
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - /mutualgpu.v1.ProviderControl/*
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref GrpcTargetGroup
+
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -359,7 +439,7 @@ Resources:
       ExecutionRoleArn:
         Fn::ImportValue: !Sub '${FoundationStackName}-TaskExecutionRoleArn'
       TaskRoleArn:
-        Fn::ImportValue: !Sub '${FoundationStackName}-TaskRoleArn'
+        Fn::ImportValue: !Sub '${FoundationStackName}-PostgresCandidateTaskRoleArn'
       ContainerDefinitions:
         - Name: api
           Image: !Ref ImageUri
@@ -380,7 +460,7 @@ Resources:
             - Name: ASPNETCORE_ENVIRONMENT
               Value: Production
             - Name: MutualGPU__Security__AllowArbitraryBrowserTaskWriteOrigins
-              Value: 'true'
+              Value: !Ref AllowArbitraryBrowserTaskWriteOrigins
             - Name: MutualGPU__TrustForwardedProto
               Value: 'true'
             - Name: MutualGPU__TrustedProxyNetworks__0
@@ -394,6 +474,10 @@ Resources:
                 Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
             - Name: MutualGPU__S3__Region
               Value: us-east-1
+            - Name: MutualGPU__ObjectStorage__WriteTargetId
+              Value: aws-primary
+            - Name: MutualGPU__ObjectStorage__SynchronizeBrowserCors
+              Value: 'false'
             - Name: MutualGPU__ProviderKeyS3__BucketName
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
@@ -422,6 +506,10 @@ Resources:
               Value: '1'
             - Name: MutualGPU__Postgres__MaximumPoolSize
               Value: '5'
+            - Name: MutualGPU__Postgres__OrphanArtifactReconciliation__Enabled
+              Value: 'false'
+            - Name: MutualGPU__Postgres__OrphanArtifactReconciliation__ReportOnly
+              Value: 'true'
             - !If
               - HasProviderCorsOrigin0
               - Name: MutualGPU__ProviderCorsOrigins__0
@@ -472,6 +560,91 @@ Resources:
         - Key: Lifecycle
           Value: Persistent
 
+  MigrationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: mutualgpu-postgres-migration
+      RequiresCompatibilities:
+        - EC2
+      NetworkMode: bridge
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub '${FoundationStackName}-TaskExecutionRoleArn'
+      TaskRoleArn:
+        Fn::ImportValue: !Sub '${FoundationStackName}-PostgresMigrationTaskRoleArn'
+      ContainerDefinitions:
+        - Name: migrator
+          Image: !Ref ImageUri
+          Essential: true
+          Cpu: 256
+          MemoryReservation: 256
+          Memory: 384
+          EntryPoint:
+            - dotnet
+          Command:
+            - migrator/MutualGPU.TransactionalDataMigrator.dll
+            - import
+          Environment:
+            - Name: MUTUALGPU_TARGET_TASK_MODE
+              Value: 'true'
+            - Name: AWS_REGION
+              Value: us-east-1
+            - Name: MUTUALGPU_MIGRATION_APPLICATION_BUCKET
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
+            - Name: MUTUALGPU_MIGRATION_PROVIDER_BUCKET
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
+            - Name: MUTUALGPU_MIGRATION_WRITE_STORAGE_TARGET_ID
+              Value: aws-primary
+            - Name: MutualGPU__Postgres__Host
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointAddress'
+            - Name: MutualGPU__Postgres__Port
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointPort'
+            - Name: MutualGPU__Postgres__Database
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseName'
+            - Name: MutualGPU__Postgres__Username
+              Value: mutualgpu
+            - Name: MutualGPU__Postgres__RequireTls
+              Value: 'true'
+          Secrets:
+            - Name: MutualGPU__Postgres__Password
+              ValueFrom:
+                Fn::Join:
+                  - ''
+                  - - Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseSecretArn'
+                    - ':password::'
+            - Name: MutualGPU__Postgres__HandleEncryptionKey
+              ValueFrom: !Sub '${DeploymentSecretArn}:taskHandleEncryptionKey::'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/mutualgpu-api
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: postgres-migration
+      Tags:
+        - Key: Name
+          Value: mutualgpu-postgres-migration
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Migration
+        - Key: Lifecycle
+          Value: CutoverSupport
+
   Service:
     Type: AWS::ECS::Service
     DependsOn:
@@ -482,7 +655,7 @@ Resources:
       ServiceName: mutualgpu-api
       Cluster:
         Fn::ImportValue: !Sub '${FoundationStackName}-EcsClusterArn'
-      TaskDefinition: !Ref TaskDefinition
+      TaskDefinition: !If [UsePostgresRuntime, !Ref TaskDefinition, !Ref ActiveLegacyTaskDefinitionArn]
       DesiredCount: !Ref DesiredCount
       CapacityProviderStrategy:
         - CapacityProvider:
@@ -534,3 +707,5 @@ Outputs:
     Value: !Sub 'https://${LoadBalancer.DNSName}'
   ServiceName:
     Value: !GetAtt Service.Name
+  MigrationTaskDefinitionArn:
+    Value: !Ref MigrationTaskDefinition

@@ -8,8 +8,21 @@ namespace MutualGPU.Api;
 public sealed class StartupProjectionState
 {
     private int ready;
-    public bool IsReady => Volatile.Read(ref ready) == 1;
-    public void MarkReady() => Volatile.Write(ref ready, 1);
+    private int dependenciesHealthy;
+
+    public bool IsReady =>
+        Volatile.Read(ref ready) == 1 &&
+        Volatile.Read(ref dependenciesHealthy) == 1;
+
+    public void MarkReady()
+    {
+        Volatile.Write(ref dependenciesHealthy, 1);
+        Volatile.Write(ref ready, 1);
+    }
+
+    public void MarkDependenciesHealthy() => Volatile.Write(ref dependenciesHealthy, 1);
+
+    public void MarkDependenciesUnavailable() => Volatile.Write(ref dependenciesHealthy, 0);
 }
 
 /// <summary>Rebuilds the durable task projection before readiness can succeed. Provider presence remains transient.</summary>
@@ -87,6 +100,48 @@ public sealed class StartupProjectionHostedService(
         if (startupRecovery is not null)
         {
             await startupRecovery.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+}
+
+/// <summary>
+/// Keeps readiness tied to the currently reachable durable dependencies after
+/// startup. It deliberately reports only aggregate availability and never
+/// surfaces a connection string, object key, or storage provider credential.
+/// </summary>
+public sealed class RuntimeDependencyHealthHostedService(
+    IObjectStoreHealth storeHealth,
+    StartupProjectionState state,
+    TimeProvider timeProvider,
+    ILogger<RuntimeDependencyHealthHostedService> logger,
+    IPostgresHealth? postgresHealth = null) : BackgroundService
+{
+    private static readonly TimeSpan Interval = TimeSpan.FromSeconds(15);
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                await storeHealth.CheckHealthAsync(stoppingToken).ConfigureAwait(false);
+                if (postgresHealth is not null)
+                {
+                    await postgresHealth.CheckHealthAsync(stoppingToken).ConfigureAwait(false);
+                }
+                state.MarkDependenciesHealthy();
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception error)
+            {
+                state.MarkDependenciesUnavailable();
+                logger.LogError(error, "MutualGPU durable dependency health check failed; readiness is unavailable.");
+            }
+
+            await Task.Delay(Interval, timeProvider, stoppingToken).ConfigureAwait(false);
         }
     }
 }

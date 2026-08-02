@@ -10,6 +10,7 @@ internal sealed class PostgresTaskRepository(
     NpgsqlTransaction transaction,
     HandleCipher handles,
     MutualGpuObjectKeys objectKeys,
+    ArtifactStorageTargetSelection storageTarget,
     OperationUsageGuard guard) : ITaskRepository
 {
     private readonly Dictionary<TaskId, TrackedTask> tracked = [];
@@ -492,7 +493,7 @@ internal sealed class PostgresTaskRepository(
         command.Parameters.Add("sha256", NpgsqlDbType.Char).Value = sha256.ToLowerInvariant();
         command.Parameters.AddWithValue("created_at", PostgresPersistence.Utc(task.CreatedAt));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-        await UpsertAwsPrimaryLocationAsync(
+        await InsertSelectedLocationAsync(
             image,
             key.Value,
             ArtifactLocationState.Available,
@@ -516,11 +517,7 @@ internal sealed class PostgresTaskRepository(
                 values (
                     @id, @task_id, @attempt_id, 'output', @role, @s3_object_key,
                     @content_type, @length, @sha256, 'available', @created_at)
-                on conflict (s3_object_key) do update
-                set state = 'available',
-                    content_type = excluded.content_type,
-                    length = excluded.length,
-                    sha256 = excluded.sha256
+                on conflict (s3_object_key) do nothing
                 returning id
                 """,
                 connection,
@@ -535,20 +532,19 @@ internal sealed class PostgresTaskRepository(
             command.Parameters.Add("sha256", NpgsqlDbType.Char).Value = artifact.Sha256.ToLowerInvariant();
             command.Parameters.AddWithValue("created_at", DateTime.UtcNow);
             var artifactId = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-            if (artifactId is not Guid persistedArtifactId)
+            if (artifactId is Guid persistedArtifactId)
             {
-                throw new InvalidOperationException("The persisted result artifact did not return an identifier.");
+                await InsertSelectedLocationAsync(
+                    new ArtifactId(persistedArtifactId),
+                    key.Value,
+                    ArtifactLocationState.Available,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken).ConfigureAwait(false);
             }
-            await UpsertAwsPrimaryLocationAsync(
-                new ArtifactId(persistedArtifactId),
-                key.Value,
-                ArtifactLocationState.Available,
-                DateTimeOffset.UtcNow,
-                cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task UpsertAwsPrimaryLocationAsync(
+    private async Task InsertSelectedLocationAsync(
         ArtifactId artifactId,
         string objectKey,
         ArtifactLocationState state,
@@ -563,14 +559,12 @@ internal sealed class PostgresTaskRepository(
             values (
                 @artifact_id, @storage_target_id, @object_key, null,
                 @state, @created_at, null)
-            on conflict (artifact_id, storage_target_id) do update
-            set object_key = excluded.object_key,
-                state = excluded.state
+            on conflict (artifact_id, storage_target_id) do nothing
             """,
             connection,
             transaction);
         command.Parameters.AddWithValue("artifact_id", artifactId.Value);
-        command.Parameters.AddWithValue("storage_target_id", ArtifactStorageTargetIds.AwsPrimary);
+        command.Parameters.AddWithValue("storage_target_id", storageTarget.WriteStorageTargetId);
         command.Parameters.AddWithValue("object_key", objectKey);
         command.Parameters.AddWithValue("state", state);
         command.Parameters.AddWithValue("created_at", PostgresPersistence.Utc(createdAt));

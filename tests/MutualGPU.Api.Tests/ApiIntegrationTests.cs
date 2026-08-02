@@ -587,6 +587,39 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
+    public async Task No_query_task_list_preserves_complete_legacy_history_above_the_pagination_default()
+    {
+        var requestorId = RequestorId.New();
+        var capability = new CapabilityDefinition(CapabilityId.New(), "legacy-history", [], new OutputDefinition(), "legacy-history-contract");
+        var repository = factory.Services.GetRequiredService<ITaskRepository>();
+        var expectedIds = new HashSet<Guid>();
+        for (var index = 0; index < 51; index++)
+        {
+            var task = new TaskRequest(
+                TaskId.New(),
+                requestorId,
+                capability,
+                ResourceTier.Automatic,
+                new TaskParameters(new Dictionary<string, string>(), null),
+                DateTimeOffset.UtcNow.AddSeconds(-index));
+            expectedIds.Add(task.Id.Value);
+            await repository.SaveAsync(task, CancellationToken.None);
+        }
+
+        using var client = CreateHttpsClient(handleCookies: false);
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/tasks/");
+        request.Headers.Add("Cookie", $"{RequestorIdentity.CookieName}={requestorId.Value:D}");
+        using var response = await client.SendAsync(request, CancellationToken.None);
+        var tasks = await response.Content.ReadFromJsonAsync<TaskDto[]>();
+
+        Assert.True(response.IsSuccessStatusCode);
+        Assert.NotNull(tasks);
+        Assert.Equal(expectedIds.Count, tasks.Length);
+        Assert.Equal(expectedIds, tasks.Select(static task => task.TaskId).ToHashSet());
+        Assert.False(response.Headers.Contains("X-MutualGPU-Next-Cursor"));
+    }
+
+    [Fact]
     public async Task Exhausted_provider_failures_return_the_latest_actionable_reason_without_a_result()
     {
         var requestorId = RequestorId.New();

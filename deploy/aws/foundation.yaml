@@ -834,6 +834,122 @@ Resources:
         - Key: Lifecycle
           Value: Persistent
 
+  PostgresCandidateTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mutualgpu-postgres-candidate-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AccessOnlyActiveArtifactPrefixes
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListOnlyActiveArtifactPrefixes
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ApplicationDataBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - mutualgpu/v3/requestors/*/tasks/*/inputs/*
+                      - mutualgpu/v3/requestors/*/tasks/*/results/*
+              - Sid: ReadOnlyActiveArtifactPrefixes
+                Effect: Allow
+                Action: s3:GetObject
+                Resource:
+                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/inputs/*'
+                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/results/*'
+              - Sid: WriteOnlyActiveArtifactPrefixes
+                Effect: Allow
+                Action: s3:PutObject
+                Resource:
+                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/inputs/*'
+                  - !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/requestors/*/tasks/*/results/*'
+      Tags:
+        - Key: Name
+          Value: mutualgpu-postgres-candidate-task
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Identity
+        - Key: Lifecycle
+          Value: CutoverCandidate
+
+  PostgresMigrationTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: mutualgpu-postgres-migration-task
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ReadOnlyTargetStructuredStateAndAttestation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ListOnlyTargetStructuredState
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ApplicationDataBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix: mutualgpu/v3/*
+              - Sid: ReadOnlyTargetStructuredState
+                Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/*'
+              - Sid: AttestTargetIdentity
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*'
+              - Sid: AttestFoundationStack
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
+              - Sid: AttestTargetDatabase
+                Effect: Allow
+                Action: rds:DescribeDBInstances
+                Resource: '*'
+              - Sid: AttestDatabaseSecretMetadata
+                Effect: Allow
+                Action: secretsmanager:DescribeSecret
+                Resource: !Ref DatabaseSecret
+      Tags:
+        - Key: Name
+          Value: mutualgpu-postgres-migration-task
+        - Key: Application
+          Value: MutualGPU
+        - Key: Project
+          Value: MutualGPU
+        - Key: Environment
+          Value: Production
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: Owner
+          Value: Quinn-MutualCompute
+        - Key: Component
+          Value: Migration
+        - Key: Lifecycle
+          Value: CutoverSupport
+
   EcsHostLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -1125,3 +1241,11 @@ Outputs:
     Value: !GetAtt TaskRole.Arn
     Export:
       Name: !Sub '${AWS::StackName}-TaskRoleArn'
+  PostgresCandidateTaskRoleArn:
+    Value: !GetAtt PostgresCandidateTaskRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PostgresCandidateTaskRoleArn'
+  PostgresMigrationTaskRoleArn:
+    Value: !GetAtt PostgresMigrationTaskRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-PostgresMigrationTaskRoleArn'

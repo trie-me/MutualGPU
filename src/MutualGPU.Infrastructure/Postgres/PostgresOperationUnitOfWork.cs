@@ -8,7 +8,8 @@ namespace MutualGPU.Infrastructure;
 public sealed class PostgresOperationUnitOfWork(
     NpgsqlDataSource dataSource,
     HandleCipher handles,
-    MutualGpuObjectKeys objectKeys) : IOperationUnitOfWork
+    MutualGpuObjectKeys objectKeys,
+    ArtifactStorageTargetSelection storageTarget) : IOperationUnitOfWork
 {
     private static readonly AsyncLocal<int> ExecutionDepth = new();
 
@@ -34,7 +35,8 @@ public sealed class PostgresOperationUnitOfWork(
                 connection,
                 transaction,
                 handles,
-                objectKeys);
+                objectKeys,
+                storageTarget);
             try
             {
                 var result = await operation(context, cancellationToken).ConfigureAwait(false);
@@ -77,10 +79,11 @@ internal sealed class PostgresOperationContext : IOperationContext
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
         HandleCipher handles,
-        MutualGpuObjectKeys objectKeys)
+        MutualGpuObjectKeys objectKeys,
+        ArtifactStorageTargetSelection storageTarget)
     {
         OperationId = operationId;
-        Tasks = new PostgresTaskRepository(connection, transaction, handles, objectKeys, guard);
+        Tasks = new PostgresTaskRepository(connection, transaction, handles, objectKeys, storageTarget, guard);
         Capabilities = new PostgresCapabilityRepository(connection, transaction, guard);
         ExecutionUnits = new PostgresExecutionUnitRepository(connection, transaction, guard);
         PartnerResources = new PostgresPartnerResourceRepository(connection, transaction, guard);

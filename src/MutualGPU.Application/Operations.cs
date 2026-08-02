@@ -70,6 +70,37 @@ public enum ArtifactState
 public static class ArtifactStorageTargetIds
 {
     public const string AwsPrimary = "aws-primary";
+
+    /// <summary>
+    /// The first PostgreSQL release supports only the reviewed AWS compatibility
+    /// slice. A target must be named at every new-write boundary; it is never
+    /// inferred from a repository default or substituted with another provider.
+    /// </summary>
+    public static string RequireAwsPrimary(string? storageTargetId, string parameterName)
+    {
+        if (!StringComparer.Ordinal.Equals(storageTargetId, AwsPrimary))
+        {
+            throw new InvalidOperationException(
+                $"Only the explicitly selected '{AwsPrimary}' storage target is supported by this release.");
+        }
+
+        return storageTargetId;
+    }
+}
+
+/// <summary>
+/// Immutable, explicitly configured selection for new artifact writes. It is
+/// deliberately separate from a provider implementation so a database row or
+/// a missing setting cannot silently route a write to a different store.
+/// </summary>
+public sealed class ArtifactStorageTargetSelection
+{
+    public ArtifactStorageTargetSelection(string writeStorageTargetId) =>
+        WriteStorageTargetId = ArtifactStorageTargetIds.RequireAwsPrimary(
+            writeStorageTargetId,
+            nameof(writeStorageTargetId));
+
+    public string WriteStorageTargetId { get; }
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
@@ -146,7 +177,7 @@ public sealed record ResultUploadOperation(
     DateTimeOffset? UploadedAt = null,
     DateTimeOffset? CompletedAt = null)
 {
-    public string WriteStorageTargetId { get; init; } = ArtifactStorageTargetIds.AwsPrimary;
+    public required string WriteStorageTargetId { get; init; }
 }
 
 public interface IResultUploadRepository

@@ -7,6 +7,7 @@
     <ProjectReference Include="../../src/MutualGPU.Application/MutualGPU.Application.csproj" />
     <ProjectReference Include="../../src/MutualGPU.Contracts/MutualGPU.Contracts.csproj" />
     <ProjectReference Include="../../src/MutualGPU.Infrastructure/MutualGPU.Infrastructure.csproj" />
+    <ProjectReference Include="../../tools/MutualGPU.TransactionalDataMigrator/MutualGPU.TransactionalDataMigrator.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio">

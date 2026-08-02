@@ -7,6 +7,22 @@ using Npgsql;
 namespace MutualGPU.Infrastructure;
 
 /// <summary>
+/// Destructive artifact reconciliation is intentionally disabled for the first
+/// PostgreSQL release. Enabling it is a separate, reviewed retention action.
+/// </summary>
+public sealed class OrphanArtifactReconciliationOptions
+{
+    public bool Enabled { get; init; }
+
+    /// <summary>
+    /// When enabled, inspect bounded candidate counts without changing upload
+    /// state or deleting S3 objects. A separately reviewed retention action
+    /// must set this to false before destructive reconciliation can run.
+    /// </summary>
+    public bool ReportOnly { get; init; } = true;
+}
+
+/// <summary>
 /// Expires abandoned upload authorizations and removes only old objects from the
 /// configured AWS storage target that have no committed PostgreSQL location.
 /// Object listing is used solely for bounded garbage collection, never to answer
@@ -17,6 +33,7 @@ public sealed class PostgresOrphanArtifactReconciler(
     IObjectStore objectStore,
     MutualGpuObjectKeys objectKeys,
     TimeProvider timeProvider,
+    OrphanArtifactReconciliationOptions options,
     ILogger<PostgresOrphanArtifactReconciler> logger) : BackgroundService
 {
     private static readonly TimeSpan SafetyAge = TimeSpan.FromMinutes(10);
@@ -47,9 +64,43 @@ public sealed class PostgresOrphanArtifactReconciler(
 
     public async Task ReconcileOnceAsync(CancellationToken cancellationToken)
     {
+        if (!options.Enabled)
+        {
+            logger.LogInformation("PostgreSQL orphan-artifact reconciliation is disabled.");
+            return;
+        }
+
+        if (options.ReportOnly)
+        {
+            await ReportAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         await ExpireAsync(cancellationToken).ConfigureAwait(false);
         await CollectAsync(cancellationToken).ConfigureAwait(false);
         await CollectUncommittedInputsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ReportAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(
+            """
+            select
+                count(*) filter (where state in ('authorized', 'uploading') and expires_at < now()),
+                count(*) filter (where state = 'expired' and expires_at < @safe_before)
+            from result_upload_operations
+            """,
+            connection);
+        command.Parameters.AddWithValue(
+            "safe_before",
+            PostgresPersistence.Utc(timeProvider.GetUtcNow().Subtract(SafetyAge)));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        logger.LogInformation(
+            "PostgreSQL orphan-artifact reconciliation report only: {ExpiredAuthorizations} expired authorizations and {ExpiredUploads} expired uploads require review; no state or object was changed.",
+            reader.GetInt64(0),
+            reader.GetInt64(1));
     }
 
     private async Task ExpireAsync(CancellationToken cancellationToken)

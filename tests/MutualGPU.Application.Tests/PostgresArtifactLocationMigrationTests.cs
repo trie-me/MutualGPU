@@ -55,6 +55,24 @@ public sealed class PostgresArtifactLocationMigrationTests
         Assert.False(await reader.ReadAsync());
     }
 
+    [PostgresFact]
+    public async Task Migration_compatibility_requires_the_exact_expected_ledger()
+    {
+        await using var schema = await IsolatedSchema.CreateAsync();
+        var migrator = new PostgresMigrator(schema.DataSource);
+
+        await migrator.MigrateAsync(CancellationToken.None);
+        await migrator.MigrateAsync(CancellationToken.None);
+        Assert.True(await migrator.IsCompatibleAsync(CancellationToken.None));
+
+        await schema.ExecuteAsync(
+            "update schema_migrations set sha256 = repeat('0', 64) where version = 4");
+
+        Assert.False(await migrator.IsCompatibleAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => migrator.MigrateAsync(CancellationToken.None));
+    }
+
     private static async Task ApplyLegacyMigrationsAsync(IsolatedSchema schema)
     {
         var migrations = Enumerable.Range(1, 3).Select(ReadMigration).ToArray();
