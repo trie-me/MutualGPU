@@ -25,6 +25,8 @@ var providerCorsOrigins = (builder.Configuration.GetSection("MutualGPU:ProviderC
     .Select(origin => PartnerResourceOrigin.Normalize(origin)
         ?? throw new InvalidOperationException("MutualGPU:ProviderCorsOrigins entries must be explicit HTTPS origins without wildcards or paths."))
     .ToArray();
+var allowArbitraryBrowserTaskWriteOrigins =
+    builder.Configuration.GetValue("MutualGPU:Security:AllowArbitraryBrowserTaskWriteOrigins", false);
 var s3ImageOriginConfiguration = builder.Configuration["MutualGPU:Csp:S3ImageOrigin"];
 var s3ImageOrigin = String.IsNullOrWhiteSpace(s3ImageOriginConfiguration)
     ? null
@@ -297,7 +299,7 @@ app.UseCors(policy => policy
 app.Use(async (context, next) =>
 {
     context.Response.Headers["Content-Security-Policy"] =
-        $"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' https://api.producthunt.com{(s3ImageOrigin is null ? String.Empty : $" {s3ImageOrigin}")}; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+        $"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: https://api.producthunt.com{(s3ImageOrigin is null ? String.Empty : $" {s3ImageOrigin}")}; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";
@@ -311,7 +313,8 @@ app.Use(async (context, next) =>
 });
 app.Use(async (context, next) =>
 {
-    if (IsUnsafeMethod(context.Request.Method) &&
+    if (!allowArbitraryBrowserTaskWriteOrigins &&
+        IsUnsafeMethod(context.Request.Method) &&
         context.Request.Path.StartsWithSegments("/api/tasks") &&
         !IsTrustedBrowserWriteOrigin(context, providerCorsOrigins, partnerResources))
     {
