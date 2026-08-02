@@ -1371,7 +1371,9 @@ show_change_set() {
     --query '{ChangeSetId:ChangeSetId,StackId:StackId,Status:Status,ExecutionStatus:ExecutionStatus,Parameters:Parameters,Changes:Changes[*].ResourceChange.{Action:Action,LogicalResourceId:LogicalResourceId,ResourceType:ResourceType,Replacement:Replacement,Scope:Scope}}' \
     --output json |
     jq 'if .Parameters then
-          .Parameters |= map(if .ParameterKey == "DeploymentSecretArn"
+          .Parameters |= map(if (.ParameterKey == "DeploymentSecretArn"
+                                 or .ParameterKey == "MigrationDatabaseSecretVersionId"
+                                 or .ParameterKey == "MigrationDeploymentSecretVersionId")
                              then .ParameterValue = "[redacted]"
                              else . end)
         else . end'
@@ -1439,6 +1441,18 @@ create_service_change_set() {
   local certificate_arn="${MUTUALGPU_CERTIFICATE_ARN:?Set MUTUALGPU_CERTIFICATE_ARN to the reviewed target ACM certificate ARN.}"
   local deployment_secret_arn="${MUTUALGPU_DEPLOYMENT_SECRET_ARN:?Set MUTUALGPU_DEPLOYMENT_SECRET_ARN to the target secret ARN without exposing its value.}"
   local active_legacy_task_definition_arn="${MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN:?Set MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN to the exact current legacy task definition ARN.}"
+  local database_secret_arn database_secret_version_id deployment_secret_version_id
+  database_secret_arn="$(aws_target cloudformation describe-stacks --stack-name "$foundation_stack" --query \"Stacks[0].Outputs[?OutputKey=='DatabaseSecretArn'].OutputValue | [0]\" --output text)"
+  if [[ -z "$database_secret_arn" || "$database_secret_arn" == "None" ]]; then
+    echo "The target foundation stack did not expose a database secret ARN for attestation." >&2
+    exit 1
+  fi
+  database_secret_version_id="${MUTUALGPU_MIGRATION_DATABASE_SECRET_VERSION_ID:-$(aws_target secretsmanager describe-secret --secret-id "$database_secret_arn" --query VersionIdsToStages --output json | jq -r 'to_entries | map(select(.value | index("AWSCURRENT"))) | if length == 1 then .[0].key else empty end')}"
+  deployment_secret_version_id="${MUTUALGPU_MIGRATION_DEPLOYMENT_SECRET_VERSION_ID:-$(aws_target secretsmanager describe-secret --secret-id "$deployment_secret_arn" --query VersionIdsToStages --output json | jq -r 'to_entries | map(select(.value | index("AWSCURRENT"))) | if length == 1 then .[0].key else empty end')}"
+  if [[ -z "$database_secret_version_id" || -z "$deployment_secret_version_id" ]]; then
+    echo "The required target secret metadata did not contain exactly one current version." >&2
+    exit 1
+  fi
   local stack_type
   stack_type="$(change_set_type "$service_stack")"
   echo "Verifying the reviewed target image and its complete immutable-release provenance."
@@ -1450,6 +1464,8 @@ create_service_change_set() {
     "ParameterKey=CertificateArn,ParameterValue=${certificate_arn}"
     "ParameterKey=PublicApiHost,ParameterValue=${MUTUALGPU_DOMAIN:-mutualgpu.com}"
     "ParameterKey=DeploymentSecretArn,ParameterValue=${deployment_secret_arn}"
+    "ParameterKey=MigrationDatabaseSecretVersionId,ParameterValue=${database_secret_version_id}"
+    "ParameterKey=MigrationDeploymentSecretVersionId,ParameterValue=${deployment_secret_version_id}"
     "ParameterKey=DesiredCount,ParameterValue=${MUTUALGPU_DESIRED_COUNT:-1}"
     "ParameterKey=PostgresRuntimeMode,ParameterValue=${MUTUALGPU_POSTGRES_RUNTIME_MODE:-false}"
     "ParameterKey=ActiveLegacyTaskDefinitionArn,ParameterValue=${active_legacy_task_definition_arn}"
@@ -1464,8 +1480,8 @@ create_service_change_set() {
 
   echo "Creating ${stack_type} change set ${change_set_name} for ${service_stack}."
   for parameter in "${parameters[@]}"; do
-    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* ]]; then
-      echo "  ParameterKey=DeploymentSecretArn,ParameterValue=[redacted]"
+    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* || "$parameter" == ParameterKey=MigrationDatabaseSecretVersionId,* || "$parameter" == ParameterKey=MigrationDeploymentSecretVersionId,* ]]; then
+      echo "  ${parameter%%,*},ParameterValue=[redacted]"
     else
       echo "  ${parameter}"
     fi

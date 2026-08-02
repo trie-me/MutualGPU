@@ -6,6 +6,13 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="AWSSDK.CloudFormation" />
+    <PackageReference Include="AWSSDK.RDS" />
+    <PackageReference Include="AWSSDK.S3" />
+    <PackageReference Include="AWSSDK.SecretsManager" />
+    <PackageReference Include="AWSSDK.SecurityToken" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../../src/MutualGPU.Application/MutualGPU.Application.csproj" />
     <ProjectReference Include="../../src/MutualGPU.Infrastructure/MutualGPU.Infrastructure.csproj" />
   </ItemGroup>

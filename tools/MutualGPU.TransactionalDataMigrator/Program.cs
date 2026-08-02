@@ -36,6 +36,11 @@ if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("AWS_PROFILE")
 var storageTarget = new ArtifactStorageTargetSelection(
     RequiredEnvironmentVariable("MUTUALGPU_MIGRATION_WRITE_STORAGE_TARGET_ID"));
 var postgres = PostgresEnvironment();
+var targetAttestation = TargetMigrationAttestationExpectation.FromEnvironment(
+    applicationBucket,
+    region,
+    postgres);
+await AwsTargetMigrationAttestor.AttestAsync(targetAttestation, CancellationToken.None);
 if (mode is MigrationMode.Import)
 {
     // Imports may contain recoverable task handles. They are encrypted before

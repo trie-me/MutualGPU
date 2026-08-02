@@ -23,6 +23,16 @@ Parameters:
     Type: String
     AllowedPattern: '^arn:aws:secretsmanager:us-east-1:428590861908:secret:mutualgpu/deployment-[A-Za-z0-9]+$'
     ConstraintDescription: Must be the target mutualgpu/deployment secret ARN without exposing its value.
+  MigrationDatabaseSecretVersionId:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '^[0-9A-Za-z-]{16,128}$'
+    Description: Exact metadata-only AWSCURRENT version ID for the database secret, captured immediately before the cutover support change.
+  MigrationDeploymentSecretVersionId:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '^[0-9A-Za-z-]{16,128}$'
+    Description: Exact metadata-only AWSCURRENT version ID for the deployment secret, captured immediately before the cutover support change.
   DesiredCount:
     Type: Number
     Default: 1
@@ -599,6 +609,16 @@ Resources:
                 Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
             - Name: MUTUALGPU_MIGRATION_WRITE_STORAGE_TARGET_ID
               Value: aws-primary
+            - Name: MUTUALGPU_MIGRATION_FOUNDATION_STACK_NAME
+              Value: !Ref FoundationStackName
+            - Name: MUTUALGPU_MIGRATION_DATABASE_IDENTIFIER
+              Value: mutualgpu-postgres
+            - Name: MUTUALGPU_MIGRATION_DEPLOYMENT_SECRET_ARN
+              Value: !Ref DeploymentSecretArn
+            - Name: MUTUALGPU_MIGRATION_DATABASE_SECRET_VERSION_ID
+              Value: !Ref MigrationDatabaseSecretVersionId
+            - Name: MUTUALGPU_MIGRATION_DEPLOYMENT_SECRET_VERSION_ID
+              Value: !Ref MigrationDeploymentSecretVersionId
             - Name: MutualGPU__Postgres__Host
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointAddress'

@@ -916,6 +916,10 @@ Resources:
                 Effect: Allow
                 Action: s3:GetObject
                 Resource: !Sub '${ApplicationDataBucket.Arn}/mutualgpu/v3/*'
+              - Sid: AttestTargetBucketOwner
+                Effect: Allow
+                Action: s3:GetBucketAcl
+                Resource: !GetAtt ApplicationDataBucket.Arn
               - Sid: AttestTargetIdentity
                 Effect: Allow
                 Action: sts:GetCallerIdentity
@@ -931,7 +935,9 @@ Resources:
               - Sid: AttestDatabaseSecretMetadata
                 Effect: Allow
                 Action: secretsmanager:DescribeSecret
-                Resource: !Ref DatabaseSecret
+                Resource:
+                  - !Ref DatabaseSecret
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mutualgpu/deployment-*'
       Tags:
         - Key: Name
           Value: mutualgpu-postgres-migration-task
