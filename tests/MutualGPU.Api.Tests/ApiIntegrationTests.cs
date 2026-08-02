@@ -69,6 +69,9 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("partner-resource-form.js", page, StringComparison.Ordinal);
         var contentSecurityPolicy = Assert.Single(pageResponse.Headers.GetValues("Content-Security-Policy"));
         Assert.Contains("script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.DoesNotContain("script-src 'self' 'unsafe-inline'", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.Contains("style-src 'self'; style-src-attr 'unsafe-inline'", contentSecurityPolicy, StringComparison.Ordinal);
+        Assert.Contains("img-src 'self' blob:", contentSecurityPolicy, StringComparison.Ordinal);
         Assert.Contains("https://huggingface.co", contentSecurityPolicy, StringComparison.Ordinal);
         Assert.Contains("https://*.xethub.hf.co", contentSecurityPolicy, StringComparison.Ordinal);
         Assert.Contains("https://mutualgpu-data-428590861908-us-east-1.s3.us-east-1.amazonaws.com", contentSecurityPolicy, StringComparison.Ordinal);
@@ -472,6 +475,28 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
 
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("https://provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
+    }
+
+    [Fact]
+    public async Task Incubation_mode_allows_task_writes_from_an_arbitrary_browser_origin()
+    {
+        using var incubationFactory = factory.WithWebHostBuilder(builder =>
+            builder.UseSetting("MutualGPU:Security:AllowArbitraryBrowserTaskWriteOrigins", "true"));
+        using var client = incubationFactory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            HandleCookies = false,
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/tasks/")
+        {
+            Content = JsonContent.Create(new { })
+        };
+        request.Headers.Add("Origin", "https://new-incubating-provider.example");
+
+        using var response = await client.SendAsync(request, CancellationToken.None);
+
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("https://new-incubating-provider.example", response.Headers.GetValues("Access-Control-Allow-Origin").Single());
     }
 
     [Fact]
