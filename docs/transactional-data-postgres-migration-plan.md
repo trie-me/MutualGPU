@@ -296,9 +296,13 @@ replayed to hydrate normal commands.
 - `state text not null` (`staged`, `available`, `orphaned`, or `deleted`)
 - `created_at timestamptz not null`
 
-The bucket and region come from current service configuration rather than being
-copied into every row. If multiple artifact stores are introduced later, add a
-store identifier rather than embedding a presigned URL.
+The current AWS-only release resolves bucket and region from service
+configuration rather than copying them into every row. The additive
+multi-provider model is specified in
+`docs/multi-provider-artifact-storage-strategy.md`: logical artifact metadata
+remains in `artifacts`, while provider-specific target, object key, opaque ETag,
+and location lifecycle move to `artifact_locations`. Presigned URLs remain
+ephemeral and are never stored.
 
 ### `result_upload_operations`
 

@@ -84,7 +84,10 @@ public sealed class PostgresResultUploadStore(
             ResultUploadState.Authorized,
             expiresAt,
             1,
-            now);
+            now)
+        {
+            WriteStorageTargetId = ArtifactStorageTargetIds.AwsPrimary,
+        };
         await operations.ExecuteAsync(
             (context, _) =>
             {
@@ -154,6 +157,7 @@ public sealed class PostgresResultUploadStore(
                     UploadedAt = DateTimeOffset.UtcNow,
                     Version = upload.Version + 1,
                 });
+                var stagedAt = DateTimeOffset.UtcNow;
                 foreach (var (role, artifact, key) in ResultArtifacts(
                     task.RequestorId,
                     taskId,
@@ -161,7 +165,7 @@ public sealed class PostgresResultUploadStore(
                     result.Result))
                 {
                     if (artifact is null) continue;
-                    context.Artifacts.Add(new ArtifactDescriptor(
+                    var descriptor = new ArtifactDescriptor(
                         artifact.Id,
                         taskId,
                         attemptId,
@@ -172,8 +176,18 @@ public sealed class PostgresResultUploadStore(
                         artifact.Length,
                         artifact.Sha256,
                         ArtifactState.Staged,
-                        DateTimeOffset.UtcNow,
-                        upload.Id));
+                        stagedAt,
+                        upload.Id)
+                    {
+                        Locations =
+                        [new ArtifactLocation(
+                            upload.WriteStorageTargetId,
+                            key.Value,
+                            null,
+                            ArtifactLocationState.Staged,
+                            stagedAt)],
+                    };
+                    context.Artifacts.Add(descriptor);
                 }
                 return true;
             },

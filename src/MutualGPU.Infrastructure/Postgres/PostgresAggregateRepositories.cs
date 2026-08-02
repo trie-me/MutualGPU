@@ -483,6 +483,12 @@ internal sealed class PostgresResultUploadRepository(
         {
             throw new InvalidOperationException("The upload operation must be loaded before it can be updated.");
         }
+        if (!StringComparer.Ordinal.Equals(
+            operation.WriteStorageTargetId,
+            current.Operation.WriteStorageTargetId))
+        {
+            throw new InvalidOperationException("The upload operation write storage target is immutable.");
+        }
         tracked[operation.Id] = current with { Operation = operation, Updated = true };
     });
 
@@ -495,11 +501,11 @@ internal sealed class PostgresResultUploadRepository(
                 insert into result_upload_operations(
                     id, task_id, attempt_id, execution_unit_id, handle_digest,
                     token_digest, receipt, state, expires_at, version, created_at,
-                    uploaded_at, completed_at)
+                    uploaded_at, completed_at, write_storage_target_id)
                 values (
                     @id, @task_id, @attempt_id, @execution_unit_id, @handle_digest,
                     @token_digest, @receipt, @state, @expires_at, 1, @created_at,
-                    @uploaded_at, @completed_at)
+                    @uploaded_at, @completed_at, @write_storage_target_id)
                 """,
                 connection,
                 transaction);
@@ -547,7 +553,7 @@ internal sealed class PostgresResultUploadRepository(
             """
             select id, task_id, attempt_id, execution_unit_id, handle_digest,
                    token_digest, receipt, state, expires_at, version, created_at,
-                   uploaded_at, completed_at
+                   uploaded_at, completed_at, write_storage_target_id
             from result_upload_operations
             where (@id is not null and id = @id)
                or (@id is null and task_id = @task_id and attempt_id = @attempt_id and receipt = @receipt)
@@ -575,7 +581,10 @@ internal sealed class PostgresResultUploadRepository(
             reader.GetInt64(9),
             PostgresPersistence.Timestamp(reader, 10),
             PostgresPersistence.NullableTimestamp(reader, 11),
-            PostgresPersistence.NullableTimestamp(reader, 12));
+            PostgresPersistence.NullableTimestamp(reader, 12))
+        {
+            WriteStorageTargetId = reader.GetString(13),
+        };
         var item = new TrackedUpload(operation, operation.Version, Added: false, Updated: false);
         tracked.TryAdd(operation.Id, item);
         return item;
@@ -595,6 +604,7 @@ internal sealed class PostgresResultUploadRepository(
         command.Parameters.AddWithValue("created_at", PostgresPersistence.Utc(operation.CreatedAt));
         PostgresPersistence.AddNullableTimestamp(command, "uploaded_at", operation.UploadedAt);
         PostgresPersistence.AddNullableTimestamp(command, "completed_at", operation.CompletedAt);
+        command.Parameters.AddWithValue("write_storage_target_id", operation.WriteStorageTargetId);
     }
 
     private sealed record TrackedUpload(
@@ -629,14 +639,31 @@ internal sealed class PostgresArtifactRepository(
                 transaction);
             command.Parameters.AddWithValue("task_id", taskId.Value);
             var artifacts = new List<ArtifactDescriptor>();
-            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            await using (var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false))
             {
-                var artifact = Read(reader);
-                artifacts.Add(artifact);
-                tracked.TryAdd(artifact.Id, new TrackedArtifact(artifact, Added: false, Updated: false));
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var artifact = Read(reader);
+                    artifacts.Add(artifact);
+                    tracked.TryAdd(artifact.Id, new TrackedArtifact(artifact, Added: false, Updated: false));
+                }
             }
-            return (IReadOnlyList<ArtifactDescriptor>)artifacts;
+            if (artifacts.Count == 0) return (IReadOnlyList<ArtifactDescriptor>)artifacts;
+
+            var locations = await LoadLocationsAsync(
+                artifacts.Select(static artifact => artifact.Id).ToArray(),
+                cancellationToken).ConfigureAwait(false);
+            var withLocations = artifacts
+                .Select(artifact => artifact with
+                {
+                    Locations = locations.GetValueOrDefault(artifact.Id, []),
+                })
+                .ToArray();
+            foreach (var artifact in withLocations)
+            {
+                tracked[artifact.Id] = new TrackedArtifact(artifact, Added: false, Updated: false);
+            }
+            return withLocations;
         });
 
     public void Add(ArtifactDescriptor artifact) => guard.Run(() =>
@@ -675,6 +702,7 @@ internal sealed class PostgresArtifactRepository(
                 transaction);
             AddParameters(command, item.Artifact);
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            await InsertLocationsAsync(item.Artifact, cancellationToken).ConfigureAwait(false);
         }
         foreach (var item in tracked.Values.Where(static item => item.Updated))
         {
@@ -691,7 +719,124 @@ internal sealed class PostgresArtifactRepository(
             {
                 throw new OptimisticConcurrencyException("artifact", item.Artifact.Id.Value, 1);
             }
+            await UpdateStagedLocationsAsync(item.Artifact, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    private async Task<Dictionary<ArtifactId, IReadOnlyList<ArtifactLocation>>> LoadLocationsAsync(
+        IReadOnlyList<ArtifactId> artifactIds,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            select artifact_id, storage_target_id, object_key, provider_etag,
+                   state, created_at, last_verified_at
+            from artifact_locations
+            where artifact_id = any(@artifact_ids)
+            order by artifact_id, storage_target_id
+            """,
+            connection,
+            transaction);
+        command.Parameters.Add(
+            "artifact_ids",
+            NpgsqlDbType.Array | NpgsqlDbType.Uuid).Value = artifactIds
+            .Select(static id => id.Value)
+            .ToArray();
+        var locations = new Dictionary<ArtifactId, List<ArtifactLocation>>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var artifactId = new ArtifactId(reader.GetGuid(0));
+            if (!locations.TryGetValue(artifactId, out var values))
+            {
+                values = [];
+                locations.Add(artifactId, values);
+            }
+            values.Add(new ArtifactLocation(
+                reader.GetString(1),
+                reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
+                reader.GetFieldValue<ArtifactLocationState>(4),
+                PostgresPersistence.Timestamp(reader, 5),
+                PostgresPersistence.NullableTimestamp(reader, 6)));
+        }
+        return locations.ToDictionary(
+            static pair => pair.Key,
+            static pair => (IReadOnlyList<ArtifactLocation>)pair.Value);
+    }
+
+    private async Task InsertLocationsAsync(
+        ArtifactDescriptor artifact,
+        CancellationToken cancellationToken)
+    {
+        foreach (var location in InitialLocations(artifact))
+        {
+            await using var command = new NpgsqlCommand(
+                """
+                insert into artifact_locations(
+                    artifact_id, storage_target_id, object_key, provider_etag,
+                    state, created_at, last_verified_at)
+                values (
+                    @artifact_id, @storage_target_id, @object_key, @provider_etag,
+                    @state, @created_at, @last_verified_at)
+                """,
+                connection,
+                transaction);
+            AddLocationParameters(command, artifact.Id, location);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task UpdateStagedLocationsAsync(
+        ArtifactDescriptor artifact,
+        CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand(
+            """
+            update artifact_locations
+            set state = @state
+            where artifact_id = @artifact_id
+              and state = 'staged'
+            """,
+            connection,
+            transaction);
+        command.Parameters.AddWithValue("artifact_id", artifact.Id.Value);
+        command.Parameters.AddWithValue("state", ToLocationState(artifact.State));
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static IReadOnlyList<ArtifactLocation> InitialLocations(ArtifactDescriptor artifact) =>
+        artifact.Locations is { Count: > 0 }
+            ? artifact.Locations
+            :
+            [new ArtifactLocation(
+                ArtifactStorageTargetIds.AwsPrimary,
+                artifact.S3ObjectKey,
+                null,
+                ToLocationState(artifact.State),
+                artifact.CreatedAt)];
+
+    private static ArtifactLocationState ToLocationState(ArtifactState state) => state switch
+    {
+        ArtifactState.Staged => ArtifactLocationState.Staged,
+        ArtifactState.Available => ArtifactLocationState.Available,
+        ArtifactState.Orphaned => ArtifactLocationState.Orphaned,
+        ArtifactState.Deleted => ArtifactLocationState.Deleted,
+        _ => throw new ArgumentOutOfRangeException(nameof(state), state, "The artifact state is unsupported."),
+    };
+
+    private static void AddLocationParameters(
+        NpgsqlCommand command,
+        ArtifactId artifactId,
+        ArtifactLocation location)
+    {
+        command.Parameters.AddWithValue("artifact_id", artifactId.Value);
+        command.Parameters.AddWithValue("storage_target_id", location.StorageTargetId);
+        command.Parameters.AddWithValue("object_key", location.ObjectKey);
+        PostgresPersistence.AddNullableText(command, "provider_etag", location.ProviderETag);
+        command.Parameters.AddWithValue("state", location.State);
+        command.Parameters.AddWithValue("created_at", PostgresPersistence.Utc(location.CreatedAt));
+        PostgresPersistence.AddNullableTimestamp(command, "last_verified_at", location.LastVerifiedAt);
     }
 
     private static ArtifactDescriptor Read(NpgsqlDataReader reader) => new(

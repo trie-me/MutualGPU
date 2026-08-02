@@ -14,6 +14,7 @@ public static class PostgresDataSourceFactory
         builder.MapEnum<AttemptState>("attempt_state");
         builder.MapEnum<ArtifactDirection>("artifact_direction");
         builder.MapEnum<ArtifactState>("artifact_state");
+        builder.MapEnum<ArtifactLocationState>("artifact_location_state");
         builder.MapEnum<ResultUploadState>("result_upload_state");
         return builder.Build();
     }

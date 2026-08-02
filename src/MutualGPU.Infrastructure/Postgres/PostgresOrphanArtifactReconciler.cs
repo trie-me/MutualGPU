@@ -7,9 +7,10 @@ using Npgsql;
 namespace MutualGPU.Infrastructure;
 
 /// <summary>
-/// Expires abandoned upload authorizations and removes only old S3 output objects
-/// that have no committed PostgreSQL descriptor. S3 listing is used solely for
-/// bounded garbage collection, never to answer an application query.
+/// Expires abandoned upload authorizations and removes only old objects from the
+/// configured AWS storage target that have no committed PostgreSQL location.
+/// Object listing is used solely for bounded garbage collection, never to answer
+/// an application query.
 /// </summary>
 public sealed class PostgresOrphanArtifactReconciler(
     NpgsqlDataSource dataSource,
@@ -72,10 +73,12 @@ public sealed class PostgresOrphanArtifactReconciler(
         await using (var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false))
         await using (var command = new NpgsqlCommand(
             """
-            select u.id, u.task_id, u.attempt_id, t.requestor_id
+            select u.id, u.task_id, u.attempt_id, t.requestor_id,
+                   u.write_storage_target_id
             from result_upload_operations u
             join tasks t on t.id = u.task_id
             where u.state = 'expired'
+              and u.write_storage_target_id = @storage_target_id
               and u.expires_at < @safe_before
               and not exists (
                     select 1
@@ -90,6 +93,7 @@ public sealed class PostgresOrphanArtifactReconciler(
             command.Parameters.AddWithValue(
                 "safe_before",
                 PostgresPersistence.Utc(timeProvider.GetUtcNow().Subtract(SafetyAge)));
+            command.Parameters.AddWithValue("storage_target_id", ArtifactStorageTargetIds.AwsPrimary);
             command.Parameters.AddWithValue("limit", MaximumOperationsPerPass);
             await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
             while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -98,7 +102,8 @@ public sealed class PostgresOrphanArtifactReconciler(
                     new ResultUploadOperationId(reader.GetGuid(0)),
                     new TaskId(reader.GetGuid(1)),
                     new AttemptId(reader.GetGuid(2)),
-                    new RequestorId(reader.GetGuid(3))));
+                    new RequestorId(reader.GetGuid(3)),
+                    reader.GetString(4)));
             }
         }
 
@@ -113,7 +118,7 @@ public sealed class PostgresOrphanArtifactReconciler(
                 cancellationToken).ConfigureAwait(false))
             {
                 if (entry.LastModified > timeProvider.GetUtcNow().Subtract(SafetyAge)) continue;
-                if (await IsReferencedAsync(entry.Key, cancellationToken).ConfigureAwait(false)) continue;
+                if (await IsReferencedAsync(entry.Key, candidate.StorageTargetId, cancellationToken).ConfigureAwait(false)) continue;
                 await objectStore.DeleteAsync(entry.Key, cancellationToken).ConfigureAwait(false);
                 if (++deleted >= MaximumObjectsPerOperation) break;
             }
@@ -157,7 +162,7 @@ public sealed class PostgresOrphanArtifactReconciler(
                 continue;
             }
 
-            if (await IsReferencedAsync(entry.Key, cancellationToken).ConfigureAwait(false)) continue;
+            if (await IsReferencedAsync(entry.Key, ArtifactStorageTargetIds.AwsPrimary, cancellationToken).ConfigureAwait(false)) continue;
 
             await objectStore.DeleteAsync(entry.Key, cancellationToken).ConfigureAwait(false);
             deleted++;
@@ -166,6 +171,7 @@ public sealed class PostgresOrphanArtifactReconciler(
 
     private async Task<bool> IsReferencedAsync(
         ObjectKey key,
+        string storageTargetId,
         CancellationToken cancellationToken)
     {
         await using var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
@@ -173,13 +179,15 @@ public sealed class PostgresOrphanArtifactReconciler(
             """
             select exists(
                 select 1
-                from artifacts
-                where s3_object_key = @s3_object_key
+                from artifact_locations
+                where storage_target_id = @storage_target_id
+                  and object_key = @object_key
                   and state in ('staged', 'available')
             )
             """,
             connection);
-        command.Parameters.AddWithValue("s3_object_key", key.Value);
+        command.Parameters.AddWithValue("storage_target_id", storageTargetId);
+        command.Parameters.AddWithValue("object_key", key.Value);
         return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
     }
 
@@ -187,5 +195,6 @@ public sealed class PostgresOrphanArtifactReconciler(
         ResultUploadOperationId Id,
         TaskId TaskId,
         AttemptId AttemptId,
-        RequestorId RequestorId);
+        RequestorId RequestorId,
+        string StorageTargetId);
 }

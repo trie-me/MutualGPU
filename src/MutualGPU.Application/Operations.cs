@@ -62,6 +62,38 @@ public enum ArtifactState
     Deleted,
 }
 
+/// <summary>
+/// Stable storage-target identifiers used by persisted artifact locations.
+/// The existing AWS deployment is intentionally named rather than inferred
+/// from a provider implementation.
+/// </summary>
+public static class ArtifactStorageTargetIds
+{
+    public const string AwsPrimary = "aws-primary";
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum ArtifactLocationState
+{
+    Staged,
+    Available,
+    Orphaned,
+    Deleted,
+    Failed,
+}
+
+/// <summary>
+/// A provider-specific placement of a logical artifact. Provider ETags are
+/// opaque values supplied by object storage and are never calculated here.
+/// </summary>
+public sealed record ArtifactLocation(
+    string StorageTargetId,
+    string ObjectKey,
+    string? ProviderETag,
+    ArtifactLocationState State,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? LastVerifiedAt = null);
+
 public sealed record ArtifactDescriptor(
     ArtifactId Id,
     TaskId TaskId,
@@ -74,7 +106,10 @@ public sealed record ArtifactDescriptor(
     string Sha256,
     ArtifactState State,
     DateTimeOffset CreatedAt,
-    ResultUploadOperationId? ResultUploadOperationId = null);
+    ResultUploadOperationId? ResultUploadOperationId = null)
+{
+    public IReadOnlyList<ArtifactLocation>? Locations { get; init; }
+}
 
 public interface IArtifactRepository
 {
@@ -109,7 +144,10 @@ public sealed record ResultUploadOperation(
     long Version,
     DateTimeOffset CreatedAt,
     DateTimeOffset? UploadedAt = null,
-    DateTimeOffset? CompletedAt = null);
+    DateTimeOffset? CompletedAt = null)
+{
+    public string WriteStorageTargetId { get; init; } = ArtifactStorageTargetIds.AwsPrimary;
+}
 
 public interface IResultUploadRepository
 {
