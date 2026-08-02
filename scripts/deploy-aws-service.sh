@@ -1442,7 +1442,7 @@ create_service_change_set() {
   local deployment_secret_arn="${MUTUALGPU_DEPLOYMENT_SECRET_ARN:?Set MUTUALGPU_DEPLOYMENT_SECRET_ARN to the target secret ARN without exposing its value.}"
   local active_legacy_task_definition_arn="${MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN:?Set MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN to the exact current legacy task definition ARN.}"
   local database_secret_arn database_secret_version_id deployment_secret_version_id
-  database_secret_arn="$(aws_target cloudformation describe-stacks --stack-name "$foundation_stack" --query \"Stacks[0].Outputs[?OutputKey=='DatabaseSecretArn'].OutputValue | [0]\" --output text)"
+  database_secret_arn="$(aws_target cloudformation describe-stacks --stack-name "$foundation_stack" --query "Stacks[0].Outputs[?OutputKey=='DatabaseSecretArn'].OutputValue | [0]" --output text)"
   if [[ -z "$database_secret_arn" || "$database_secret_arn" == "None" ]]; then
     echo "The target foundation stack did not expose a database secret ARN for attestation." >&2
     exit 1
