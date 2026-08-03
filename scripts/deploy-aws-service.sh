@@ -1373,7 +1373,8 @@ show_change_set() {
     jq 'if .Parameters then
           .Parameters |= map(if (.ParameterKey == "DeploymentSecretArn"
                                  or .ParameterKey == "MigrationDatabaseSecretVersionId"
-                                 or .ParameterKey == "MigrationDeploymentSecretVersionId")
+                                 or .ParameterKey == "MigrationDeploymentSecretVersionId"
+                                 or .ParameterKey == "MaintenanceOperatorIpv4Cidr")
                              then .ParameterValue = "[redacted]"
                              else . end)
         else . end'
@@ -1480,7 +1481,7 @@ create_service_change_set() {
 
   echo "Creating ${stack_type} change set ${change_set_name} for ${service_stack}."
   for parameter in "${parameters[@]}"; do
-    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* || "$parameter" == ParameterKey=MigrationDatabaseSecretVersionId,* || "$parameter" == ParameterKey=MigrationDeploymentSecretVersionId,* ]]; then
+    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* || "$parameter" == ParameterKey=MigrationDatabaseSecretVersionId,* || "$parameter" == ParameterKey=MigrationDeploymentSecretVersionId,* || "$parameter" == ParameterKey=MaintenanceOperatorIpv4Cidr,* ]]; then
       echo "  ${parameter%%,*},ParameterValue=[redacted]"
     else
       echo "  ${parameter}"
