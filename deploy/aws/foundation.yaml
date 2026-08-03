@@ -770,6 +770,12 @@ Resources:
                 Resource:
                   - !Ref DatabaseSecret
                   - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:mutualgpu/deployment-*'
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/mutualgpu/contest/backblaze-primary/application-key-id'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/mutualgpu/contest/backblaze-primary/application-key'
       Tags:
         - Key: Name
           Value: mutualgpu-ecs-task-execution

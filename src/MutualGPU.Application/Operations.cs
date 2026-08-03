@@ -72,16 +72,14 @@ public static class ArtifactStorageTargetIds
     public const string AwsPrimary = "aws-primary";
 
     /// <summary>
-    /// The first PostgreSQL release supports only the reviewed AWS compatibility
-    /// slice. A target must be named at every new-write boundary; it is never
-    /// inferred from a repository default or substituted with another provider.
+    /// A target must be named at every new-write boundary; it is never inferred
+    /// from a repository default or substituted with another provider.
     /// </summary>
-    public static string RequireAwsPrimary(string? storageTargetId, string parameterName)
+    public static string RequireExplicit(string? storageTargetId, string parameterName)
     {
-        if (!StringComparer.Ordinal.Equals(storageTargetId, AwsPrimary))
+        if (String.IsNullOrWhiteSpace(storageTargetId))
         {
-            throw new InvalidOperationException(
-                $"Only the explicitly selected '{AwsPrimary}' storage target is supported by this release.");
+            throw new ArgumentException("An explicit storage target is required.", parameterName);
         }
 
         return storageTargetId;
@@ -96,7 +94,7 @@ public static class ArtifactStorageTargetIds
 public sealed class ArtifactStorageTargetSelection
 {
     public ArtifactStorageTargetSelection(string writeStorageTargetId) =>
-        WriteStorageTargetId = ArtifactStorageTargetIds.RequireAwsPrimary(
+        WriteStorageTargetId = ArtifactStorageTargetIds.RequireExplicit(
             writeStorageTargetId,
             nameof(writeStorageTargetId));
 

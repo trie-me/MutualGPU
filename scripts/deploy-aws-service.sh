@@ -1442,6 +1442,8 @@ create_service_change_set() {
   local certificate_arn="${MUTUALGPU_CERTIFICATE_ARN:?Set MUTUALGPU_CERTIFICATE_ARN to the reviewed target ACM certificate ARN.}"
   local deployment_secret_arn="${MUTUALGPU_DEPLOYMENT_SECRET_ARN:?Set MUTUALGPU_DEPLOYMENT_SECRET_ARN to the target secret ARN without exposing its value.}"
   local active_legacy_task_definition_arn="${MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN:?Set MUTUALGPU_ACTIVE_LEGACY_TASK_DEFINITION_ARN to the exact current legacy task definition ARN.}"
+  local backblaze_application_key_id_parameter_arn="${MUTUALGPU_BACKBLAZE_APPLICATION_KEY_ID_PARAMETER_ARN:?Set MUTUALGPU_BACKBLAZE_APPLICATION_KEY_ID_PARAMETER_ARN to the encrypted target SSM parameter ARN.}"
+  local backblaze_application_key_parameter_arn="${MUTUALGPU_BACKBLAZE_APPLICATION_KEY_PARAMETER_ARN:?Set MUTUALGPU_BACKBLAZE_APPLICATION_KEY_PARAMETER_ARN to the encrypted target SSM parameter ARN.}"
   local database_secret_arn database_secret_version_id deployment_secret_version_id
   database_secret_arn="$(aws_target cloudformation describe-stacks --stack-name "$foundation_stack" --query "Stacks[0].Outputs[?OutputKey=='DatabaseSecretArn'].OutputValue | [0]" --output text)"
   if [[ -z "$database_secret_arn" || "$database_secret_arn" == "None" ]]; then
@@ -1477,11 +1479,13 @@ create_service_change_set() {
     "ParameterKey=ProviderCorsOrigin2,ParameterValue=${MUTUALGPU_PROVIDER_CORS_ORIGIN_2:-https://yosun-triposplat-webgpu-demo.static.hf.space}"
     "ParameterKey=ProviderEnrollmentRateLimit,ParameterValue=${MUTUALGPU_PROVIDER_ENROLLMENT_RATE_LIMIT:-10}"
     "ParameterKey=AllowArbitraryBrowserTaskWriteOrigins,ParameterValue=${MUTUALGPU_ALLOW_ARBITRARY_BROWSER_TASK_WRITE_ORIGINS:-true}"
+    "ParameterKey=BackblazeApplicationKeyIdParameterArn,ParameterValue=${backblaze_application_key_id_parameter_arn}"
+    "ParameterKey=BackblazeApplicationKeyParameterArn,ParameterValue=${backblaze_application_key_parameter_arn}"
   )
 
   echo "Creating ${stack_type} change set ${change_set_name} for ${service_stack}."
   for parameter in "${parameters[@]}"; do
-    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* || "$parameter" == ParameterKey=MigrationDatabaseSecretVersionId,* || "$parameter" == ParameterKey=MigrationDeploymentSecretVersionId,* || "$parameter" == ParameterKey=MaintenanceOperatorIpv4Cidr,* ]]; then
+    if [[ "$parameter" == ParameterKey=DeploymentSecretArn,* || "$parameter" == ParameterKey=MigrationDatabaseSecretVersionId,* || "$parameter" == ParameterKey=MigrationDeploymentSecretVersionId,* || "$parameter" == ParameterKey=MaintenanceOperatorIpv4Cidr,* || "$parameter" == ParameterKey=BackblazeApplicationKeyIdParameterArn,* || "$parameter" == ParameterKey=BackblazeApplicationKeyParameterArn,* ]]; then
       echo "  ${parameter%%,*},ParameterValue=[redacted]"
     else
       echo "  ${parameter}"

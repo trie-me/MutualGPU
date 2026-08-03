@@ -472,7 +472,7 @@ internal sealed class PostgresResultUploadRepository(
     public void Add(ResultUploadOperation operation) => guard.Run(() =>
     {
         ArgumentNullException.ThrowIfNull(operation);
-        ArtifactStorageTargetIds.RequireAwsPrimary(
+        ArtifactStorageTargetIds.RequireExplicit(
             operation.WriteStorageTargetId,
             nameof(operation.WriteStorageTargetId));
         if (tracked.ContainsKey(operation.Id)) throw new InvalidOperationException("The upload operation is already tracked.");
@@ -482,7 +482,7 @@ internal sealed class PostgresResultUploadRepository(
     public void Update(ResultUploadOperation operation) => guard.Run(() =>
     {
         ArgumentNullException.ThrowIfNull(operation);
-        ArtifactStorageTargetIds.RequireAwsPrimary(
+        ArtifactStorageTargetIds.RequireExplicit(
             operation.WriteStorageTargetId,
             nameof(operation.WriteStorageTargetId));
         if (!tracked.TryGetValue(operation.Id, out var current) || current.Added)
@@ -591,7 +591,7 @@ internal sealed class PostgresResultUploadRepository(
         {
             WriteStorageTargetId = reader.GetString(13),
         };
-        ArtifactStorageTargetIds.RequireAwsPrimary(
+        ArtifactStorageTargetIds.RequireExplicit(
             operation.WriteStorageTargetId,
             nameof(operation.WriteStorageTargetId));
         var item = new TrackedUpload(operation, operation.Version, Added: false, Updated: false);
@@ -682,7 +682,7 @@ internal sealed class PostgresArtifactRepository(
     {
         ArgumentNullException.ThrowIfNull(artifact);
         artifact = NormalizeLocation(artifact);
-        ArtifactStorageTargetIds.RequireAwsPrimary(
+        ArtifactStorageTargetIds.RequireExplicit(
             artifact.Locations![0].StorageTargetId,
             nameof(ArtifactLocation.StorageTargetId));
         if (tracked.ContainsKey(artifact.Id)) throw new InvalidOperationException("The artifact is already tracked.");

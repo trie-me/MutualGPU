@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MutualGPU public ALB and one ARM64 EC2-backed ECS service using clean PostgreSQL and S3 state.
+Description: MutualGPU public ALB and one ARM64 EC2-backed ECS service using clean PostgreSQL and explicitly selected object-storage targets.
 
 Parameters:
   FoundationStackName:
@@ -87,6 +87,29 @@ Parameters:
       - 'false'
       - 'true'
     Description: Preserve the deployed permissive task-write-origin behavior; changing it requires an explicit reviewed D9 decision.
+  BackblazeApplicationKeyIdParameterArn:
+    Type: String
+    AllowedPattern: '^arn:aws:ssm:us-east-1:428590861908:parameter/mutualgpu/contest/backblaze-primary/application-key-id$'
+    Description: Exact encrypted SSM parameter ARN holding the bucket-restricted Backblaze application-key ID.
+  BackblazeApplicationKeyParameterArn:
+    Type: String
+    AllowedPattern: '^arn:aws:ssm:us-east-1:428590861908:parameter/mutualgpu/contest/backblaze-primary/application-key$'
+    Description: Exact encrypted SSM parameter ARN holding the bucket-restricted Backblaze application key.
+  BackblazeBucketName:
+    Type: String
+    Default: mutualgpu-demo
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    Description: Reviewed private Backblaze B2 bucket for contest artifact writes.
+  BackblazeRegion:
+    Type: String
+    Default: us-west-004
+    AllowedPattern: '^us-west-004$'
+    Description: Reviewed Backblaze S3-compatible region.
+  BackblazeS3Endpoint:
+    Type: String
+    Default: https://s3.us-west-004.backblazeb2.com
+    AllowedPattern: '^https://s3\.us-west-004\.backblazeb2\.com$'
+    Description: Reviewed canonical HTTPS S3-compatible Backblaze endpoint.
 
 Conditions:
   HasProviderCorsOrigin0: !Not [!Equals [!Ref ProviderCorsOrigin0, '']]
@@ -343,9 +366,10 @@ Resources:
           Value:
             Fn::Sub:
               - >-
-                default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: https://api.producthunt.com https://${BucketName}.s3.${AWS::Region}.amazonaws.com; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
+                default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: https://api.producthunt.com https://${BucketName}.s3.${AWS::Region}.amazonaws.com ${BackblazeEndpoint}; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
               - BucketName:
                   Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
+                BackblazeEndpoint: !Ref BackblazeS3Endpoint
       Tags:
         - Key: Name
           Value: mutualgpu-https
@@ -479,26 +503,42 @@ Resources:
             - Name: MutualGPU__TrustedProxyNetworks__1
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-PublicSubnetBCidr'
-            - Name: MutualGPU__S3__BucketName
-              Value:
-                Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
-            - Name: MutualGPU__S3__Region
-              Value: us-east-1
-            - Name: MutualGPU__ObjectStorage__WriteTargetId
-              Value: aws-primary
+            - Name: MutualGPU__ObjectStorage__WriteTarget
+              Value: backblaze-primary
             - Name: MutualGPU__ObjectStorage__SynchronizeBrowserCors
               Value: 'false'
+            - Name: MutualGPU__ObjectStorage__Targets__aws-primary__Provider
+              Value: AwsS3
+            - Name: MutualGPU__ObjectStorage__Targets__aws-primary__BucketName
+              Value:
+                Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
+            - Name: MutualGPU__ObjectStorage__Targets__aws-primary__Region
+              Value: us-east-1
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__Provider
+              Value: BackblazeB2
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__BucketName
+              Value: !Ref BackblazeBucketName
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__Region
+              Value: !Ref BackblazeRegion
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__Endpoint
+              Value: !Ref BackblazeS3Endpoint
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__BrowserCorsMode
+              Value: ExternallyManaged
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__ForcePathStyle
+              Value: 'true'
             - Name: MutualGPU__ProviderKeyS3__BucketName
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
             - Name: MutualGPU__ProviderKeyS3__Region
               Value: us-east-1
-            - Name: MutualGPU__Csp__S3ImageOrigin
+            - Name: MutualGPU__Csp__ObjectStorageImageOrigins__0
               Value:
                 Fn::Sub:
                   - 'https://${BucketName}.s3.${AWS::Region}.amazonaws.com'
                   - BucketName:
                       Fn::ImportValue: !Sub '${FoundationStackName}-ApplicationDataBucketName'
+            - Name: MutualGPU__Csp__ObjectStorageImageOrigins__1
+              Value: !Ref BackblazeS3Endpoint
             - Name: MutualGPU__Postgres__Host
               Value:
                 Fn::ImportValue: !Sub '${FoundationStackName}-DatabaseEndpointAddress'
@@ -546,6 +586,10 @@ Resources:
                     - ':password::'
             - Name: MutualGPU__Postgres__HandleEncryptionKey
               ValueFrom: !Sub '${DeploymentSecretArn}:taskHandleEncryptionKey::'
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__AccessKeyId
+              ValueFrom: !Ref BackblazeApplicationKeyIdParameterArn
+            - Name: MutualGPU__ObjectStorage__Targets__backblaze-primary__SecretAccessKey
+              ValueFrom: !Ref BackblazeApplicationKeyParameterArn
           LogConfiguration:
             LogDriver: awslogs
             Options:

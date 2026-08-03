@@ -64,7 +64,9 @@ public static class MutualGpuEndpoints
             await store.PutAsync(
                 keys.TaskInput(requestorId, taskId, pendingImage.ArtifactId, pendingImage.Extension),
                 objectContent,
-                ObjectWriteConditions.IfNotExists,
+                // taskId and artifactId are generated before this write, so this
+                // staged object key is unique without provider-specific conditional writes.
+                ObjectWriteConditions.None,
                 cancellationToken).ConfigureAwait(false);
         }
 

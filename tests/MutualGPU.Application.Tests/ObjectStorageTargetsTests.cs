@@ -5,6 +5,15 @@ namespace MutualGPU.Application.Tests;
 public sealed class ObjectStorageTargetsTests
 {
     [Fact]
+    public void New_write_target_selection_is_explicit_but_not_provider_specific()
+    {
+        var selection = new ArtifactStorageTargetSelection("backblaze-primary");
+
+        Assert.Equal("backblaze-primary", selection.WriteStorageTargetId);
+        Assert.Throws<ArgumentException>(() => new ArtifactStorageTargetSelection(" "));
+    }
+
+    [Fact]
     public void A_mixed_provider_registry_is_lazy_and_does_not_construct_backblaze_for_an_aws_read()
     {
         var awsCreations = 0;

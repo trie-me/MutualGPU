@@ -149,7 +149,7 @@ public sealed class PostgresResultUploadStore(
                     .GetUploadingAsync(taskId, attemptId, unitId, handleDigest, token)
                     .ConfigureAwait(false)
                     ?? throw new InvalidOperationException("No consumed upload operation is available for staging.");
-                ArtifactStorageTargetIds.RequireAwsPrimary(
+                ArtifactStorageTargetIds.RequireExplicit(
                     upload.WriteStorageTargetId,
                     nameof(upload.WriteStorageTargetId));
                 var task = await context.Tasks.GetAsync(taskId, token).ConfigureAwait(false)

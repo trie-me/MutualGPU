@@ -391,7 +391,7 @@ public sealed class PostgresOperationUnitOfWorkTests
     }
 
     [PostgresFact]
-    public async Task New_artifact_locations_reject_non_primary_targets()
+    public async Task New_artifact_locations_preserve_an_explicit_backblaze_target()
     {
         await using var fixture = await PostgresFixture.CreateAsync();
         var task = await fixture.InsertQueuedTaskAsync();
@@ -418,13 +418,19 @@ public sealed class PostgresOperationUnitOfWorkTests
                 DateTimeOffset.UtcNow)],
         };
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Operations.ExecuteAsync(
+        await fixture.Operations.ExecuteAsync(
             (context, _) =>
             {
                 context.Artifacts.Add(artifact);
                 return Task.FromResult(true);
             },
-            CancellationToken.None));
+            CancellationToken.None);
+
+        var persisted = await fixture.Operations.ExecuteAsync(
+            (context, token) => context.Artifacts.GetForTaskAsync(task.Id, token),
+            CancellationToken.None);
+
+        Assert.Equal("backblaze-archive", Assert.Single(Assert.Single(persisted).Locations!).StorageTargetId);
     }
 
     [PostgresFact]
