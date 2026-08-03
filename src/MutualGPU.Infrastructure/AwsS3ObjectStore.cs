@@ -26,7 +26,7 @@ public sealed record AwsS3ObjectStoreOptions(string BucketName, string Region, s
 /// <summary>
 /// AWS S3 object store using the standard SDK credential chain, including the ECS task role.
 /// </summary>
-public sealed class AwsS3ObjectStore : IObjectStore, IObjectStoreHealth, IDisposable
+public sealed class AwsS3ObjectStore : IObjectStore, IObjectStoreHealth, IObjectStoreWriteReceipts, IDisposable
 {
     // This deliberately nonexistent, structurally valid artifact prefix keeps
     // readiness compatible with the candidate task role's prefix-scoped
@@ -91,7 +91,14 @@ public sealed class AwsS3ObjectStore : IObjectStore, IObjectStoreHealth, IDispos
         }
     }
 
-    public async Task PutAsync(ObjectKey key, Stream content, ObjectWriteConditions conditions, CancellationToken cancellationToken)
+    public async Task PutAsync(ObjectKey key, Stream content, ObjectWriteConditions conditions, CancellationToken cancellationToken) =>
+        _ = await PutWithReceiptAsync(key, content, conditions, cancellationToken).ConfigureAwait(false);
+
+    public async Task<ObjectWriteReceipt> PutWithReceiptAsync(
+        ObjectKey key,
+        Stream content,
+        ObjectWriteConditions conditions,
+        CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(conditions);
@@ -104,7 +111,8 @@ public sealed class AwsS3ObjectStore : IObjectStore, IObjectStoreHealth, IDispos
         };
         if (conditions.MustNotExist) request.Headers["If-None-Match"] = "*";
         if (!String.IsNullOrWhiteSpace(conditions.ExpectedETag)) request.Headers["If-Match"] = conditions.ExpectedETag;
-        await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
+        var response = await client.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
+        return new ObjectWriteReceipt(response.ETag);
     }
 
     public Task DeleteAsync(ObjectKey key, CancellationToken cancellationToken) =>

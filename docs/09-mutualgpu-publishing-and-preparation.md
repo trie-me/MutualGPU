@@ -53,8 +53,10 @@ dotnet publish src/MutualGPU.Api/MutualGPU.Api.csproj \
   --output artifacts/publish
 ```
 
-Production startup fails closed unless `MutualGPU:S3` and
-`MutualGPU:Postgres` are configured. Ordinary local development also requires
+Production startup fails closed unless `MutualGPU:Postgres` and durable object
+storage (`MutualGPU:S3`, or the explicit `MutualGPU:ObjectStorage` registry)
+are configured. The current production release continues to select
+`aws-primary` for all new writes. Ordinary local development also requires
 PostgreSQL. The old object-store persistence path can be enabled only by the
 explicit Development characterization-test setting
 `MutualGPU:Testing:AllowLegacyObjectStorePersistence=true`.

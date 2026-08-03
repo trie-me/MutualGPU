@@ -8,7 +8,7 @@ namespace MutualGPU.Infrastructure;
 /// always uses AWS S3; this exists so the demo host and in-process tests
 /// remain runnable without credentials.
 /// </summary>
-public sealed class InMemoryObjectStore : IObjectStore, IObjectStoreHealth
+public sealed class InMemoryObjectStore : IObjectStore, IObjectStoreHealth, IObjectStoreWriteReceipts
 {
     private readonly ConcurrentDictionary<string, StoredObject> objects = new(StringComparer.Ordinal);
     private readonly Uri? downloadBaseUri;
@@ -51,6 +51,16 @@ public sealed class InMemoryObjectStore : IObjectStore, IObjectStoreHealth
         await content.CopyToAsync(copy, cancellationToken).ConfigureAwait(false);
         var bytes = copy.ToArray();
         objects[key.Value] = new StoredObject(bytes, Guid.CreateVersion7().ToString("N"), null, DateTimeOffset.UtcNow);
+    }
+
+    public async Task<ObjectWriteReceipt> PutWithReceiptAsync(
+        ObjectKey key,
+        Stream content,
+        ObjectWriteConditions conditions,
+        CancellationToken cancellationToken)
+    {
+        await PutAsync(key, content, conditions, cancellationToken).ConfigureAwait(false);
+        return new ObjectWriteReceipt(objects.TryGetValue(key.Value, out var stored) ? stored.ETag : null);
     }
 
     public Task DeleteAsync(ObjectKey key, CancellationToken cancellationToken)

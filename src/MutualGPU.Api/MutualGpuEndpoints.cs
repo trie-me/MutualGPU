@@ -341,7 +341,7 @@ public static class MutualGpuEndpoints
         return TypedResults.NoContent();
     }
 
-    public static async Task<IResult> GetTaskResult(HttpContext context, Guid taskId, ITaskRepository tasks, IObjectStore store, MutualGPU.Infrastructure.MutualGpuObjectKeys keys, CancellationToken cancellationToken)
+    public static async Task<IResult> GetTaskResult(HttpContext context, Guid taskId, ITaskRepository tasks, IArtifactDownloadUrlResolver downloads, MutualGPU.Infrastructure.MutualGpuObjectKeys keys, CancellationToken cancellationToken)
     {
         context.Response.Headers.CacheControl = "no-store, private";
         if (!RequestorIdentity.TryGet(context, out var requestorId)) return Problem("requestor_identity_missing", StatusCodes.Status400BadRequest);
@@ -355,7 +355,12 @@ public static class MutualGpuEndpoints
         async Task AddArtifact(string name, ResultArtifact? artifact, ObjectKey key)
         {
             if (artifact is null) return;
-            var url = await store.CreateDownloadUrlAsync(key, TimeSpan.FromMinutes(15), cancellationToken).ConfigureAwait(false);
+            var url = await downloads.CreateDownloadUrlAsync(
+                task.Id,
+                artifact.Id,
+                key,
+                TimeSpan.FromMinutes(15),
+                cancellationToken).ConfigureAwait(false);
             artifacts.Add(new ResultArtifactDto(name, artifact.ContentType, artifact.Length, artifact.Sha256, expiresAt, url));
         }
 

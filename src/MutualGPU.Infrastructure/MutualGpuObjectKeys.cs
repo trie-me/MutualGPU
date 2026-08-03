@@ -7,6 +7,9 @@ namespace MutualGPU.Infrastructure;
 /// <summary>Centralizes the versioned object layout and prevents raw provider keys reaching object names.</summary>
 public sealed class MutualGpuObjectKeys
 {
+    /// <summary>Prefix encompassing every application-managed object.</summary>
+    public const string RootPrefix = "mutualgpu/v3/";
+
     private const string Root = "mutualgpu/v3";
 
     public ObjectKey CapabilityDefinition(CapabilityId capabilityId) => new($"{Root}/capabilities/{capabilityId.Value:N}/definition.json");

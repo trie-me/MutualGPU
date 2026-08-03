@@ -284,7 +284,7 @@ public sealed class PostgresOperationUnitOfWorkTests
     }
 
     [PostgresFact]
-    public async Task Artifact_location_reads_fail_closed_for_corrupt_target_key_or_state()
+    public async Task Artifact_location_reads_fail_closed_for_corrupt_key_or_state()
     {
         await using var fixture = await PostgresFixture.CreateAsync();
         var task = await fixture.InsertQueuedTaskAsync();
@@ -321,15 +321,109 @@ public sealed class PostgresOperationUnitOfWorkTests
 
         await using (var connection = await fixture.DataSource.OpenConnectionAsync())
         await using (var command = new NpgsqlCommand(
-            "update artifact_locations set storage_target_id = 'unexpected-target' where artifact_id = @artifact_id",
+            "update artifact_locations set object_key = @corrupt_key where artifact_id = @artifact_id",
+            connection))
+        {
+            command.Parameters.AddWithValue("artifact_id", artifact.Id.Value);
+            command.Parameters.AddWithValue("corrupt_key", $"corrupt/{Guid.CreateVersion7():N}/other.bin");
+            await command.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Operations.ExecuteAsync(
+            (context, token) => context.Artifacts.GetForTaskAsync(task.Id, token),
+            CancellationToken.None));
+    }
+
+    [PostgresFact]
+    public async Task Artifact_location_reads_preserve_an_explicit_non_primary_historical_target()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var task = await fixture.InsertQueuedTaskAsync();
+        var createdAt = DateTimeOffset.UtcNow;
+        var key = $"mutualgpu/test/{Guid.CreateVersion7():N}/historical.bin";
+        var artifact = new ArtifactDescriptor(
+            ArtifactId.New(),
+            task.Id,
+            null,
+            ArtifactDirection.Input,
+            "input",
+            key,
+            "application/octet-stream",
+            1,
+            new string('d', 64),
+            ArtifactState.Available,
+            createdAt)
+        {
+            Locations =
+            [new ArtifactLocation(
+                ArtifactStorageTargetIds.AwsPrimary,
+                key,
+                "opaque-historical-etag",
+                ArtifactLocationState.Available,
+                createdAt)],
+        };
+
+        await fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.Artifacts.Add(artifact);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        await using (var connection = await fixture.DataSource.OpenConnectionAsync())
+        await using (var command = new NpgsqlCommand(
+            "update artifact_locations set storage_target_id = 'backblaze-archive' where artifact_id = @artifact_id",
             connection))
         {
             command.Parameters.AddWithValue("artifact_id", artifact.Id.Value);
             await command.ExecuteNonQueryAsync();
         }
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Operations.ExecuteAsync(
+        var persisted = await fixture.Operations.ExecuteAsync(
             (context, token) => context.Artifacts.GetForTaskAsync(task.Id, token),
+            CancellationToken.None);
+
+        var location = Assert.Single(Assert.Single(persisted).Locations!);
+        Assert.Equal("backblaze-archive", location.StorageTargetId);
+        Assert.Equal(key, location.ObjectKey);
+        Assert.Equal("opaque-historical-etag", location.ProviderETag);
+    }
+
+    [PostgresFact]
+    public async Task New_artifact_locations_reject_non_primary_targets()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var task = await fixture.InsertQueuedTaskAsync();
+        var key = $"mutualgpu/test/{Guid.CreateVersion7():N}/new-write.bin";
+        var artifact = new ArtifactDescriptor(
+            ArtifactId.New(),
+            task.Id,
+            null,
+            ArtifactDirection.Input,
+            "input",
+            key,
+            "application/octet-stream",
+            1,
+            new string('d', 64),
+            ArtifactState.Available,
+            DateTimeOffset.UtcNow)
+        {
+            Locations =
+            [new ArtifactLocation(
+                "backblaze-archive",
+                key,
+                null,
+                ArtifactLocationState.Available,
+                DateTimeOffset.UtcNow)],
+        };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.Artifacts.Add(artifact);
+                return Task.FromResult(true);
+            },
             CancellationToken.None));
     }
 

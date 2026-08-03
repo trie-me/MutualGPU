@@ -82,7 +82,7 @@ public static class ProviderWebSocketEndpoints
         ProviderSessionApplication sessions,
         IProviderAssignments assignments,
         IResultUploadAuthorizations uploads,
-        IObjectStore store,
+        IArtifactDownloadUrlResolver downloads,
         MutualGpuObjectKeys keys,
         DisconnectRecoveryService recovery,
         TaskAttemptFiberTracker taskFibers,
@@ -102,7 +102,7 @@ public static class ProviderWebSocketEndpoints
         {
             var fiber = scope.Start(Latent<int>.DelayAsync(async fiberCancellationToken =>
             {
-                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, store, keys, recovery, taskFibers, telemetry, logger, fiberCancellationToken).ConfigureAwait(false);
+                await ConnectCoreAsync(socket, sourceIp, authenticator, units, connections, sessions, assignments, uploads, downloads, keys, recovery, taskFibers, telemetry, logger, fiberCancellationToken).ConfigureAwait(false);
                 return 0;
             }), new FiberDescriptor("provider-websocket-session"));
             outcome = await fiber.JoinAsync().ConfigureAwait(false);
@@ -123,7 +123,7 @@ public static class ProviderWebSocketEndpoints
         ProviderSessionApplication sessions,
         IProviderAssignments assignments,
         IResultUploadAuthorizations uploads,
-        IObjectStore store,
+        IArtifactDownloadUrlResolver downloads,
         MutualGpuObjectKeys keys,
         DisconnectRecoveryService recovery,
         TaskAttemptFiberTracker taskFibers,
@@ -158,11 +158,11 @@ public static class ProviderWebSocketEndpoints
                 return;
             }
             await SendAsync(socket, sendGate, new ServerMessage { Connected = new Connected { ExecutionUnitId = unitId.Value.ToString("D") } }, cancellationToken).ConfigureAwait(false);
-            writes = WriteAssignmentsAsync(socket, lease, store, keys, sendGate, cancellationToken);
+            writes = WriteAssignmentsAsync(socket, lease, downloads, keys, sendGate, cancellationToken);
             while (socket.State is WebSocketState.Open)
             {
                 var message = await ReceiveAsync(socket, cancellationToken).ConfigureAwait(false);
-                var valid = await ApplyAsync(sessions, assignments, uploads, store, keys, socket, sendGate, taskFibers, telemetry, unitId, message, logger, cancellationToken).ConfigureAwait(false);
+                var valid = await ApplyAsync(sessions, assignments, uploads, downloads, keys, socket, sendGate, taskFibers, telemetry, unitId, message, logger, cancellationToken).ConfigureAwait(false);
                 if (!valid) { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "Invalid task handle.", cancellationToken).ConfigureAwait(false); break; }
                 if (message.BodyCase is ProviderMessage.BodyOneofCase.Completed)
                     await SendAsync(socket, sendGate, new ServerMessage { Completion = new CompletionAccepted { TaskId = message.Completed.TaskId } }, cancellationToken).ConfigureAwait(false);
@@ -186,7 +186,7 @@ public static class ProviderWebSocketEndpoints
         }
     }
 
-    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, MutualGpuTelemetry telemetry, ExecutionUnitId unitId, ProviderMessage message, ILogger logger, CancellationToken cancellationToken)
+    private static async Task<bool> ApplyAsync(ProviderSessionApplication sessions, IProviderAssignments assignments, IResultUploadAuthorizations uploads, IArtifactDownloadUrlResolver downloads, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, TaskAttemptFiberTracker taskFibers, MutualGpuTelemetry telemetry, ExecutionUnitId unitId, ProviderMessage message, ILogger logger, CancellationToken cancellationToken)
     {
         if (message.BodyCase is ProviderMessage.BodyOneofCase.Progress)
         {
@@ -213,7 +213,7 @@ public static class ProviderWebSocketEndpoints
             ProviderMessage.BodyOneofCase.Failed => await sessions.Fail(unitId, ParseTaskId(message.Failed.TaskId), ParseAttemptId(message.Failed.AttemptId), message.Failed.TaskHandle, message.Failed.Step, message.Failed.Reason).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.Completed => await sessions.Complete(unitId, ParseTaskId(message.Completed.TaskId), ParseAttemptId(message.Completed.AttemptId), message.Completed.TaskHandle, message.Completed.Receipt).RunAsync(cancellationToken).ConfigureAwait(false),
             ProviderMessage.BodyOneofCase.ResultUpload => await IssueUploadAsync(assignments, uploads, socket, sendGate, unitId, message.ResultUpload, cancellationToken).ConfigureAwait(false),
-            ProviderMessage.BodyOneofCase.InputDownload => await IssueInputAsync(assignments, store, keys, socket, sendGate, unitId, message.InputDownload, cancellationToken).ConfigureAwait(false),
+            ProviderMessage.BodyOneofCase.InputDownload => await IssueInputAsync(assignments, downloads, keys, socket, sendGate, unitId, message.InputDownload, cancellationToken).ConfigureAwait(false),
             _ => false,
         };
         if (!accepted) return false;
@@ -247,7 +247,7 @@ public static class ProviderWebSocketEndpoints
         return true;
     }
 
-    private static async Task WriteAssignmentsAsync(WebSocket socket, ProviderSessionLease lease, IObjectStore store, MutualGpuObjectKeys keys, SemaphoreSlim sendGate, CancellationToken cancellationToken)
+    private static async Task WriteAssignmentsAsync(WebSocket socket, ProviderSessionLease lease, IArtifactDownloadUrlResolver downloads, MutualGpuObjectKeys keys, SemaphoreSlim sendGate, CancellationToken cancellationToken)
     {
         await foreach (var message in lease.Assignments.ReadAllAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -270,7 +270,9 @@ public static class ProviderWebSocketEndpoints
             foreach (var (key, value) in assignment.Scalars) wire.Scalars[key] = value;
             if (assignment.Input is { } input)
             {
-                var url = await store.CreateDownloadUrlAsync(
+                var url = await downloads.CreateDownloadUrlAsync(
+                    assignment.TaskId,
+                    input.ArtifactId,
                     keys.TaskInput(input.RequestorId, assignment.TaskId, input.ArtifactId, input.Extension),
                     TimeSpan.FromMinutes(15),
                     cancellationToken).ConfigureAwait(false);
@@ -298,14 +300,19 @@ public static class ProviderWebSocketEndpoints
         return true;
     }
 
-    private static async Task<bool> IssueInputAsync(IProviderAssignments assignments, IObjectStore store, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, ExecutionUnitId unitId, InputDownloadRequest request, CancellationToken cancellationToken)
+    private static async Task<bool> IssueInputAsync(IProviderAssignments assignments, IArtifactDownloadUrlResolver downloads, MutualGpuObjectKeys keys, WebSocket socket, SemaphoreSlim sendGate, ExecutionUnitId unitId, InputDownloadRequest request, CancellationToken cancellationToken)
     {
         if (!Guid.TryParse(request.TaskId, out var taskId) || !Guid.TryParse(request.AttemptId, out var attemptId) || !assignments.TryGet(unitId, new TaskId(taskId), new AttemptId(attemptId), request.TaskHandle, out var task) || task.Parameters.Image is null) return false;
         ObjectKey? input = task.Parameters.ImageExtension is { Length: > 0 } extension
             ? keys.TaskInput(task.RequestorId, task.Id, task.Parameters.Image.Value, extension)
             : null;
         if (input is null) return false;
-        var url = await store.CreateDownloadUrlAsync(input.Value, TimeSpan.FromMinutes(15), cancellationToken).ConfigureAwait(false);
+        var url = await downloads.CreateDownloadUrlAsync(
+            task.Id,
+            task.Parameters.Image.Value,
+            input.Value,
+            TimeSpan.FromMinutes(15),
+            cancellationToken).ConfigureAwait(false);
         await SendAsync(socket, sendGate, new ServerMessage { InputDownload = new InputDownloadAuthorization { Url = url.ToString() } }, cancellationToken).ConfigureAwait(false);
         return true;
     }

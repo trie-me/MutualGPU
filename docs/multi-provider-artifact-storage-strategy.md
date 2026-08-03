@@ -1,6 +1,6 @@
 # Multi-provider artifact storage strategy
 
-Status: proposed
+Status: partially implemented (provider registry and read routing)
 
 Date: 2026-08-02
 
@@ -28,10 +28,12 @@ Scope: artifact bytes, storage-target routing, and presigned downloads
 
 ## Current compatibility boundary
 
-The current schema stores provider-independent metadata and the physical object
-key together in `artifacts.s3_object_key`. Runtime code reconstructs keys and
-uses one singleton `IObjectStore` to create URLs. The current AWS release gate
-remains valid while `aws-primary` is the only configured write target.
+The current schema retains provider-independent metadata and the physical object
+key together in `artifacts.s3_object_key` for compatibility. Location rows are
+authoritative for PostgreSQL-backed downloads: the resolver selects the one
+available persisted location and resolves its configured target. The legacy
+single-target `MutualGPU:S3` configuration remains supported as
+`aws-primary`.
 
 The multi-provider change is additive:
 
@@ -95,24 +97,41 @@ MutualGPU:ObjectStorage:Targets:aws-primary:Region = ...
 
 MutualGPU:ObjectStorage:Targets:backblaze-primary:Provider = BackblazeB2
 MutualGPU:ObjectStorage:Targets:backblaze-primary:BucketName = ...
-MutualGPU:ObjectStorage:Targets:backblaze-primary:Endpoint = ...
+MutualGPU:ObjectStorage:Targets:backblaze-primary:Region = us-east-005
+MutualGPU:ObjectStorage:Targets:backblaze-primary:Endpoint = https://s3.us-east-005.backblazeb2.com
+MutualGPU:ObjectStorage:Targets:backblaze-primary:AccessKeyId = <B2 application key ID>
+MutualGPU:ObjectStorage:Targets:backblaze-primary:SecretAccessKey = <B2 application key>
+MutualGPU:ObjectStorage:Targets:backblaze-primary:BrowserCorsMode = ExternallyManaged
 ```
 
 Provider credentials remain in the deployment secret boundary. They must not
 appear in PostgreSQL, logs, metrics, health output, or generated documentation.
 
-Introduce an `IObjectStoreRegistry` that resolves an allow-listed
+`IObjectStoreRegistry` resolves an allow-listed
 `storage_target_id` to its configured `IObjectStore`, `IObjectStoreHealth`, and
-browser-read CORS policy. Startup must validate that:
+browser-read CORS policy. Startup validates that:
 
-- the write target exists and is healthy;
+- the selected write target exists;
 - every target ID referenced by an available artifact location is configured;
-- no target ID has been repointed to a different logical store; and
 - ambiguous or incomplete target configuration fails closed.
 
-An AWS-selected deployment must not initialize or contact Backblaze. A database
-row referencing an unconfigured target produces an explicit unavailable-target
+Target-ID immutability remains an operational deployment invariant: change a
+bucket, account, or provider by adding a new target ID and retaining the old
+one for referenced locations. An AWS-selected deployment does not initialize
+or contact Backblaze merely because a B2 target is configured. A database row
+referencing an unconfigured target produces an explicit unavailable-target
 failure; the registry does not substitute another provider.
+
+The B2 adapter accepts only its canonical HTTPS S3-compatible endpoint
+`https://s3.<Region>.backblazeb2.com` and explicit application-key credentials.
+It uses path-style addressing by default, returns provider ETags only as opaque
+values, and rejects conditional writes before an SDK request. It is constructed
+lazily only when its target is resolved for an authorized artifact download.
+
+This release intentionally keeps all new artifact writes on `aws-primary`.
+Configuring a B2 target is sufficient to retain readable historical B2
+locations, but it does not enable B2 as a new-write target. That separate
+provider-write decision requires its own reviewed release step.
 
 ## Write path
 
@@ -122,7 +141,8 @@ the bytes to object storage. Retain that proxy boundary for the first
 multi-provider release; direct object-store uploads would require a separate
 authorization, CORS, size, checksum, and completion design.
 
-At the start of an upload operation:
+At the start of an upload operation in the eventual multi-provider write
+release:
 
 1. capture the configured write target once;
 2. resolve its object store through `IObjectStoreRegistry`;
@@ -175,15 +195,13 @@ Replace key reconstruction plus the singleton object store in:
 
 ## CORS boundary
 
-Because uploads pass through the API, object-storage targets need browser CORS
-for direct reads only: `GET` and `HEAD`, with `ETag` exposed when supported.
-Object-storage `PUT` and `POST` CORS remain disabled. API CORS and task-write
-origin/CSRF enforcement are separate policies and are not configured through a
-storage adapter.
-
-Every configured target that can serve browser providers must implement the
-same read-CORS contract. A target that cannot safely support it is not eligible
-for browser-facing artifact locations.
+Because uploads pass through the API, any eventual object-storage browser CORS
+policy is a read concern only. It remains separate from API CORS and task-write
+origin/CSRF enforcement. MutualGPU currently does not enforce or synchronize
+object-storage CORS when `MutualGPU:ObjectStorage:SynchronizeBrowserCors` is
+false; the production AWS configuration uses that setting. A configured B2
+target therefore remains externally managed until an explicit later CORS
+decision is made.
 
 ## Schema rollout
 
@@ -203,8 +221,9 @@ for browser-facing artifact locations.
 - Existing AWS-only deployments retain their configuration and behavior.
 - Backblaze is contacted only when an explicitly configured target is selected
   or an authorized artifact location references it.
-- One artifact can have locations on multiple targets without duplicating its
-  logical metadata.
+- The schema can represent locations on multiple targets without duplicating
+  logical metadata; the current resolver intentionally fails closed on more
+  than one available location until a replica-selection policy is reviewed.
 - Object-key uniqueness and ETags are scoped to a storage target.
 - SHA-256 is identical across replicas of the same artifact; provider ETags may
   differ and are treated as opaque.

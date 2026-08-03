@@ -29,11 +29,16 @@ var allowArbitraryBrowserTaskWriteOrigins =
     builder.Configuration.GetValue("MutualGPU:Security:AllowArbitraryBrowserTaskWriteOrigins", false);
 var synchronizeBrowserObjectCors =
     builder.Configuration.GetValue("MutualGPU:ObjectStorage:SynchronizeBrowserCors", true);
-var s3ImageOriginConfiguration = builder.Configuration["MutualGPU:Csp:S3ImageOrigin"];
-var s3ImageOrigin = String.IsNullOrWhiteSpace(s3ImageOriginConfiguration)
-    ? null
-    : PartnerResourceOrigin.Normalize(s3ImageOriginConfiguration)
-        ?? throw new InvalidOperationException("MutualGPU:Csp:S3ImageOrigin must be an explicit HTTPS origin without wildcards or paths.");
+var objectStorageImageOrigins = (builder.Configuration.GetSection("MutualGPU:Csp:ObjectStorageImageOrigins").Get<string[]>() ?? [])
+    .Concat([
+        builder.Configuration["MutualGPU:Csp:ObjectStorageImageOrigin"],
+        builder.Configuration["MutualGPU:Csp:S3ImageOrigin"],
+    ])
+    .Where(static origin => !String.IsNullOrWhiteSpace(origin))
+    .Select(origin => PartnerResourceOrigin.Normalize(origin!)
+        ?? throw new InvalidOperationException("MutualGPU:Csp:ObjectStorageImageOrigins (or legacy ObjectStorageImageOrigin/S3ImageOrigin) entries must be explicit HTTPS origins without wildcards or paths."))
+    .Distinct(StringComparer.Ordinal)
+    .ToArray();
 var trustForwardedProto = builder.Configuration.GetValue("MutualGPU:TrustForwardedProto", false);
 var trustedProxyNetworks = builder.Configuration.GetSection("MutualGPU:TrustedProxyNetworks").Get<string[]>() ?? [];
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
@@ -69,9 +74,22 @@ var providerKeys = providerCredentials
     .ToDictionary(static credential => new ExecutionUnitId(Guid.Parse(credential.ExecutionUnitId)), static credential => credential.PresharedKey);
 var objectKeys = new MutualGpuObjectKeys();
 var s3 = builder.Configuration.GetSection("MutualGPU:S3").Get<AwsS3ObjectStoreOptions>();
-if (s3 is not null && s3ImageOrigin is null)
+var objectStorageSection = builder.Configuration.GetSection("MutualGPU:ObjectStorage");
+// SynchronizeBrowserCors is intentionally usable alongside the legacy S3
+// section, so it must not by itself opt a deployment into the multi-target
+// registry.
+var objectStorage = String.IsNullOrWhiteSpace(objectStorageSection["WriteTarget"]) &&
+                    !objectStorageSection.GetSection("Targets").Exists()
+    ? null
+    : objectStorageSection.Get<ObjectStorageOptions>();
+if (s3 is not null && objectStorage is not null)
 {
-    throw new InvalidOperationException("MutualGPU:Csp:S3ImageOrigin is required when MutualGPU:S3 is configured.");
+    throw new InvalidOperationException("Configure either MutualGPU:S3 or MutualGPU:ObjectStorage, not both.");
+}
+objectStorage?.Validate();
+if ((s3 is not null || objectStorage is not null) && objectStorageImageOrigins.Length == 0)
+{
+    throw new InvalidOperationException("MutualGPU:Csp:ObjectStorageImageOrigins (or legacy ObjectStorageImageOrigin/S3ImageOrigin) is required when object storage is configured.");
 }
 var localObjectDownloadBaseUrl = builder.Configuration["MutualGPU:Development:InMemoryObjectDownloadBaseUrl"];
 Uri? localObjectDownloadBaseUri = null;
@@ -84,7 +102,7 @@ if (!String.IsNullOrWhiteSpace(localObjectDownloadBaseUrl))
     {
         throw new InvalidOperationException("MutualGPU:Development:InMemoryObjectDownloadBaseUrl must be an absolute HTTPS URL without query or fragment.");
     }
-    if (!builder.Environment.IsDevelopment() || s3 is not null)
+    if (!builder.Environment.IsDevelopment() || s3 is not null || objectStorage is not null)
     {
         throw new InvalidOperationException("MutualGPU:Development:InMemoryObjectDownloadBaseUrl is available only for the Development in-memory object store.");
     }
@@ -96,7 +114,8 @@ var postgres = postgresConfigured
     : null;
 var artifactWriteTarget = postgres is not null
     ? new ArtifactStorageTargetSelection(
-        builder.Configuration["MutualGPU:ObjectStorage:WriteTargetId"]
+        objectStorage?.WriteTarget
+        ?? builder.Configuration["MutualGPU:ObjectStorage:WriteTargetId"]
         ?? throw new InvalidOperationException("MutualGPU:ObjectStorage:WriteTargetId is required with PostgreSQL."))
     : null;
 var orphanArtifactReconciliation = builder.Configuration
@@ -111,8 +130,75 @@ if (postgres is null && !allowLegacyTestPersistence)
     throw new InvalidOperationException(
         "MutualGPU requires PostgreSQL. The legacy object-store persistence path is available only through the explicit Development test opt-in.");
 }
+if (postgres is null && objectStorage is not null &&
+    objectStorage.Targets[objectStorage.WriteTarget!].Provider is ObjectStorageProvider.BackblazeB2)
+{
+    throw new InvalidOperationException(
+        "A Backblaze B2 write target requires PostgreSQL; the Development legacy object-store persistence path requires conditional writes.");
+}
 builder.Services.AddSingleton(objectKeys);
-if (s3 is not null)
+if (objectStorage is not null)
+{
+    var targets = new List<KeyValuePair<string, Func<ObjectStoreTarget>>>();
+    foreach (var (targetId, target) in objectStorage.Targets)
+    {
+        switch (target.Provider!.Value)
+        {
+            case ObjectStorageProvider.AwsS3:
+                targets.Add(new(targetId, () =>
+                {
+                    var options = new AwsS3ObjectStoreOptions(target.BucketName!, target.Region!, target.Profile);
+                    var store = new AwsS3ObjectStore(options);
+                    IBrowserObjectCorsPolicy browserCors = synchronizeBrowserObjectCors
+                        ? new AwsS3BrowserObjectCorsPolicy(options)
+                        : new NoOpBrowserObjectCorsPolicy();
+                    return new ObjectStoreTarget(targetId, store, store, browserCors);
+                }));
+                break;
+            case ObjectStorageProvider.BackblazeB2:
+                targets.Add(new(targetId, () =>
+                {
+                    var options = new BackblazeB2ObjectStoreOptions(
+                        target.BucketName!,
+                        target.Endpoint!,
+                        target.Region!,
+                        target.AccessKeyId!,
+                        target.SecretAccessKey!,
+                        target.ForcePathStyle);
+                    var store = new BackblazeB2ObjectStore(options);
+                    IBrowserObjectCorsPolicy browserCors = !synchronizeBrowserObjectCors
+                        ? new NoOpBrowserObjectCorsPolicy()
+                        : target.BrowserCorsMode switch
+                        {
+                            BackblazeB2BrowserCorsMode.ExternallyManaged => new NoOpBrowserObjectCorsPolicy(),
+                            BackblazeB2BrowserCorsMode.ManagedByApplication => new BackblazeB2BrowserObjectCorsPolicy(
+                                new BackblazeB2ObjectStoreOptions(
+                                    target.BucketName!,
+                                    target.Endpoint!,
+                                    target.Region!,
+                                    target.CorsAccessKeyId!,
+                                    target.CorsSecretAccessKey!,
+                                    target.ForcePathStyle)),
+                            _ => throw new InvalidOperationException($"Backblaze target '{targetId}' has an unsupported BrowserCorsMode."),
+                        };
+                    return new ObjectStoreTarget(targetId, store, store, browserCors);
+                }));
+                break;
+            default:
+                throw new InvalidOperationException($"Object-storage target '{targetId}' has an unsupported provider.");
+        }
+    }
+
+    builder.Services.AddSingleton<IObjectStoreRegistry>(_ =>
+        ObjectStoreRegistry.CreateLazy(objectStorage.WriteTarget!, targets));
+    builder.Services.AddSingleton<WriteTargetObjectStoreFacade>();
+    builder.Services.AddSingleton<IObjectStore>(static services =>
+        services.GetRequiredService<WriteTargetObjectStoreFacade>());
+    builder.Services.AddSingleton<IObjectStoreHealth>(static services =>
+        services.GetRequiredService<WriteTargetObjectStoreFacade>());
+    builder.Services.AddSingleton<IBrowserObjectCorsPolicy, WriteTargetBrowserObjectCorsPolicy>();
+}
+else if (s3 is not null)
 {
     s3.Validate();
     builder.Services.AddSingleton(s3);
@@ -128,21 +214,38 @@ if (s3 is not null)
     {
         builder.Services.AddSingleton<IBrowserObjectCorsPolicy, NoOpBrowserObjectCorsPolicy>();
     }
+
+    builder.Services.AddSingleton<IObjectStoreRegistry>(services => new ObjectStoreRegistry(
+        ArtifactStorageTargetIds.AwsPrimary,
+        [new ObjectStoreTarget(
+            ArtifactStorageTargetIds.AwsPrimary,
+            services.GetRequiredService<AwsS3ObjectStore>(),
+            services.GetRequiredService<AwsS3ObjectStore>(),
+            services.GetRequiredService<IBrowserObjectCorsPolicy>())],
+        ownsTargets: false));
 }
 else
 {
     if (builder.Environment.IsProduction())
     {
-        throw new InvalidOperationException("MutualGPU production requires MutualGPU:S3 artifact-storage configuration.");
+        throw new InvalidOperationException("MutualGPU production requires MutualGPU:ObjectStorage or legacy MutualGPU:S3 artifact-storage configuration.");
     }
     builder.Services.AddSingleton(new InMemoryObjectStore(localObjectDownloadBaseUri));
     builder.Services.AddSingleton<IObjectStore>(static services => services.GetRequiredService<InMemoryObjectStore>());
     builder.Services.AddSingleton<IObjectStoreHealth>(static services => services.GetRequiredService<InMemoryObjectStore>());
 }
 
-if (s3 is null)
+if (s3 is null && objectStorage is null)
 {
     builder.Services.AddSingleton<IBrowserObjectCorsPolicy, NoOpBrowserObjectCorsPolicy>();
+    builder.Services.AddSingleton<IObjectStoreRegistry>(services => new ObjectStoreRegistry(
+        ArtifactStorageTargetIds.AwsPrimary,
+        [new ObjectStoreTarget(
+            ArtifactStorageTargetIds.AwsPrimary,
+            services.GetRequiredService<IObjectStore>(),
+            services.GetRequiredService<IObjectStoreHealth>(),
+            services.GetRequiredService<IBrowserObjectCorsPolicy>())],
+        ownsTargets: false));
 }
 
 builder.Services.AddSingleton(TimeProvider.System);
@@ -155,6 +258,7 @@ if (postgres is not null)
     builder.Services.AddSingleton(_ => PostgresDataSourceFactory.Create(postgres));
     builder.Services.AddSingleton<HandleCipher>();
     builder.Services.AddSingleton<PostgresMigrator>();
+    builder.Services.AddSingleton<PostgresArtifactStorageTargetValidator>();
     builder.Services.AddSingleton<IPostgresHealth, PostgresHealth>();
     builder.Services.AddSingleton<PostgresOperationUnitOfWork>();
     builder.Services.AddSingleton<IOperationUnitOfWork>(static services =>
@@ -225,6 +329,10 @@ else
     builder.Services.AddSingleton<ObjectStorePartnerResourceRegistry>();
     builder.Services.AddSingleton<IPartnerResourceRegistry>(static services => services.GetRequiredService<ObjectStorePartnerResourceRegistry>());
 }
+builder.Services.AddSingleton<IArtifactDownloadUrlResolver>(services => new ArtifactDownloadUrlResolver(
+    postgres is null ? null : services.GetRequiredService<IOperationUnitOfWork>(),
+    services.GetRequiredService<IObjectStoreRegistry>(),
+    services.GetRequiredService<IObjectStore>()));
 builder.Services.AddSingleton<ProviderKeyIssuer>();
 builder.Services.AddSingleton<ProviderConnectionRegistry>();
 builder.Services.AddSingleton<IProviderPresence>(static services => services.GetRequiredService<ProviderConnectionRegistry>());
@@ -293,6 +401,7 @@ var app = builder.Build();
 if (postgres is not null)
 {
     await app.Services.GetRequiredService<PostgresMigrator>().MigrateAsync(CancellationToken.None);
+    await app.Services.GetRequiredService<PostgresArtifactStorageTargetValidator>().ValidateAsync(CancellationToken.None);
 }
 var partnerResources = app.Services.GetRequiredService<IPartnerResourceRegistry>();
 await partnerResources.InitializeAsync(CancellationToken.None);
@@ -323,7 +432,7 @@ app.UseCors(policy => policy
 app.Use(async (context, next) =>
 {
     context.Response.Headers["Content-Security-Policy"] =
-        $"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: https://api.producthunt.com{(s3ImageOrigin is null ? String.Empty : $" {s3ImageOrigin}")}; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+        $"default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: https://api.producthunt.com{String.Concat(objectStorageImageOrigins.Select(static origin => $" {origin}"))}; connect-src 'self' https://cdn.jsdelivr.net https://huggingface.co https://*.hf.co https://*.xethub.hf.co; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'";
     context.Response.Headers["X-Frame-Options"] = "DENY";
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
     context.Response.Headers["Referrer-Policy"] = "no-referrer";

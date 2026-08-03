@@ -1,3 +1,5 @@
+using MutualGPU.Domain;
+
 namespace MutualGPU.Application;
 
 /// <summary>A bucket-independent key. Validation prevents path traversal and accidental bucket-wide operations.</summary>
@@ -92,4 +94,47 @@ public interface IObjectStore
 public interface IObjectStoreHealth
 {
     Task CheckHealthAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>Optional native write result. ETags remain provider-issued opaque values.</summary>
+public sealed record ObjectWriteReceipt(string? ETag);
+
+public interface IObjectStoreWriteReceipts
+{
+    Task<ObjectWriteReceipt> PutWithReceiptAsync(
+        ObjectKey key,
+        Stream content,
+        ObjectWriteConditions conditions,
+        CancellationToken cancellationToken);
+}
+
+public sealed record ObjectStoreTarget(
+    string Id,
+    IObjectStore Store,
+    IObjectStoreHealth Health,
+    IBrowserObjectCorsPolicy BrowserCors);
+
+/// <summary>
+/// Resolves only explicitly configured storage targets. It never substitutes a
+/// different provider when a persisted target is unavailable.
+/// </summary>
+public interface IObjectStoreRegistry
+{
+    string WriteTargetId { get; }
+
+    ObjectStoreTarget GetRequired(string storageTargetId);
+
+    /// <summary>Checks configured target identity without creating a provider client.</summary>
+    bool IsConfigured(string storageTargetId);
+}
+
+/// <summary>Resolves an authorized logical artifact to its stored location.</summary>
+public interface IArtifactDownloadUrlResolver
+{
+    Task<Uri> CreateDownloadUrlAsync(
+        TaskId taskId,
+        ArtifactId artifactId,
+        ObjectKey legacyKey,
+        TimeSpan lifetime,
+        CancellationToken cancellationToken);
 }

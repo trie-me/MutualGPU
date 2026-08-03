@@ -73,6 +73,62 @@ public sealed class PostgresArtifactLocationMigrationTests
             () => migrator.MigrateAsync(CancellationToken.None));
     }
 
+    [PostgresFact]
+    public async Task Available_historical_targets_must_remain_configured_without_constructing_a_provider()
+    {
+        await using var schema = await IsolatedSchema.CreateAsync();
+        await new PostgresMigrator(schema.DataSource).MigrateAsync(CancellationToken.None);
+        var artifactId = await InsertLegacyArtifactAsync(schema);
+        await using (var command = schema.CreateCommand(
+            """
+            insert into artifact_locations(
+                artifact_id, storage_target_id, object_key, provider_etag,
+                state, created_at, last_verified_at)
+            values (
+                @artifact_id, 'backblaze-archive', 'compatibility/historical/result.zip', null,
+                'available', now(), null)
+            """))
+        await using (var connection = command.Connection!)
+        {
+            await connection.OpenAsync();
+            command.Parameters.AddWithValue("artifact_id", artifactId);
+            await command.ExecuteNonQueryAsync();
+        }
+
+        var aws = new InMemoryObjectStore();
+        var backblaze = new InMemoryObjectStore();
+        using var configuredTargets = new ObjectStoreRegistry(
+            ArtifactStorageTargetIds.AwsPrimary,
+            [
+                new ObjectStoreTarget(
+                    ArtifactStorageTargetIds.AwsPrimary,
+                    aws,
+                    aws,
+                    new NoOpBrowserObjectCorsPolicy()),
+                new ObjectStoreTarget(
+                    "backblaze-archive",
+                    backblaze,
+                    backblaze,
+                    new NoOpBrowserObjectCorsPolicy()),
+            ],
+            ownsTargets: false);
+        await new PostgresArtifactStorageTargetValidator(schema.DataSource, configuredTargets)
+            .ValidateAsync(CancellationToken.None);
+
+        using var missingHistoricalTarget = new ObjectStoreRegistry(
+            ArtifactStorageTargetIds.AwsPrimary,
+            [new ObjectStoreTarget(
+                ArtifactStorageTargetIds.AwsPrimary,
+                aws,
+                aws,
+                new NoOpBrowserObjectCorsPolicy())],
+            ownsTargets: false);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            new PostgresArtifactStorageTargetValidator(schema.DataSource, missingHistoricalTarget)
+                .ValidateAsync(CancellationToken.None));
+        Assert.Contains("backblaze-archive", error.Message, StringComparison.Ordinal);
+    }
+
     private static async Task ApplyLegacyMigrationsAsync(IsolatedSchema schema)
     {
         var migrations = Enumerable.Range(1, 3).Select(ReadMigration).ToArray();

@@ -664,7 +664,7 @@ internal sealed class PostgresArtifactRepository(
             var withLocations = artifacts
                 .Select(artifact => tracked.TryGetValue(artifact.Id, out var existing)
                     ? existing.Artifact
-                    : AttachValidatedAwsPrimaryLocation(
+                    : AttachValidatedLocation(
                         artifact,
                         locations.GetValueOrDefault(artifact.Id, [])))
                 .ToArray();
@@ -681,7 +681,10 @@ internal sealed class PostgresArtifactRepository(
     public void Add(ArtifactDescriptor artifact) => guard.Run(() =>
     {
         ArgumentNullException.ThrowIfNull(artifact);
-        artifact = NormalizeAwsPrimaryLocation(artifact);
+        artifact = NormalizeLocation(artifact);
+        ArtifactStorageTargetIds.RequireAwsPrimary(
+            artifact.Locations![0].StorageTargetId,
+            nameof(ArtifactLocation.StorageTargetId));
         if (tracked.ContainsKey(artifact.Id)) throw new InvalidOperationException("The artifact is already tracked.");
         tracked.Add(artifact.Id, new TrackedArtifact(artifact, Added: true, Updated: false));
     });
@@ -693,7 +696,7 @@ internal sealed class PostgresArtifactRepository(
         {
             throw new InvalidOperationException("The artifact must be loaded before it can be updated.");
         }
-        artifact = NormalizeAwsPrimaryLocation(artifact, current.Artifact);
+        artifact = NormalizeLocation(artifact, current.Artifact);
         tracked[artifact.Id] = current with { Artifact = artifact, Updated = true };
     });
 
@@ -816,45 +819,46 @@ internal sealed class PostgresArtifactRepository(
             connection,
             transaction);
         command.Parameters.AddWithValue("artifact_id", artifact.Id.Value);
-        command.Parameters.AddWithValue("storage_target_id", ArtifactStorageTargetIds.AwsPrimary);
-        command.Parameters.AddWithValue("object_key", artifact.S3ObjectKey);
+        var location = artifact.Locations![0];
+        command.Parameters.AddWithValue("storage_target_id", location.StorageTargetId);
+        command.Parameters.AddWithValue("object_key", location.ObjectKey);
         command.Parameters.AddWithValue("state", ToLocationState(artifact.State));
         if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1)
         {
-            throw new InvalidOperationException("The AWS artifact location is missing or no longer unique.");
+            throw new InvalidOperationException("The artifact location is missing or no longer unique.");
         }
     }
 
     private static IReadOnlyList<ArtifactLocation> InitialLocations(ArtifactDescriptor artifact) =>
         artifact.Locations ?? throw new InvalidOperationException("Artifact writes require an explicit storage location.");
 
-    private static ArtifactDescriptor AttachValidatedAwsPrimaryLocation(
+    private static ArtifactDescriptor AttachValidatedLocation(
         ArtifactDescriptor artifact,
         IReadOnlyList<ArtifactLocation> locations)
     {
         if (locations is not [var location])
         {
             throw new InvalidOperationException(
-                "Every artifact must have exactly one explicit AWS compatibility location.");
+                "Every artifact must have exactly one explicit storage location.");
         }
 
-        ArtifactStorageTargetIds.RequireAwsPrimary(location.StorageTargetId, nameof(location.StorageTargetId));
+        ValidateLocationIdentity(location);
         if (!StringComparer.Ordinal.Equals(location.ObjectKey, artifact.S3ObjectKey))
         {
             throw new InvalidOperationException(
-                "The AWS artifact location key does not match its compatibility key.");
+                "The artifact location key does not match its compatibility key.");
         }
 
         if (location.State != ToLocationState(artifact.State))
         {
             throw new InvalidOperationException(
-                "The AWS artifact location state does not match its logical artifact state.");
+                "The artifact location state does not match its logical artifact state.");
         }
 
         return artifact with { Locations = [location] };
     }
 
-    private static ArtifactDescriptor NormalizeAwsPrimaryLocation(
+    private static ArtifactDescriptor NormalizeLocation(
         ArtifactDescriptor artifact,
         ArtifactDescriptor? previous = null)
     {
@@ -863,10 +867,10 @@ internal sealed class PostgresArtifactRepository(
             throw new InvalidOperationException("This release requires exactly one explicit artifact location.");
         }
 
-        ArtifactStorageTargetIds.RequireAwsPrimary(location.StorageTargetId, nameof(location.StorageTargetId));
+        ValidateLocationIdentity(location);
         if (!StringComparer.Ordinal.Equals(location.ObjectKey, artifact.S3ObjectKey))
         {
-            throw new InvalidOperationException("The AWS artifact location key must match the compatibility key.");
+            throw new InvalidOperationException("The artifact location key must match the compatibility key.");
         }
 
         if (previous?.Locations is [var prior] &&
@@ -874,10 +878,20 @@ internal sealed class PostgresArtifactRepository(
              !StringComparer.Ordinal.Equals(prior.ObjectKey, location.ObjectKey) ||
              !StringComparer.Ordinal.Equals(prior.ProviderETag, location.ProviderETag)))
         {
-            throw new InvalidOperationException("Artifact location identity is immutable in the AWS compatibility release.");
+            throw new InvalidOperationException("Artifact location identity is immutable after persistence.");
         }
 
         return artifact with { Locations = [location with { State = ToLocationState(artifact.State) }] };
+    }
+
+    private static void ValidateLocationIdentity(ArtifactLocation location)
+    {
+        if (String.IsNullOrWhiteSpace(location.StorageTargetId))
+        {
+            throw new InvalidOperationException("Artifact locations require an explicit storage target ID.");
+        }
+
+        _ = new ObjectKey(location.ObjectKey);
     }
 
     private static ArtifactLocationState ToLocationState(ArtifactState state) => state switch

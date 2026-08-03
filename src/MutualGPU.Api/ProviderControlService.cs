@@ -19,7 +19,7 @@ public sealed class ProviderControlService(
     ProviderSessionApplication session,
     IProviderAssignments assignments,
     IResultUploadAuthorizations uploads,
-    IObjectStore store,
+    IArtifactDownloadUrlResolver downloads,
     MutualGpuObjectKeys keys,
     DisconnectRecoveryService recovery,
     MutualGpuFiberOwner fibers,
@@ -229,7 +229,9 @@ public sealed class ProviderControlService(
             foreach (var (key, value) in assignment.Scalars) wire.Scalars[key] = value;
             if (assignment.Input is { } input)
             {
-                var url = await store.CreateDownloadUrlAsync(
+                var url = await downloads.CreateDownloadUrlAsync(
+                    assignment.TaskId,
+                    input.ArtifactId,
                     keys.TaskInput(input.RequestorId, assignment.TaskId, input.ArtifactId, input.Extension),
                     TimeSpan.FromMinutes(15),
                     cancellationToken).ConfigureAwait(false);
@@ -266,7 +268,12 @@ public sealed class ProviderControlService(
             ? keys.TaskInput(task.RequestorId, task.Id, task.Parameters.Image.Value, extension)
             : null;
         if (input is null) return false;
-        var url = await store.CreateDownloadUrlAsync(input.Value, TimeSpan.FromMinutes(15), cancellationToken).ConfigureAwait(false);
+        var url = await downloads.CreateDownloadUrlAsync(
+            task.Id,
+            task.Parameters.Image.Value,
+            input.Value,
+            TimeSpan.FromMinutes(15),
+            cancellationToken).ConfigureAwait(false);
         await WriteAsync(response, responseGate, new ServerMessage { InputDownload = new InputDownloadAuthorization { Url = url.ToString() } }, cancellationToken).ConfigureAwait(false);
         return true;
     }
