@@ -28,31 +28,45 @@ public sealed record AwsS3ObjectStoreOptions(string BucketName, string Region, s
 /// </summary>
 public sealed class AwsS3ObjectStore : IObjectStore, IObjectStoreHealth, IDisposable
 {
+    // This deliberately nonexistent, structurally valid artifact prefix keeps
+    // readiness compatible with the candidate task role's prefix-scoped
+    // ListBucket permission. It never enumerates a provider's real data.
+    private const string HealthCheckPrefix = "mutualgpu/v3/requestors/_health/tasks/_health/inputs/";
     private readonly IAmazonS3 client;
     private readonly AwsS3ObjectStoreOptions options;
 
     public AwsS3ObjectStore(AwsS3ObjectStoreOptions options)
+        : this(CreateClient(options), options)
+    {
+    }
+
+    internal AwsS3ObjectStore(IAmazonS3 client, AwsS3ObjectStoreOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        this.client = client;
+        this.options = options;
+    }
+
+    private static IAmazonS3 CreateClient(AwsS3ObjectStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
-        this.options = options;
         var configuration = new AmazonS3Config
         {
             RegionEndpoint = RegionEndpoint.GetBySystemName(options.Region),
         };
         if (String.IsNullOrWhiteSpace(options.Profile))
         {
-            client = new AmazonS3Client(configuration);
+            return new AmazonS3Client(configuration);
         }
-        else
+        var profiles = new CredentialProfileStoreChain();
+        if (!profiles.TryGetAWSCredentials(options.Profile, out var credentials))
         {
-            var profiles = new CredentialProfileStoreChain();
-            if (!profiles.TryGetAWSCredentials(options.Profile, out var credentials))
-            {
-                throw new InvalidOperationException($"AWS profile '{options.Profile}' is not configured.");
-            }
-            client = new AmazonS3Client(credentials, configuration);
+            throw new InvalidOperationException($"AWS profile '{options.Profile}' is not configured.");
         }
+        return new AmazonS3Client(credentials, configuration);
     }
 
     public async Task<ObjectRead?> GetAsync(ObjectKey key, CancellationToken cancellationToken)
@@ -145,6 +159,7 @@ public sealed class AwsS3ObjectStore : IObjectStore, IObjectStoreHealth, IDispos
         await client.ListObjectsV2Async(new ListObjectsV2Request
         {
             BucketName = options.BucketName,
+            Prefix = HealthCheckPrefix,
             MaxKeys = 1,
         }, cancellationToken).ConfigureAwait(false);
     }
