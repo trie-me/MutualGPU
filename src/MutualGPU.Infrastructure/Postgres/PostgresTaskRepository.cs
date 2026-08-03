@@ -496,6 +496,7 @@ internal sealed class PostgresTaskRepository(
         await InsertSelectedLocationAsync(
             image,
             key.Value,
+            task.Parameters.ImageProviderETag,
             ArtifactLocationState.Available,
             task.CreatedAt,
             cancellationToken).ConfigureAwait(false);
@@ -537,6 +538,7 @@ internal sealed class PostgresTaskRepository(
                 await InsertSelectedLocationAsync(
                     new ArtifactId(persistedArtifactId),
                     key.Value,
+                    artifact.ProviderETag,
                     ArtifactLocationState.Available,
                     DateTimeOffset.UtcNow,
                     cancellationToken).ConfigureAwait(false);
@@ -547,6 +549,7 @@ internal sealed class PostgresTaskRepository(
     private async Task InsertSelectedLocationAsync(
         ArtifactId artifactId,
         string objectKey,
+        string? providerETag,
         ArtifactLocationState state,
         DateTimeOffset createdAt,
         CancellationToken cancellationToken)
@@ -557,7 +560,7 @@ internal sealed class PostgresTaskRepository(
                 artifact_id, storage_target_id, object_key, provider_etag,
                 state, created_at, last_verified_at)
             values (
-                @artifact_id, @storage_target_id, @object_key, null,
+                @artifact_id, @storage_target_id, @object_key, @provider_etag,
                 @state, @created_at, null)
             on conflict (artifact_id, storage_target_id) do nothing
             """,
@@ -566,6 +569,7 @@ internal sealed class PostgresTaskRepository(
         command.Parameters.AddWithValue("artifact_id", artifactId.Value);
         command.Parameters.AddWithValue("storage_target_id", storageTarget.WriteStorageTargetId);
         command.Parameters.AddWithValue("object_key", objectKey);
+        PostgresPersistence.AddNullableText(command, "provider_etag", providerETag);
         command.Parameters.AddWithValue("state", state);
         command.Parameters.AddWithValue("created_at", PostgresPersistence.Utc(createdAt));
         await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);

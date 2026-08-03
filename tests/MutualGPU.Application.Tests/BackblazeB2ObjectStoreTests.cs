@@ -58,6 +58,24 @@ public sealed class BackblazeB2ObjectStoreTests
     }
 
     [Fact]
+    public async Task Successful_write_returns_the_provider_etag_as_opaque_metadata()
+    {
+        var proxy = DispatchProxy.Create<IAmazonS3, RecordingS3Proxy>();
+        var recorder = Assert.IsAssignableFrom<RecordingS3Proxy>(proxy);
+        using var store = new BackblazeB2ObjectStore(proxy, Options());
+        await using var content = new MemoryStream([1, 2, 3]);
+
+        var receipt = await store.PutWithReceiptAsync(
+            new ObjectKey("compatibility/test/result.zip"),
+            content,
+            ObjectWriteConditions.None,
+            CancellationToken.None);
+
+        Assert.NotNull(recorder.PutRequest);
+        Assert.Equal("provider-issued-opaque-etag", receipt.ETag);
+    }
+
+    [Fact]
     public void Options_do_not_render_application_key_material()
     {
         const string applicationKey = "test-application-key-sentinel";

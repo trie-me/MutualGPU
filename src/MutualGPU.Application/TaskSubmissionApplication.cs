@@ -21,6 +21,8 @@ public sealed record SubmitTaskCommand(
     string? RequestorIpHash = null,
     string? RequestorIpClassAB = null)
 {
+    public string? ImageProviderETag { get; init; }
+
     public SubmitTaskCommand(
         RequestorId requestorId,
         CapabilityId capabilityId,
@@ -120,7 +122,10 @@ public sealed class TaskSubmissionApplication(
                 command.ImageLength,
                 command.ImageSha256,
                 command.RequestorIpHash,
-            command.RequestorIpClassAB),
+                command.RequestorIpClassAB)
+            {
+                ImageProviderETag = command.ImageProviderETag,
+            },
             command.SubmittedAt);
         if (operations is not null)
         {

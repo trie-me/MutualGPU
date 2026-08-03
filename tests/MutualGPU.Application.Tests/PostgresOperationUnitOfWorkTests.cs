@@ -142,13 +142,17 @@ public sealed class PostgresOperationUnitOfWorkTests
             now,
             CancellationToken.None));
 
+        const string providerETag = "opaque-provider-result-etag";
         var result = new StagedResult(
             $"receipt-{Guid.CreateVersion7():N}",
             new TaskResult(new ResultArtifact(
                 ArtifactId.New(),
                 "application/zip",
                 42,
-                new string('b', 64))));
+                new string('b', 64))
+            {
+                ProviderETag = providerETag,
+            }));
         await uploads.StageAsync(
             unitId,
             task.Id,
@@ -210,7 +214,65 @@ public sealed class PostgresOperationUnitOfWorkTests
         Assert.Equal(ArtifactStorageTargetIds.AwsPrimary, reader.GetString(4));
         Assert.Equal(ArtifactStorageTargetIds.AwsPrimary, reader.GetString(5));
         Assert.Equal(fixture.ObjectKeys.ResultZip(task.RequestorId, task.Id, attemptId).Value, reader.GetString(6));
-        Assert.True(reader.IsDBNull(7));
+        Assert.Equal(providerETag, reader.GetString(7));
+    }
+
+    [PostgresFact]
+    public async Task Requestor_input_write_receipt_is_persisted_on_the_selected_location()
+    {
+        await using var fixture = await PostgresFixture.CreateAsync();
+        var artifactId = ArtifactId.New();
+        var capability = new CapabilityDefinition(
+            CapabilityId.New(),
+            $"postgres-input-etag-{Guid.CreateVersion7():N}",
+            [],
+            new OutputDefinition(),
+            Guid.CreateVersion7().ToString("N"));
+        const string providerETag = "opaque-provider-input-etag";
+        var task = new TaskRequest(
+            TaskId.New(),
+            RequestorId.New(),
+            capability,
+            new MachineSpecifications(ResourceTier.Small, 8),
+            new TaskParameters(
+                new Dictionary<string, string>(),
+                artifactId,
+                ImageContentType: "image/png",
+                ImageExtension: "png",
+                ImageLength: 68,
+                ImageSha256: new string('a', 64))
+            {
+                ImageProviderETag = providerETag,
+            },
+            DateTimeOffset.UtcNow);
+        await fixture.Operations.ExecuteAsync(
+            (context, _) =>
+            {
+                context.Capabilities.Add(capability);
+                context.Tasks.Add(task);
+                return Task.FromResult(true);
+            },
+            CancellationToken.None);
+
+        await using var connection = await fixture.DataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            """
+            select l.storage_target_id, l.object_key, l.provider_etag
+            from artifacts a
+            join artifact_locations l on l.artifact_id = a.id
+            where a.id = @artifact_id
+            """,
+            connection);
+        command.Parameters.AddWithValue("artifact_id", artifactId.Value);
+        await using var reader = await command.ExecuteReaderAsync();
+
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal(ArtifactStorageTargetIds.AwsPrimary, reader.GetString(0));
+        Assert.Equal(
+            fixture.ObjectKeys.TaskInput(task.RequestorId, task.Id, artifactId, "png").Value,
+            reader.GetString(1));
+        Assert.Equal(providerETag, reader.GetString(2));
+        Assert.False(await reader.ReadAsync());
     }
 
     [PostgresFact]

@@ -40,7 +40,10 @@ public sealed record TaskParameters(
     long? ImageLength = null,
     string? ImageSha256 = null,
     string? RequestorIpHash = null,
-    string? RequestorIpClassAB = null);
+    string? RequestorIpClassAB = null)
+{
+    public string? ImageProviderETag { get; init; }
+}
 
 public sealed record TaskAttempt(
     AttemptId Id,
@@ -62,7 +65,10 @@ public sealed record ResultArtifact(
     ArtifactId Id,
     string ContentType,
     long Length,
-    string Sha256);
+    string Sha256)
+{
+    public string? ProviderETag { get; init; }
+}
 
 public sealed record TaskResult(
     ResultArtifact Zip,

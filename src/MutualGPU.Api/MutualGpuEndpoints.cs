@@ -58,16 +58,18 @@ public static class MutualGpuEndpoints
         }
         else request = await JsonSerializer.DeserializeAsync<SubmitTaskRequestDto>(context.Request.Body, JsonOptions, cancellationToken).ConfigureAwait(false);
         if (request is null) return Problem("submission_invalid", StatusCodes.Status400BadRequest);
+        string? imageProviderETag = null;
         if (pendingImage is not null)
         {
             await using var objectContent = new MemoryStream(pendingImage.Bytes, writable: false);
-            await store.PutAsync(
+            imageProviderETag = (await PutWithReceiptAsync(
+                store,
                 keys.TaskInput(requestorId, taskId, pendingImage.ArtifactId, pendingImage.Extension),
                 objectContent,
                 // taskId and artifactId are generated before this write, so this
                 // staged object key is unique without provider-specific conditional writes.
                 ObjectWriteConditions.None,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken).ConfigureAwait(false)).ETag;
         }
 
         SubmitTaskResult result;
@@ -89,7 +91,10 @@ public static class MutualGpuEndpoints
                 pendingImage?.Bytes.LongLength,
                 pendingImage?.Sha256,
                 requestorNetwork.IpHash,
-                requestorNetwork.IpClassAB)).RunAsync(cancellationToken).ConfigureAwait(false);
+                requestorNetwork.IpClassAB)
+            {
+                ImageProviderETag = imageProviderETag,
+            }).RunAsync(cancellationToken).ConfigureAwait(false);
         }
         catch
         {
@@ -127,6 +132,21 @@ public static class MutualGpuEndpoints
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private static async Task<ObjectWriteReceipt> PutWithReceiptAsync(
+        IObjectStore store,
+        ObjectKey key,
+        Stream content,
+        ObjectWriteConditions conditions,
+        CancellationToken cancellationToken)
+    {
+        if (store is IObjectStoreWriteReceipts receipts)
+        {
+            return await receipts.PutWithReceiptAsync(key, content, conditions, cancellationToken).ConfigureAwait(false);
+        }
+        await store.PutAsync(key, content, conditions, cancellationToken).ConfigureAwait(false);
+        return new ObjectWriteReceipt(null);
+    }
 
     private sealed record PendingImage(ArtifactId ArtifactId, string ContentType, string Extension, byte[] Bytes, string Sha256);
 

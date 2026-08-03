@@ -61,6 +61,28 @@ public sealed class ObjectStorageTargetsTests
             Options("https://s3.us-east-005.backblazeb2.com", null).Validate());
     }
 
+    [Fact]
+    public async Task Write_facade_returns_a_null_receipt_when_the_selected_store_has_no_native_receipt()
+    {
+        var store = new RecordingStore();
+        using var registry = ObjectStoreRegistry.CreateLazy(
+            "backblaze-primary",
+            [new KeyValuePair<string, Func<ObjectStoreTarget>>(
+                "backblaze-primary",
+                () => Target("backblaze-primary", store))]);
+        var facade = new WriteTargetObjectStoreFacade(registry);
+        await using var content = new MemoryStream([1, 2, 3]);
+
+        var receipt = await facade.PutWithReceiptAsync(
+            new ObjectKey("compatibility/test/result.zip"),
+            content,
+            ObjectWriteConditions.None,
+            CancellationToken.None);
+
+        Assert.Null(receipt.ETag);
+        Assert.Equal(1, store.PutCalls);
+    }
+
     private static ObjectStorageOptions Options(string endpoint, BackblazeB2BrowserCorsMode? corsMode) => new()
     {
         WriteTarget = ArtifactStorageTargetIds.AwsPrimary,
@@ -90,8 +112,14 @@ public sealed class ObjectStorageTargetsTests
 
     private sealed class RecordingStore : IObjectStore, IObjectStoreHealth
     {
+        public int PutCalls { get; private set; }
+
         public Task<ObjectRead?> GetAsync(ObjectKey key, CancellationToken cancellationToken) => Task.FromResult<ObjectRead?>(null);
-        public Task PutAsync(ObjectKey key, Stream content, ObjectWriteConditions conditions, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task PutAsync(ObjectKey key, Stream content, ObjectWriteConditions conditions, CancellationToken cancellationToken)
+        {
+            PutCalls++;
+            return Task.CompletedTask;
+        }
         public Task DeleteAsync(ObjectKey key, CancellationToken cancellationToken) => Task.CompletedTask;
         public async IAsyncEnumerable<ObjectEntry> ListAsync(ObjectPrefix prefix, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
         {

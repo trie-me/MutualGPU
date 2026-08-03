@@ -187,7 +187,7 @@ public sealed class PostgresResultUploadStore(
                         [new ArtifactLocation(
                             upload.WriteStorageTargetId,
                             key.Value,
-                            null,
+                            artifact.ProviderETag,
                             ArtifactLocationState.Staged,
                             stagedAt)],
                     };

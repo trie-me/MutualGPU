@@ -184,8 +184,23 @@ public static class ProviderResultEndpoints
     private static async Task<ResultArtifact> StoreAsync(byte[] bytes, string contentType, ObjectKey key, IObjectStore store, CancellationToken cancellationToken)
     {
         await using var content = new MemoryStream(bytes, writable: false);
+        var receipt = store is IObjectStoreWriteReceipts receipts
+            ? await receipts.PutWithReceiptAsync(key, content, ObjectWriteConditions.None, cancellationToken).ConfigureAwait(false)
+            : await PutWithoutReceiptAsync(store, key, content, cancellationToken).ConfigureAwait(false);
+        return new ResultArtifact(ArtifactId.New(), contentType, bytes.LongLength, Sha256(bytes))
+        {
+            ProviderETag = receipt.ETag,
+        };
+    }
+
+    private static async Task<ObjectWriteReceipt> PutWithoutReceiptAsync(
+        IObjectStore store,
+        ObjectKey key,
+        Stream content,
+        CancellationToken cancellationToken)
+    {
         await store.PutAsync(key, content, ObjectWriteConditions.None, cancellationToken).ConfigureAwait(false);
-        return new ResultArtifact(ArtifactId.New(), contentType, bytes.LongLength, Sha256(bytes));
+        return new ObjectWriteReceipt(null);
     }
 
     private static async Task<byte[]> ReadBytesAsync(IFormFile file, int maximumBytes, CancellationToken cancellationToken)

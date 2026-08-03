@@ -670,6 +670,10 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var client = CreateHttpsClient();
         using var landing = await client.GetAsync("/");
         Assert.True(landing.IsSuccessStatusCode);
+        var cookie = Assert.Single(
+            landing.Headers.GetValues("Set-Cookie"),
+            value => value.StartsWith($"{RequestorIdentity.CookieName}=", StringComparison.Ordinal));
+        var requestorId = new RequestorId(Guid.Parse(cookie.Split(';', 2)[0].Split('=', 2)[1]));
         var submission = new SubmitTaskRequestDto(capability.Id.Value, capability.ContractHash, new Dictionary<string, string>(), new MachineSpecifications(ResourceTier.Medium, 16), "image-request-key");
         using var payload = new MultipartFormDataContent();
         payload.Add(new StringContent(JsonSerializer.Serialize(submission)), "submission");
@@ -678,6 +682,12 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var created = await client.PostAsync("/api/tasks/", payload);
 
         Assert.Equal(System.Net.HttpStatusCode.Created, created.StatusCode);
+        var dto = await created.Content.ReadFromJsonAsync<TaskDto>();
+        var persisted = await factory.Services
+            .GetRequiredService<ITaskRepository>()
+            .GetAsync(requestorId, new TaskId(dto!.TaskId), CancellationToken.None);
+        Assert.NotNull(persisted);
+        Assert.False(String.IsNullOrWhiteSpace(persisted.Parameters.ImageProviderETag));
     }
 
     [Fact]
@@ -919,6 +929,19 @@ public sealed class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Pr
         using var completeRequest = ProviderRequest(HttpMethod.Post, $"/provider/tasks/{task.Id.Value:D}/attempts/{attempt.Id.Value:D}/complete/{receipt}", attempt.Handle);
         using var completeResponse = await client.SendAsync(completeRequest, CancellationToken.None);
         Assert.True(completeResponse.IsSuccessStatusCode);
+
+        var completed = await tasks.GetAsync(task.RequestorId, task.Id, CancellationToken.None);
+        Assert.NotNull(completed?.Result);
+        Assert.All(
+            new[]
+            {
+                completed.Result.Zip,
+                completed.Result.Metadata,
+                completed.Result.Thumbnail,
+                completed.Result.Preview,
+                completed.Result.Logs,
+            },
+            static artifact => Assert.False(String.IsNullOrWhiteSpace(artifact!.ProviderETag)));
 
         using var resultRequest = new HttpRequestMessage(HttpMethod.Get, $"/api/tasks/{task.Id.Value:D}/result");
         resultRequest.Headers.Add("Cookie", $"{RequestorIdentity.CookieName}={requestor.Value:D}");
